@@ -95,13 +95,11 @@ abstract class AnalysisImage {
     }
 
     return switch ((rotation, preview.sensor?.position)) {
-      (InputAnalysisImageRotation.rotation0deg, SensorPosition.back) =>
-        const CanvasTransformation(
+      (InputAnalysisImageRotation.rotation0deg, SensorPosition.back) => const CanvasTransformation(
           scale: Point(-1, 1),
           translate: Point(-1, 0),
         ),
-      (InputAnalysisImageRotation.rotation180deg, SensorPosition.back) =>
-        const CanvasTransformation(
+      (InputAnalysisImageRotation.rotation180deg, SensorPosition.back) => const CanvasTransformation(
           scale: Point(1, -1),
           translate: Point(0, -1),
         ),
@@ -110,9 +108,7 @@ abstract class AnalysisImage {
       //   scale: Point(1, -1),
       //   translate: Point(0, -1),
       // ),
-      (InputAnalysisImageRotation.rotation0deg, _) ||
-      (_, SensorPosition.back) =>
-        const CanvasTransformation(
+      (InputAnalysisImageRotation.rotation0deg, _) || (_, SensorPosition.back) => const CanvasTransformation(
           scale: Point(-1, -1),
           translate: Point(-1, -1),
         ),
@@ -139,9 +135,7 @@ class Bgra8888Image extends AnalysisImage {
       : this(
           height: map["height"],
           width: map["width"],
-          planes: (map["planes"] as List<dynamic>)
-              .map((e) => ImagePlane.from(Map<String, dynamic>.from(e)))
-              .toList(),
+          planes: (map["planes"] as List<dynamic>).map((e) => ImagePlane.from(Map<String, dynamic>.from(e))).toList(),
           rotation: InputAnalysisImageRotation.values.byName(map["rotation"]),
           format: inputAnalysisImageFormatParser(map["format"]),
         );
@@ -184,9 +178,7 @@ class Nv21Image extends AnalysisImage {
           ),
           height: map["height"],
           width: map["width"],
-          planes: (map["planes"] as List<dynamic>)
-              .map((e) => ImagePlane.from(Map<String, dynamic>.from(e)))
-              .toList(),
+          planes: (map["planes"] as List<dynamic>).map((e) => ImagePlane.from(Map<String, dynamic>.from(e))).toList(),
           rotation: InputAnalysisImageRotation.values.byName(map["rotation"]),
           format: inputAnalysisImageFormatParser(map["format"]),
         );
@@ -222,9 +214,7 @@ class Yuv420Image extends AnalysisImage {
           ),
           height: map["height"],
           width: map["width"],
-          planes: (map["planes"] as List<dynamic>)
-              .map((e) => ImagePlane.from(Map<String, dynamic>.from(e)))
-              .toList(),
+          planes: (map["planes"] as List<dynamic>).map((e) => ImagePlane.from(Map<String, dynamic>.from(e))).toList(),
           rotation: InputAnalysisImageRotation.values.byName(map["rotation"]),
           format: inputAnalysisImageFormatParser(map["format"]),
         );

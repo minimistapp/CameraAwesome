@@ -76,8 +76,7 @@ class CameraPage extends StatelessWidget {
                 '${extDir.path}/camerawesome',
               ).create(recursive: true);
               if (sensors.length == 1) {
-                final String filePath =
-                    '${testDir.path}/${DateTime.now().millisecondsSinceEpoch}.jpg';
+                final String filePath = '${testDir.path}/${DateTime.now().millisecondsSinceEpoch}.jpg';
                 return SingleCaptureRequest(filePath, sensors.first);
               }
               // Separate pictures taken with front and back camera

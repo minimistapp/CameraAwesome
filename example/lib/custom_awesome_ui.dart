@@ -76,9 +76,7 @@ class CameraPage extends StatelessWidget {
               const Spacer(),
               Builder(builder: (context) {
                 return Container(
-                  color: AwesomeThemeProvider.of(context)
-                      .theme
-                      .bottomActionsBackgroundColor,
+                  color: AwesomeThemeProvider.of(context).theme.bottomActionsBackgroundColor,
                   child: const Align(
                     alignment: Alignment.bottomCenter,
                     child: Padding(

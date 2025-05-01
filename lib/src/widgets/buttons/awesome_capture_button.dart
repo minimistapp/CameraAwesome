@@ -17,8 +17,7 @@ class AwesomeCaptureButton extends StatefulWidget {
   _AwesomeCaptureButtonState createState() => _AwesomeCaptureButtonState();
 }
 
-class _AwesomeCaptureButtonState extends State<AwesomeCaptureButton>
-    with SingleTickerProviderStateMixin {
+class _AwesomeCaptureButtonState extends State<AwesomeCaptureButton> with SingleTickerProviderStateMixin {
   late AnimationController _animationController;
   late double _scale;
   final Duration _duration = const Duration(milliseconds: 100);
@@ -65,8 +64,7 @@ class _AwesomeCaptureButtonState extends State<AwesomeCaptureButton>
               onPhotoMode: (_) => CameraButtonPainter(),
               onPreparingCamera: (_) => CameraButtonPainter(),
               onVideoMode: (_) => VideoButtonPainter(),
-              onVideoRecordingMode: (_) =>
-                  VideoButtonPainter(isRecording: true),
+              onVideoRecordingMode: (_) => VideoButtonPainter(isRecording: true),
             ),
           ),
         ),

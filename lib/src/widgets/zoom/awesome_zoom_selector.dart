@@ -34,9 +34,7 @@ class _AwesomeZoomSelectorState extends State<AwesomeZoomSelector> {
       stream: widget.state.sensorConfig$,
       builder: (context, sensorConfigSnapshot) {
         initAsync();
-        if (sensorConfigSnapshot.data == null ||
-            minZoom == null ||
-            maxZoom == null) {
+        if (sensorConfigSnapshot.data == null || minZoom == null || maxZoom == null) {
           return const SizedBox.shrink();
         }
 

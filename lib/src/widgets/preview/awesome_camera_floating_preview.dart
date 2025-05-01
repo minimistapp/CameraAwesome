@@ -18,16 +18,13 @@ class AwesomeCameraFloatingPreview extends StatefulWidget {
     required this.texture,
     required this.aspectRatio,
     PictureInPictureConfig? pictureInPictureConfig,
-  }) : pictureInPictureConfig =
-            pictureInPictureConfig ?? PictureInPictureConfig(sensor: sensor);
+  }) : pictureInPictureConfig = pictureInPictureConfig ?? PictureInPictureConfig(sensor: sensor);
 
   @override
-  State<AwesomeCameraFloatingPreview> createState() =>
-      _AwesomeCameraFloatingPreviewState();
+  State<AwesomeCameraFloatingPreview> createState() => _AwesomeCameraFloatingPreviewState();
 }
 
-class _AwesomeCameraFloatingPreviewState
-    extends State<AwesomeCameraFloatingPreview> {
+class _AwesomeCameraFloatingPreviewState extends State<AwesomeCameraFloatingPreview> {
   late Offset _position;
 
   @override

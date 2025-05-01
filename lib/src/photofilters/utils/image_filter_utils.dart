@@ -8,14 +8,10 @@ void saturation(Uint8List bytes, num saturation) {
   saturation = (saturation < -1) ? -1 : saturation;
   for (int i = 0; i < bytes.length; i += 4) {
     final num r = bytes[i], g = bytes[i + 1], b = bytes[i + 2];
-    final num gray =
-        0.2989 * r + 0.5870 * g + 0.1140 * b; //weights from CCIR 601 spec
-    bytes[i] =
-        clampPixel((-gray * saturation + bytes[i] * (1 + saturation)).round());
-    bytes[i + 1] = clampPixel(
-        (-gray * saturation + bytes[i + 1] * (1 + saturation)).round());
-    bytes[i + 2] = clampPixel(
-        (-gray * saturation + bytes[i + 2] * (1 + saturation)).round());
+    final num gray = 0.2989 * r + 0.5870 * g + 0.1140 * b; //weights from CCIR 601 spec
+    bytes[i] = clampPixel((-gray * saturation + bytes[i] * (1 + saturation)).round());
+    bytes[i + 1] = clampPixel((-gray * saturation + bytes[i + 1] * (1 + saturation)).round());
+    bytes[i + 2] = clampPixel((-gray * saturation + bytes[i + 2] * (1 + saturation)).round());
   }
 }
 
@@ -25,18 +21,11 @@ void hueRotation(Uint8List bytes, int degrees) {
 
   for (int i = 0; i < bytes.length; i += 4) {
     final num r = bytes[i], g = bytes[i + 1], b = bytes[i + 2];
-    bytes[i] = clampPixel(((.299 + .701 * U + .168 * W) * r +
-            (.587 - .587 * U + .330 * W) * g +
-            (.114 - .114 * U - .497 * W) * b)
-        .round());
-    bytes[i + 1] = clampPixel(((.299 - .299 * U - .328 * W) * r +
-            (.587 + .413 * U + .035 * W) * g +
-            (.114 - .114 * U + .292 * W) * b)
-        .round());
-    bytes[i + 2] = clampPixel(((.299 - .3 * U + 1.25 * W) * r +
-            (.587 - .588 * U - 1.05 * W) * g +
-            (.114 + .886 * U - .203 * W) * b)
-        .round());
+    bytes[i] = clampPixel(((.299 + .701 * U + .168 * W) * r + (.587 - .587 * U + .330 * W) * g + (.114 - .114 * U - .497 * W) * b).round());
+    bytes[i + 1] =
+        clampPixel(((.299 - .299 * U - .328 * W) * r + (.587 + .413 * U + .035 * W) * g + (.114 - .114 * U + .292 * W) * b).round());
+    bytes[i + 2] =
+        clampPixel(((.299 - .3 * U + 1.25 * W) * r + (.587 - .588 * U - 1.05 * W) * g + (.114 + .886 * U - .203 * W) * b).round());
   }
 }
 
@@ -54,15 +43,9 @@ void grayscale(Uint8List bytes) {
 void sepia(Uint8List bytes, num adj) {
   for (int i = 0; i < bytes.length; i += 4) {
     final int r = bytes[i], g = bytes[i + 1], b = bytes[i + 2];
-    bytes[i] = clampPixel(
-        ((r * (1 - (0.607 * adj))) + (g * .769 * adj) + (b * .189 * adj))
-            .round());
-    bytes[i + 1] = clampPixel(
-        ((r * .349 * adj) + (g * (1 - (0.314 * adj))) + (b * .168 * adj))
-            .round());
-    bytes[i + 2] = clampPixel(
-        ((r * .272 * adj) + (g * .534 * adj) + (b * (1 - (0.869 * adj))))
-            .round());
+    bytes[i] = clampPixel(((r * (1 - (0.607 * adj))) + (g * .769 * adj) + (b * .189 * adj)).round());
+    bytes[i + 1] = clampPixel(((r * .349 * adj) + (g * (1 - (0.314 * adj))) + (b * .168 * adj)).round());
+    bytes[i + 2] = clampPixel(((r * .272 * adj) + (g * .534 * adj) + (b * (1 - (0.869 * adj)))).round());
   }
 }
 
@@ -113,10 +96,8 @@ void contrast(Uint8List bytes, num adj) {
 void colorOverlay(Uint8List bytes, num red, num green, num blue, num scale) {
   for (int i = 0; i < bytes.length; i += 4) {
     bytes[i] = clampPixel((bytes[i] - (bytes[i] - red) * scale).round());
-    bytes[i + 1] =
-        clampPixel((bytes[i + 1] - (bytes[i + 1] - green) * scale).round());
-    bytes[i + 2] =
-        clampPixel((bytes[i + 2] - (bytes[i + 2] - blue) * scale).round());
+    bytes[i + 1] = clampPixel((bytes[i + 1] - (bytes[i + 1] - green) * scale).round());
+    bytes[i + 2] = clampPixel((bytes[i + 2] - (bytes[i + 2] - blue) * scale).round());
   }
 }
 
@@ -130,8 +111,7 @@ void rgbScale(Uint8List bytes, num red, num green, num blue) {
 }
 
 // Convolute - weights are 3x3 matrix
-void convolute(
-    Uint8List pixels, int width, int height, List<num> weights, num bias) {
+void convolute(Uint8List pixels, int width, int height, List<num> weights, num bias) {
   final bytes = Uint8List.fromList(pixels);
   final int side = sqrt(weights.length).round();
   final int halfSide = ~~(side / 2).round() - side % 2;

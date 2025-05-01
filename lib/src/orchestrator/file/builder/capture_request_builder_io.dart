@@ -12,10 +12,8 @@ class CaptureRequestBuilderImpl extends BaseCaptureRequestBuilder {
     Sensor? sensor,
   }) async {
     final Directory extDir = await getTemporaryDirectory();
-    final testDir =
-        await Directory('${extDir.path}/camerawesome').create(recursive: true);
-    final String fileExtension =
-        captureMode == CaptureMode.photo ? 'jpg' : 'mp4';
+    final testDir = await Directory('${extDir.path}/camerawesome').create(recursive: true);
+    final String fileExtension = captureMode == CaptureMode.photo ? 'jpg' : 'mp4';
     String extension = "";
     if (sensor != null) {
       if (sensor.position != null) {
@@ -28,8 +26,7 @@ class CaptureRequestBuilderImpl extends BaseCaptureRequestBuilder {
         extension = "${extension}_${sensor.deviceId}";
       }
     }
-    final String filePath =
-        '${testDir.path}/${DateTime.now().microsecondsSinceEpoch}$extension.$fileExtension';
+    final String filePath = '${testDir.path}/${DateTime.now().microsecondsSinceEpoch}$extension.$fileExtension';
     return filePath;
   }
 
@@ -42,8 +39,7 @@ class CaptureRequestBuilderImpl extends BaseCaptureRequestBuilder {
       return SingleCaptureRequest(await newFile(captureMode), sensors.first);
     } else {
       return MultipleCaptureRequest({
-        for (var sensor in sensors)
-          sensor: await newFile(captureMode, sensor: sensor),
+        for (var sensor in sensors) sensor: await newFile(captureMode, sensor: sensor),
       });
     }
   }

@@ -9,16 +9,14 @@ class AwesomeAspectRatioButton extends StatelessWidget {
   final PhotoCameraState state;
   final AwesomeTheme? theme;
   final Widget Function(CameraAspectRatios aspectRatio) iconBuilder;
-  final void Function(SensorConfig sensorConfig, CameraAspectRatios aspectRatio)
-      onAspectRatioTap;
+  final void Function(SensorConfig sensorConfig, CameraAspectRatios aspectRatio) onAspectRatioTap;
 
   AwesomeAspectRatioButton({
     super.key,
     required this.state,
     this.theme,
     Widget Function(CameraAspectRatios aspectRatio)? iconBuilder,
-    void Function(SensorConfig sensorConfig, CameraAspectRatios aspectRatio)?
-        onAspectRatioTap,
+    void Function(SensorConfig sensorConfig, CameraAspectRatios aspectRatio)? onAspectRatioTap,
   })  : iconBuilder = iconBuilder ??
             ((aspectRatio) {
               final AssetImage icon;
@@ -26,24 +24,20 @@ class AwesomeAspectRatioButton extends StatelessWidget {
               switch (aspectRatio) {
                 case CameraAspectRatios.ratio_16_9:
                   width = 32;
-                  icon = const AssetImage(
-                      "packages/camerawesome/assets/icons/16_9.png");
+                  icon = const AssetImage("packages/camerawesome/assets/icons/16_9.png");
                   break;
                 case CameraAspectRatios.ratio_4_3:
                   width = 24;
-                  icon = const AssetImage(
-                      "packages/camerawesome/assets/icons/4_3.png");
+                  icon = const AssetImage("packages/camerawesome/assets/icons/4_3.png");
                   break;
                 case CameraAspectRatios.ratio_1_1:
                   width = 24;
-                  icon = const AssetImage(
-                      "packages/camerawesome/assets/icons/1_1.png");
+                  icon = const AssetImage("packages/camerawesome/assets/icons/1_1.png");
                   break;
               }
 
               return Builder(builder: (context) {
-                final iconSize = theme?.buttonTheme.iconSize ??
-                    AwesomeThemeProvider.of(context).theme.buttonTheme.iconSize;
+                final iconSize = theme?.buttonTheme.iconSize ?? AwesomeThemeProvider.of(context).theme.buttonTheme.iconSize;
 
                 final scaleRatio = iconSize / AwesomeButtonTheme.baseIconSize;
                 return AwesomeCircleWidget(
@@ -56,10 +50,7 @@ class AwesomeAspectRatioButton extends StatelessWidget {
                         child: Builder(
                           builder: (context) => Image(
                             image: icon,
-                            color: AwesomeThemeProvider.of(context)
-                                .theme
-                                .buttonTheme
-                                .foregroundColor,
+                            color: AwesomeThemeProvider.of(context).theme.buttonTheme.foregroundColor,
                             width: width * scaleRatio,
                           ),
                         ),
@@ -69,8 +60,7 @@ class AwesomeAspectRatioButton extends StatelessWidget {
                 );
               });
             }),
-        onAspectRatioTap = onAspectRatioTap ??
-            ((sensorConfig, aspectRatio) => sensorConfig.switchCameraRatio());
+        onAspectRatioTap = onAspectRatioTap ?? ((sensorConfig, aspectRatio) => sensorConfig.switchCameraRatio());
 
   @override
   Widget build(BuildContext context) {

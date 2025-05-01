@@ -49,8 +49,7 @@ class _CameraPageState extends State<CameraPage> {
         ),
         previewFit: CameraPreviewFit.fitWidth,
         onMediaTap: (mediaCapture) {
-          mediaCapture.captureRequest
-              .when(single: (single) => single.file?.open());
+          mediaCapture.captureRequest.when(single: (single) => single.file?.open());
         },
         previewDecoratorBuilder: (state, preview) {
           return BarcodePreviewOverlay(
@@ -65,8 +64,7 @@ class _CameraPageState extends State<CameraPage> {
             state: state,
             children: [
               AwesomeFlashButton(state: state),
-              if (state is PhotoCameraState)
-                AwesomeAspectRatioButton(state: state),
+              if (state is PhotoCameraState) AwesomeAspectRatioButton(state: state),
             ],
           );
         },
@@ -98,8 +96,7 @@ class _CameraPageState extends State<CameraPage> {
 
   Future _processImageBarcode(AnalysisImage img) async {
     try {
-      var recognizedBarCodes =
-          await _barcodeScanner.processImage(img.toInputImage());
+      var recognizedBarCodes = await _barcodeScanner.processImage(img.toInputImage());
       setState(() {
         _barcodes = recognizedBarCodes;
         _image = img;

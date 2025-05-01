@@ -24,9 +24,7 @@ class AwesomeMediaPreview extends StatelessWidget {
       child: AspectRatio(
         aspectRatio: 1,
         child: AwesomeBouncingWidget(
-          onTap: mediaCapture != null &&
-                  onMediaTap != null &&
-                  mediaCapture?.status == MediaCaptureStatus.success
+          onTap: mediaCapture != null && onMediaTap != null && mediaCapture?.status == MediaCaptureStatus.success
               ? () => onMediaTap!(mediaCapture!)
               : null,
           child: AnimatedContainer(
@@ -72,8 +70,7 @@ class AwesomeMediaPreview extends StatelessWidget {
             return FutureBuilder<Uint8List>(
                 future: mediaCapture.captureRequest.when(
                   single: (single) => single.file!.readAsBytes(),
-                  multiple: (multiple) =>
-                      multiple.fileBySensor.values.first!.readAsBytes(),
+                  multiple: (multiple) => multiple.fileBySensor.values.first!.readAsBytes(),
                 ),
                 builder: (_, snapshot) {
                   if (snapshot.hasData) {
@@ -104,8 +101,7 @@ class AwesomeMediaPreview extends StatelessWidget {
                   File(
                     mediaCapture.captureRequest.when(
                       single: (single) => single.file!.path,
-                      multiple: (multiple) =>
-                          multiple.fileBySensor.values.first!.path,
+                      multiple: (multiple) => multiple.fileBySensor.values.first!.path,
                     ),
                   ),
                 ),

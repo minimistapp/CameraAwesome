@@ -31,9 +31,7 @@ class AwesomeFilterWidget extends StatefulWidget {
     this.animationDuration = const Duration(milliseconds: 400),
   }) : indicator = Builder(
           builder: (context) => Container(
-            color: AwesomeThemeProvider.of(context)
-                .theme
-                .bottomActionsBackgroundColor,
+            color: AwesomeThemeProvider.of(context).theme.bottomActionsBackgroundColor,
             padding: const EdgeInsets.symmetric(vertical: 8.0),
             child: const Center(
               child: SizedBox(
@@ -60,9 +58,7 @@ class _AwesomeFilterWidgetState extends State<AwesomeFilterWidget> {
     final theme = AwesomeThemeProvider.of(context).theme;
     final children = [
       SizedBox(
-        height: theme.buttonTheme.iconSize +
-            theme.buttonTheme.padding.top +
-            theme.buttonTheme.padding.bottom,
+        height: theme.buttonTheme.iconSize + theme.buttonTheme.padding.top + theme.buttonTheme.padding.bottom,
         width: double.infinity,
         child: Stack(
           children: [
@@ -77,37 +73,26 @@ class _AwesomeFilterWidgetState extends State<AwesomeFilterWidget> {
                     child: snapshot.data == true
                         ? Align(
                             key: const ValueKey("NameIndicator"),
-                            alignment: widget.filterListPosition ==
-                                    FilterListPosition.belowButton
-                                ? Alignment.bottomCenter
-                                : Alignment.topCenter,
-                            child:
-                                AwesomeFilterNameIndicator(state: widget.state),
+                            alignment:
+                                widget.filterListPosition == FilterListPosition.belowButton ? Alignment.bottomCenter : Alignment.topCenter,
+                            child: AwesomeFilterNameIndicator(state: widget.state),
                           )
-                        : (!kIsWeb &&
-                                Platform
-                                    .isAndroid) // FIXME this should not be here and makes the code ugly
+                        : (!kIsWeb && Platform.isAndroid) // FIXME this should not be here and makes the code ugly
                             ? Center(
                                 key: const ValueKey("ZoomIndicator"),
                                 child: AwesomeZoomSelector(state: widget.state),
                               )
                             : Center(
                                 key: const ValueKey("SensorTypeSelector"),
-                                child: AwesomeSensorTypeSelector(
-                                    state: widget.state),
+                                child: AwesomeSensorTypeSelector(state: widget.state),
                               ),
                   );
                 },
               ),
             ),
             Positioned(
-              bottom:
-                  widget.filterListPosition == FilterListPosition.belowButton
-                      ? 0
-                      : null,
-              top: widget.filterListPosition == FilterListPosition.belowButton
-                  ? null
-                  : 0,
+              bottom: widget.filterListPosition == FilterListPosition.belowButton ? 0 : null,
+              top: widget.filterListPosition == FilterListPosition.belowButton ? null : 0,
               right: 20,
               child: AwesomeFilterButton(state: widget.state),
             ),
@@ -123,10 +108,7 @@ class _AwesomeFilterWidgetState extends State<AwesomeFilterWidget> {
               open: snapshot.data == true,
               horizontalAnimation: false,
               verticalAnimation: true,
-              alignment:
-                  widget.filterListPosition == FilterListPosition.belowButton
-                      ? Alignment.topCenter
-                      : Alignment.bottomCenter,
+              alignment: widget.filterListPosition == FilterListPosition.belowButton ? Alignment.topCenter : Alignment.bottomCenter,
               duration: widget.animationDuration,
               curve: widget.animationCurve,
               reverseCurve: widget.animationCurve.flipped,
@@ -142,9 +124,7 @@ class _AwesomeFilterWidgetState extends State<AwesomeFilterWidget> {
         ),
     ];
     return Column(
-      children: widget.filterListPosition == FilterListPosition.belowButton
-          ? children
-          : children.reversed.toList(),
+      children: widget.filterListPosition == FilterListPosition.belowButton ? children : children.reversed.toList(),
     );
   }
 }

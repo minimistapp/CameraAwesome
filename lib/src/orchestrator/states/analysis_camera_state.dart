@@ -10,8 +10,7 @@ class AnalysisCameraState extends CameraState {
     required CameraContext cameraContext,
   }) : super(cameraContext);
 
-  factory AnalysisCameraState.from(CameraContext orchestrator) =>
-      AnalysisCameraState(
+  factory AnalysisCameraState.from(CameraContext orchestrator) => AnalysisCameraState(
         cameraContext: orchestrator,
       );
 

@@ -12,12 +12,10 @@ class CustomUiExample3 extends StatelessWidget {
       body: CameraAwesomeBuilder.custom(
         builder: (cameraState, preview) {
           return cameraState.when(
-            onPreparingCamera: (state) =>
-                const Center(child: CircularProgressIndicator()),
+            onPreparingCamera: (state) => const Center(child: CircularProgressIndicator()),
             onPhotoMode: (state) => TakePhotoUI(state),
             onVideoMode: (state) => RecordVideoUI(state, recording: false),
-            onVideoRecordingMode: (state) =>
-                RecordVideoUI(state, recording: true),
+            onVideoRecordingMode: (state) => RecordVideoUI(state, recording: true),
           );
         },
         saveConfig: SaveConfig.video(),
@@ -63,8 +61,7 @@ class RecordVideoUI extends StatelessWidget {
                     child: CustomMediaPreview(
                       mediaCapture: snapshot.data,
                       onMediaTap: (mediaCapture) {
-                        mediaCapture.captureRequest
-                            .when(single: (single) => single.file?.open());
+                        mediaCapture.captureRequest.when(single: (single) => single.file?.open());
                       },
                     ),
                   );

@@ -24,8 +24,7 @@ class CameraAwesomeApp extends StatelessWidget {
             builder: (context) => const CameraPage(),
           );
         } else if (settings.name == '/gallery') {
-          final multipleCaptureRequest =
-              settings.arguments as MultipleCaptureRequest;
+          final multipleCaptureRequest = settings.arguments as MultipleCaptureRequest;
           return MaterialPageRoute(
             builder: (context) => GalleryPage(
               multipleCaptureRequest: multipleCaptureRequest,
@@ -155,8 +154,7 @@ class _CameraPageState extends State<CameraPage> {
                         child: const Text("Change picture in picture's shape:"),
                       ),
                       GridView.builder(
-                        gridDelegate:
-                            const SliverGridDelegateWithFixedCrossAxisCount(
+                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: 3,
                           childAspectRatio: 16 / 9,
                         ),
@@ -220,10 +218,8 @@ enum PipShape {
       case PipShape.triangle:
         return Path()
           ..moveTo(center.dx, center.dy - min(width, height) / 2)
-          ..lineTo(center.dx + min(width, height) / 2,
-              center.dy + min(width, height) / 2)
-          ..lineTo(center.dx - min(width, height) / 2,
-              center.dy + min(width, height) / 2)
+          ..lineTo(center.dx + min(width, height) / 2, center.dy + min(width, height) / 2)
+          ..lineTo(center.dx - min(width, height) / 2, center.dy + min(width, height) / 2)
           ..close();
       case PipShape.roundedSquare:
         return Path()
@@ -238,15 +234,11 @@ enum PipShape {
       case PipShape.hexagon:
         return Path()
           ..moveTo(center.dx, center.dy - min(width, height) / 2)
-          ..lineTo(center.dx + min(width, height) / 2,
-              center.dy - min(width, height) / 4)
-          ..lineTo(center.dx + min(width, height) / 2,
-              center.dy + min(width, height) / 4)
+          ..lineTo(center.dx + min(width, height) / 2, center.dy - min(width, height) / 4)
+          ..lineTo(center.dx + min(width, height) / 2, center.dy + min(width, height) / 4)
           ..lineTo(center.dx, center.dy + min(width, height) / 2)
-          ..lineTo(center.dx - min(width, height) / 2,
-              center.dy + min(width, height) / 4)
-          ..lineTo(center.dx - min(width, height) / 2,
-              center.dy - min(width, height) / 4)
+          ..lineTo(center.dx - min(width, height) / 2, center.dy + min(width, height) / 4)
+          ..lineTo(center.dx - min(width, height) / 2, center.dy - min(width, height) / 4)
           ..close();
     }
   }
@@ -274,9 +266,7 @@ class _MyCustomPipClipper extends CustomClipper<Path> {
 
   @override
   bool shouldReclip(covariant _MyCustomPipClipper oldClipper) {
-    return width != oldClipper.width ||
-        height != oldClipper.height ||
-        shape != oldClipper.shape;
+    return width != oldClipper.width || height != oldClipper.height || shape != oldClipper.shape;
   }
 }
 
@@ -302,8 +292,7 @@ class _GalleryPageState extends State<GalleryPage> {
         ),
         itemCount: widget.multipleCaptureRequest.fileBySensor.length,
         itemBuilder: (context, index) {
-          final sensor =
-              widget.multipleCaptureRequest.fileBySensor.keys.toList()[index];
+          final sensor = widget.multipleCaptureRequest.fileBySensor.keys.toList()[index];
           final file = widget.multipleCaptureRequest.fileBySensor[sensor];
           return GestureDetector(
             onTap: () => file.open(),

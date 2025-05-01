@@ -21,10 +21,8 @@ class AwesomeTopActions extends StatelessWidget {
                 ? [const SizedBox.shrink()]
                 : [
                     AwesomeFlashButton(state: state),
-                    if (state is PhotoCameraState)
-                      AwesomeAspectRatioButton(state: state),
-                    if (state is PhotoCameraState)
-                      AwesomeLocationButton(state: state),
+                    if (state is PhotoCameraState) AwesomeAspectRatioButton(state: state),
+                    if (state is PhotoCameraState) AwesomeLocationButton(state: state),
                   ]);
 
   @override

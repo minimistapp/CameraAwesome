@@ -7,16 +7,11 @@ import 'package:camerawesome/src/photofilters/rgba_model.dart';
 int clampPixel(int x) => x.clamp(0, 255);
 RGBA saturation(RGBA color, num saturation) {
   saturation = (saturation < -1) ? -1 : saturation;
-  final num gray = 0.2989 * color.red +
-      0.5870 * color.green +
-      0.1140 * color.blue; //weights from CCIR 601 spec
+  final num gray = 0.2989 * color.red + 0.5870 * color.green + 0.1140 * color.blue; //weights from CCIR 601 spec
   return RGBA(
-    red:
-        clampPixel((-gray * saturation + color.red * (1 + saturation)).round()),
-    green: clampPixel(
-        (-gray * saturation + color.green * (1 + saturation)).round()),
-    blue: clampPixel(
-        (-gray * saturation + color.blue * (1 + saturation)).round()),
+    red: clampPixel((-gray * saturation + color.red * (1 + saturation)).round()),
+    green: clampPixel((-gray * saturation + color.green * (1 + saturation)).round()),
+    blue: clampPixel((-gray * saturation + color.blue * (1 + saturation)).round()),
     alpha: color.alpha,
   );
 }
@@ -27,26 +22,15 @@ RGBA hueRotation(RGBA color, int degrees) {
 
   final num r = color.red, g = color.green, b = color.blue;
   return RGBA(
-    red: clampPixel(((.299 + .701 * U + .168 * W) * r +
-            (.587 - .587 * U + .330 * W) * g +
-            (.114 - .114 * U - .497 * W) * b)
-        .round()),
-    green: clampPixel(((.299 - .299 * U - .328 * W) * r +
-            (.587 + .413 * U + .035 * W) * g +
-            (.114 - .114 * U + .292 * W) * b)
-        .round()),
-    blue: clampPixel(((.299 - .3 * U + 1.25 * W) * r +
-            (.587 - .588 * U - 1.05 * W) * g +
-            (.114 + .886 * U - .203 * W) * b)
-        .round()),
+    red: clampPixel(((.299 + .701 * U + .168 * W) * r + (.587 - .587 * U + .330 * W) * g + (.114 - .114 * U - .497 * W) * b).round()),
+    green: clampPixel(((.299 - .299 * U - .328 * W) * r + (.587 + .413 * U + .035 * W) * g + (.114 - .114 * U + .292 * W) * b).round()),
+    blue: clampPixel(((.299 - .3 * U + 1.25 * W) * r + (.587 - .588 * U - 1.05 * W) * g + (.114 + .886 * U - .203 * W) * b).round()),
     alpha: color.alpha,
   );
 }
 
 RGBA grayscale(RGBA color) {
-  final int avg = clampPixel(
-      (0.2126 * color.red + 0.7152 * color.green + 0.0722 * color.blue)
-          .round());
+  final int avg = clampPixel((0.2126 * color.red + 0.7152 * color.green + 0.0722 * color.blue).round());
   return RGBA(
     red: avg,
     green: avg,
@@ -59,15 +43,9 @@ RGBA grayscale(RGBA color) {
 RGBA sepia(RGBA color, num adj) {
   final int r = color.red, g = color.green, b = color.blue;
   return RGBA(
-      red: clampPixel(
-          ((r * (1 - (0.607 * adj))) + (g * .769 * adj) + (b * .189 * adj))
-              .round()),
-      green: clampPixel(
-          ((r * .349 * adj) + (g * (1 - (0.314 * adj))) + (b * .168 * adj))
-              .round()),
-      blue: clampPixel(
-          ((r * .272 * adj) + (g * .534 * adj) + (b * (1 - (0.869 * adj))))
-              .round()),
+      red: clampPixel(((r * (1 - (0.607 * adj))) + (g * .769 * adj) + (b * .189 * adj)).round()),
+      green: clampPixel(((r * .349 * adj) + (g * (1 - (0.314 * adj))) + (b * .168 * adj)).round()),
+      blue: clampPixel(((r * .272 * adj) + (g * .534 * adj) + (b * (1 - (0.869 * adj)))).round()),
       alpha: color.alpha);
 }
 

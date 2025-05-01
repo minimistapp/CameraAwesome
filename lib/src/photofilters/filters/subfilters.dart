@@ -1,8 +1,6 @@
 import 'dart:typed_data';
-import 'package:camerawesome/src/photofilters/utils/image_filter_utils.dart'
-    as image_filter_utils;
-import 'package:camerawesome/src/photofilters/utils/color_filter_utils.dart'
-    as color_filter_utils;
+import 'package:camerawesome/src/photofilters/utils/image_filter_utils.dart' as image_filter_utils;
+import 'package:camerawesome/src/photofilters/utils/color_filter_utils.dart' as color_filter_utils;
 import 'package:camerawesome/src/photofilters/utils/convolution_kernels.dart';
 
 import 'package:camerawesome/src/photofilters/rgba_model.dart';
@@ -17,8 +15,7 @@ class ContrastSubFilter extends ColorSubFilter with ImageSubFilter {
 
   ///Apply the [ContrastSubFilter] to an Image.
   @override
-  void apply(Uint8List pixels, int width, int height) =>
-      image_filter_utils.contrast(pixels, contrast);
+  void apply(Uint8List pixels, int width, int height) => image_filter_utils.contrast(pixels, contrast);
 
   ///Apply the [ContrastSubFilter] to a color.
   @override
@@ -32,13 +29,11 @@ class BrightnessSubFilter extends ColorSubFilter with ImageSubFilter {
 
   ///Apply the [BrightnessSubFilter] to an Image.
   @override
-  void apply(Uint8List pixels, int width, int height) =>
-      image_filter_utils.brightness(pixels, brightness);
+  void apply(Uint8List pixels, int width, int height) => image_filter_utils.brightness(pixels, brightness);
 
   ///Apply the [BrightnessSubFilter] to a color.
   @override
-  RGBA applyFilter(RGBA color) =>
-      color_filter_utils.brightness(color, brightness);
+  RGBA applyFilter(RGBA color) => color_filter_utils.brightness(color, brightness);
 }
 
 ///The [SaturationSubFilter] class is a SubFilter class to apply [saturation] to an image.
@@ -48,13 +43,11 @@ class SaturationSubFilter extends ColorSubFilter with ImageSubFilter {
 
   ///Apply the [SaturationSubFilter] to an Image.
   @override
-  void apply(Uint8List pixels, int width, int height) =>
-      image_filter_utils.saturation(pixels, saturation);
+  void apply(Uint8List pixels, int width, int height) => image_filter_utils.saturation(pixels, saturation);
 
   ///Apply the [SaturationSubFilter] to a saturation.
   @override
-  RGBA applyFilter(RGBA color) =>
-      color_filter_utils.saturation(color, saturation);
+  RGBA applyFilter(RGBA color) => color_filter_utils.saturation(color, saturation);
 }
 
 ///The [SepiaSubFilter] class is a SubFilter class to apply [sepia] to an image.
@@ -64,8 +57,7 @@ class SepiaSubFilter extends ColorSubFilter with ImageSubFilter {
 
   ///Apply the [SepiaSubFilter] to an Image.
   @override
-  void apply(Uint8List pixels, int width, int height) =>
-      image_filter_utils.sepia(pixels, sepia);
+  void apply(Uint8List pixels, int width, int height) => image_filter_utils.sepia(pixels, sepia);
 
   ///Apply the [SepiaSubFilter] to a color.
   @override
@@ -76,8 +68,7 @@ class SepiaSubFilter extends ColorSubFilter with ImageSubFilter {
 class GrayScaleSubFilter extends ColorSubFilter with ImageSubFilter {
   ///Apply the [GrayScaleSubFilter] to an Image.
   @override
-  void apply(Uint8List pixels, int width, int height) =>
-      image_filter_utils.grayscale(pixels);
+  void apply(Uint8List pixels, int width, int height) => image_filter_utils.grayscale(pixels);
 
   ///Apply the [GrayScaleSubFilter] to a color.
   @override
@@ -88,8 +79,7 @@ class GrayScaleSubFilter extends ColorSubFilter with ImageSubFilter {
 class InvertSubFilter extends ColorSubFilter with ImageSubFilter {
   ///Apply the [InvertSubFilter] to an Image.
   @override
-  void apply(Uint8List pixels, int width, int height) =>
-      image_filter_utils.invert(pixels);
+  void apply(Uint8List pixels, int width, int height) => image_filter_utils.invert(pixels);
 
   ///Apply the [InvertSubFilter] to a color.
   @override
@@ -103,13 +93,11 @@ class HueRotationSubFilter extends ColorSubFilter with ImageSubFilter {
 
   ///Apply the [HueRotationSubFilter] to an Image.
   @override
-  void apply(Uint8List pixels, int width, int height) =>
-      image_filter_utils.hueRotation(pixels, degrees);
+  void apply(Uint8List pixels, int width, int height) => image_filter_utils.hueRotation(pixels, degrees);
 
   ///Apply the [HueRotationSubFilter] to a color.
   @override
-  RGBA applyFilter(RGBA color) =>
-      color_filter_utils.hueRotation(color, degrees);
+  RGBA applyFilter(RGBA color) => color_filter_utils.hueRotation(color, degrees);
 }
 
 ///The [AddictiveColorSubFilter] class is a SubFilter class to emphasize a color using [red], [green] and [b] values.
@@ -121,13 +109,11 @@ class AddictiveColorSubFilter extends ColorSubFilter with ImageSubFilter {
 
   ///Apply the [AddictiveColorSubFilter] to an Image.
   @override
-  void apply(Uint8List pixels, int width, int height) =>
-      image_filter_utils.addictiveColor(pixels, red, green, blue);
+  void apply(Uint8List pixels, int width, int height) => image_filter_utils.addictiveColor(pixels, red, green, blue);
 
   ///Apply the [AddictiveColorSubFilter] to a color.
   @override
-  RGBA applyFilter(RGBA color) =>
-      color_filter_utils.addictiveColor(color, red, green, blue);
+  RGBA applyFilter(RGBA color) => color_filter_utils.addictiveColor(color, red, green, blue);
 }
 
 ///The [RGBScaleSubFilter] class is a SubFilter class to scale RGB values of every pixels in an image.
@@ -139,13 +125,11 @@ class RGBScaleSubFilter extends ColorSubFilter with ImageSubFilter {
 
   ///Apply the [RGBScaleSubFilter] to an Image.
   @override
-  void apply(Uint8List pixels, int width, int height) =>
-      image_filter_utils.rgbScale(pixels, red, green, blue);
+  void apply(Uint8List pixels, int width, int height) => image_filter_utils.rgbScale(pixels, red, green, blue);
 
   ///Apply the [RGBScaleSubFilter] to a color.
   @override
-  RGBA applyFilter(RGBA color) =>
-      color_filter_utils.rgbScale(color, red, green, blue);
+  RGBA applyFilter(RGBA color) => color_filter_utils.rgbScale(color, red, green, blue);
 }
 
 ///The [RGBOverlaySubFilter] class is a SubFilter class to apply an overlay to an image.
@@ -158,13 +142,11 @@ class RGBOverlaySubFilter extends ColorSubFilter with ImageSubFilter {
 
   ///Apply the [RGBOverlaySubFilter] to an Image.
   @override
-  void apply(Uint8List pixels, int width, int height) =>
-      image_filter_utils.colorOverlay(pixels, red, green, blue, scale);
+  void apply(Uint8List pixels, int width, int height) => image_filter_utils.colorOverlay(pixels, red, green, blue, scale);
 
   ///Apply the [RGBOverlaySubFilter] to a color.
   @override
-  RGBA applyFilter(RGBA color) =>
-      color_filter_utils.colorOverlay(color, red, green, blue, scale);
+  RGBA applyFilter(RGBA color) => color_filter_utils.colorOverlay(color, red, green, blue, scale);
 }
 
 ///The [ConvolutionSubFilter] class is a ImageFilter class to apply a convolution to an image.
@@ -174,13 +156,12 @@ class ConvolutionSubFilter implements ImageSubFilter {
 
   ConvolutionSubFilter(this.weights, [this.bias = 0]);
 
-  ConvolutionSubFilter.fromKernel(ConvolutionKernel kernel)
-      : this(kernel.convolution, kernel.bias);
+  ConvolutionSubFilter.fromKernel(ConvolutionKernel kernel) : this(kernel.convolution, kernel.bias);
 
   ///Apply the [ConvolutionSubFilter] to an Image.
   @override
-  void apply(Uint8List pixels, int width, int height) => image_filter_utils
-      .convolute(pixels, width, height, _normalizeKernel(weights), bias);
+  void apply(Uint8List pixels, int width, int height) =>
+      image_filter_utils.convolute(pixels, width, height, _normalizeKernel(weights), bias);
 
   List<num> _normalizeKernel(List<num> kernel) {
     num sum = 0;

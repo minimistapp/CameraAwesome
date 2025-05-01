@@ -10,8 +10,7 @@ class PreviewCameraState extends CameraState {
     required CameraContext cameraContext,
   }) : super(cameraContext);
 
-  factory PreviewCameraState.from(CameraContext orchestrator) =>
-      PreviewCameraState(
+  factory PreviewCameraState.from(CameraContext orchestrator) => PreviewCameraState(
         cameraContext: orchestrator,
       );
 

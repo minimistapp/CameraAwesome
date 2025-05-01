@@ -41,8 +41,7 @@ class AwesomeFlashButton extends StatelessWidget {
                 theme: theme,
               );
             }),
-        onFlashTap = onFlashTap ??
-            ((sensorConfig, flashMode) => sensorConfig.switchCameraFlash());
+        onFlashTap = onFlashTap ?? ((sensorConfig, flashMode) => sensorConfig.switchCameraFlash());
 
   @override
   Widget build(BuildContext context) {

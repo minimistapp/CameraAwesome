@@ -46,19 +46,13 @@ class MediaCapture {
       ? true
       : captureRequest.when(
           single: (singleCaptureRequest) =>
-              singleCaptureRequest.file?.path.endsWith("jpg") == true ||
-              singleCaptureRequest.file?.mimeType?.contains("image") == true,
+              singleCaptureRequest.file?.path.endsWith("jpg") == true || singleCaptureRequest.file?.mimeType?.contains("image") == true,
           multiple: (multipleCaptureRequest) =>
-              multipleCaptureRequest.fileBySensor.values.first?.path
-                      .endsWith("jpg") ==
-                  true ||
-              multipleCaptureRequest.fileBySensor.values.first?.mimeType
-                      ?.contains("image") ==
-                  true,
+              multipleCaptureRequest.fileBySensor.values.first?.path.endsWith("jpg") == true ||
+              multipleCaptureRequest.fileBySensor.values.first?.mimeType?.contains("image") == true,
         );
 
   bool get isVideo => !isPicture;
 
-  bool get isRecordingVideo =>
-      isVideo && status == MediaCaptureStatus.capturing;
+  bool get isRecordingVideo => isVideo && status == MediaCaptureStatus.capturing;
 }

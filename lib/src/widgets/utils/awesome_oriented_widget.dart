@@ -67,8 +67,7 @@ class AwesomeOrientedWidgetState extends State<AwesomeOrientedWidget> {
   ///
   /// E.g: when being at 0.5 turns, should I go to 0.75 or to -0.25 to minimize
   /// the rotation ?
-  double shortestTurnsToReachTarget(
-      {required double current, required double target}) {
+  double shortestTurnsToReachTarget({required double current, required double target}) {
     final currentDegree = current * 360;
     final targetDegree = target * 360;
 

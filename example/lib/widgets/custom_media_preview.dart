@@ -22,9 +22,7 @@ class CustomMediaPreview extends StatelessWidget {
       child: AspectRatio(
         aspectRatio: 1,
         child: AwesomeBouncingWidget(
-          onTap: mediaCapture != null && onMediaTap != null
-              ? () => onMediaTap!(mediaCapture!)
-              : null,
+          onTap: mediaCapture != null && onMediaTap != null ? () => onMediaTap!(mediaCapture!) : null,
           child: ClipOval(
             child: Container(
               decoration: BoxDecoration(
@@ -64,8 +62,7 @@ class CustomMediaPreview extends StatelessWidget {
             return FutureBuilder<Uint8List>(
                 future: mediaCapture.captureRequest.when(
                   single: (single) => single.file!.readAsBytes(),
-                  multiple: (multiple) =>
-                      multiple.fileBySensor.values.first!.readAsBytes(),
+                  multiple: (multiple) => multiple.fileBySensor.values.first!.readAsBytes(),
                 ),
                 builder: (_, snapshot) {
                   if (snapshot.hasData) {
@@ -96,8 +93,7 @@ class CustomMediaPreview extends StatelessWidget {
                   File(
                     mediaCapture.captureRequest.when(
                       single: (single) => single.file!.path,
-                      multiple: (multiple) =>
-                          multiple.fileBySensor.values.first!.path,
+                      multiple: (multiple) => multiple.fileBySensor.values.first!.path,
                     ),
                   ),
                 ),
@@ -110,8 +106,7 @@ class CustomMediaPreview extends StatelessWidget {
             child: MiniVideoPlayer(
               filePath: mediaCapture.captureRequest.when(
                 single: (single) => single.file!.path,
-                multiple: (multiple) =>
-                    multiple.fileBySensor.values.first!.path,
+                multiple: (multiple) => multiple.fileBySensor.values.first!.path,
               ),
             ),
           );

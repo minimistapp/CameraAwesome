@@ -134,8 +134,7 @@ class _MyPreviewDecoratorWidget extends StatelessWidget {
                 if (!faceModelSnapshot.hasData) return const SizedBox();
                 // this is the transformation needed to convert the image to the preview
                 // Android mirrors the preview but the analysis image is not
-                final canvasTransformation = faceModelSnapshot.data!.img
-                    ?.getCanvasTransformation(preview);
+                final canvasTransformation = faceModelSnapshot.data!.img?.getCanvasTransformation(preview);
                 return CustomPaint(
                   painter: FaceDetectorPainter(
                     model: faceModelSnapshot.requireData,
@@ -175,9 +174,7 @@ class FaceDetectorPainter extends CustomPainter {
       canvas.applyTransformation(canvasTransformation!, size);
     }
     for (final Face face in model.faces) {
-      Map<FaceContourType, Path> paths = {
-        for (var fct in FaceContourType.values) fct: Path()
-      };
+      Map<FaceContourType, Path> paths = {for (var fct in FaceContourType.values) fct: Path()};
       face.contours.forEach((contourType, faceContour) {
         if (faceContour != null) {
           paths[contourType]!.addPolygon(
@@ -274,10 +271,5 @@ class FaceDetectionModel {
           croppedSize == other.croppedSize;
 
   @override
-  int get hashCode =>
-      faces.hashCode ^
-      absoluteImageSize.hashCode ^
-      rotation.hashCode ^
-      imageRotation.hashCode ^
-      croppedSize.hashCode;
+  int get hashCode => faces.hashCode ^ absoluteImageSize.hashCode ^ rotation.hashCode ^ imageRotation.hashCode ^ croppedSize.hashCode;
 }

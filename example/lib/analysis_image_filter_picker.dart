@@ -201,8 +201,7 @@ class _MyPreviewDecoratorWidget extends StatefulWidget {
   });
 
   @override
-  State<_MyPreviewDecoratorWidget> createState() =>
-      _MyPreviewDecoratorWidgetState();
+  State<_MyPreviewDecoratorWidget> createState() => _MyPreviewDecoratorWidgetState();
 }
 
 class _MyPreviewDecoratorWidgetState extends State<_MyPreviewDecoratorWidget> {
@@ -235,11 +234,9 @@ class _MyPreviewDecoratorWidgetState extends State<_MyPreviewDecoratorWidget> {
                         future: image.toJpeg(),
                         builder: (_, snapshot) {
                           if (snapshot.data == null && _currentJpeg == null) {
-                            return const Center(
-                                child: CircularProgressIndicator());
+                            return const Center(child: CircularProgressIndicator());
                           } else if (snapshot.data != null) {
-                            _currentJpeg =
-                                _applyFilterOnBytes(snapshot.data!.bytes);
+                            _currentJpeg = _applyFilterOnBytes(snapshot.data!.bytes);
                           }
                           return ImageAnalysisPreview(
                             currentJpeg: _currentJpeg!,
@@ -252,11 +249,9 @@ class _MyPreviewDecoratorWidgetState extends State<_MyPreviewDecoratorWidget> {
                         future: image.toJpeg(),
                         builder: (_, snapshot) {
                           if (snapshot.data == null && _currentJpeg == null) {
-                            return const Center(
-                                child: CircularProgressIndicator());
+                            return const Center(child: CircularProgressIndicator());
                           } else if (snapshot.data != null) {
-                            _currentJpeg =
-                                _applyFilterOnBytes(snapshot.data!.bytes);
+                            _currentJpeg = _applyFilterOnBytes(snapshot.data!.bytes);
                           }
                           return ImageAnalysisPreview(
                             currentJpeg: _currentJpeg!,
@@ -278,11 +273,9 @@ class _MyPreviewDecoratorWidgetState extends State<_MyPreviewDecoratorWidget> {
                         future: image.toJpeg(),
                         builder: (_, snapshot) {
                           if (snapshot.data == null && _currentJpeg == null) {
-                            return const Center(
-                                child: CircularProgressIndicator());
+                            return const Center(child: CircularProgressIndicator());
                           } else if (snapshot.data != null) {
-                            _currentJpeg =
-                                _applyFilterOnBytes(snapshot.data!.bytes);
+                            _currentJpeg = _applyFilterOnBytes(snapshot.data!.bytes);
                           }
                           return ImageAnalysisPreview(
                             currentJpeg: _currentJpeg!,
@@ -318,9 +311,7 @@ class _MyPreviewDecoratorWidgetState extends State<_MyPreviewDecoratorWidget> {
             itemCount: ImageFilter.values.length,
             itemBuilder: (_, index) {
               return Material(
-                color: _filter == ImageFilter.values[index]
-                    ? Colors.blue
-                    : Colors.white,
+                color: _filter == ImageFilter.values[index] ? Colors.blue : Colors.white,
                 child: InkWell(
                   onTap: _filter == ImageFilter.values[index]
                       ? null

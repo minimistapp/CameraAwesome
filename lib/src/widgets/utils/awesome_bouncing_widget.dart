@@ -23,8 +23,7 @@ class AwesomeBouncingWidget extends StatefulWidget {
   _AwesomeBouncingWidgetState createState() => _AwesomeBouncingWidgetState();
 }
 
-class _AwesomeBouncingWidgetState extends State<AwesomeBouncingWidget>
-    with SingleTickerProviderStateMixin {
+class _AwesomeBouncingWidgetState extends State<AwesomeBouncingWidget> with SingleTickerProviderStateMixin {
   late AnimationController? _controller;
   late double _scale;
 

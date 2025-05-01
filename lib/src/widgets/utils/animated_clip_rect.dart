@@ -32,8 +32,7 @@ class AnimatedClipRect extends StatefulWidget {
   });
 }
 
-class AnimatedClipRectState extends State<AnimatedClipRect>
-    with TickerProviderStateMixin {
+class AnimatedClipRectState extends State<AnimatedClipRect> with TickerProviderStateMixin {
   late AnimationController _animationController;
   late Animation _animation;
 
@@ -61,9 +60,7 @@ class AnimatedClipRectState extends State<AnimatedClipRect>
 
   @override
   Widget build(BuildContext context) {
-    widget.open
-        ? _animationController.forward()
-        : _animationController.reverse();
+    widget.open ? _animationController.forward() : _animationController.reverse();
 
     return ClipRect(
       child: AnimatedBuilder(

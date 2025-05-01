@@ -14,8 +14,7 @@ class AwesomeTheme {
     AwesomeButtonTheme? buttonTheme,
     Color? bottomActionsBackgroundColor,
   })  : buttonTheme = buttonTheme ?? AwesomeButtonTheme(),
-        bottomActionsBackgroundColor =
-            bottomActionsBackgroundColor ?? Colors.black54;
+        bottomActionsBackgroundColor = bottomActionsBackgroundColor ?? Colors.black54;
 
   @override
   bool operator ==(Object other) =>
@@ -26,8 +25,7 @@ class AwesomeTheme {
           bottomActionsBackgroundColor == other.bottomActionsBackgroundColor;
 
   @override
-  int get hashCode =>
-      buttonTheme.hashCode ^ bottomActionsBackgroundColor.hashCode;
+  int get hashCode => buttonTheme.hashCode ^ bottomActionsBackgroundColor.hashCode;
 
   AwesomeTheme copyWith({
     AwesomeButtonTheme? buttonTheme,
@@ -35,8 +33,7 @@ class AwesomeTheme {
   }) {
     return AwesomeTheme(
       buttonTheme: buttonTheme ?? this.buttonTheme,
-      bottomActionsBackgroundColor:
-          bottomActionsBackgroundColor ?? this.bottomActionsBackgroundColor,
+      bottomActionsBackgroundColor: bottomActionsBackgroundColor ?? this.bottomActionsBackgroundColor,
     );
   }
 }
@@ -60,9 +57,7 @@ class AwesomeButtonTheme {
     this.shape = const CircleBorder(),
     this.rotateWithCamera = true,
     ButtonBuilder? buttonBuilder,
-  }) : buttonBuilder = buttonBuilder ??
-            ((Widget child, VoidCallback onTap) =>
-                AwesomeBouncingWidget(onTap: onTap, child: child));
+  }) : buttonBuilder = buttonBuilder ?? ((Widget child, VoidCallback onTap) => AwesomeBouncingWidget(onTap: onTap, child: child));
 
   @override
   bool operator ==(Object other) =>

@@ -91,7 +91,6 @@ class AwesomeFocusPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant AwesomeFocusPainter oldDelegate) {
-    return rectSize != oldDelegate.rectSize ||
-        tapPosition != oldDelegate.tapPosition;
+    return rectSize != oldDelegate.rectSize || tapPosition != oldDelegate.tapPosition;
   }
 }

@@ -1,11 +1,6 @@
 enum InputAnalysisImageFormat { yuv_420, bgra8888, jpeg, nv21, unknown }
 
-enum InputAnalysisImageRotation {
-  rotation0deg,
-  rotation90deg,
-  rotation180deg,
-  rotation270deg
-}
+enum InputAnalysisImageRotation { rotation0deg, rotation90deg, rotation180deg, rotation270deg }
 
 InputAnalysisImageFormat inputAnalysisImageFormatParser(String value) {
   switch (value) {

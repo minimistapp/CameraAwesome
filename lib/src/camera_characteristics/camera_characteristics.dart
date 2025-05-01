@@ -7,7 +7,6 @@ class CameraCharacteristics {
   static Future<bool> isVideoRecordingAndImageAnalysisSupported(
     SensorPosition sensor,
   ) {
-    return CameraInterface().isVideoRecordingAndImageAnalysisSupported(
-        PigeonSensorPosition.values.byName(sensor.name));
+    return CameraInterface().isVideoRecordingAndImageAnalysisSupported(PigeonSensorPosition.values.byName(sensor.name));
   }
 }

@@ -30,17 +30,13 @@ enum CameraRunningState { starting, started, stopping, stopped }
 
 /// Don't use this class directly. Instead, use [CameraAwesomeBuilder].
 class CamerawesomePlugin {
-  static const EventChannel _orientationChannel =
-      EventChannel('camerawesome/orientation');
+  static const EventChannel _orientationChannel = EventChannel('camerawesome/orientation');
 
-  static const EventChannel _permissionsChannel =
-      EventChannel('camerawesome/permissions');
+  static const EventChannel _permissionsChannel = EventChannel('camerawesome/permissions');
 
-  static const EventChannel _imagesChannel =
-      EventChannel('camerawesome/images');
+  static const EventChannel _imagesChannel = EventChannel('camerawesome/images');
 
-  static const EventChannel _physicalButtonChannel =
-      EventChannel('camerawesome/physical_button');
+  static const EventChannel _physicalButtonChannel = EventChannel('camerawesome/physical_button');
 
   static Stream<CameraOrientations>? _orientationStream;
 
@@ -55,16 +51,13 @@ class CamerawesomePlugin {
   /// Set it to true to print dart logs from camerawesome
   static bool printLogs = false;
 
-  static Future<bool?> checkiOSPermissions(
-      List<String?> permissionsName) async {
-    final permissions =
-        await CameraInterface().checkPermissions(permissionsName);
+  static Future<bool?> checkiOSPermissions(List<String?> permissionsName) async {
+    final permissions = await CameraInterface().checkPermissions(permissionsName);
     return permissions.isEmpty;
   }
 
   static Future<bool> start() async {
-    if (currentState == CameraRunningState.started ||
-        currentState == CameraRunningState.starting) {
+    if (currentState == CameraRunningState.started || currentState == CameraRunningState.starting) {
       return true;
     }
     currentState = CameraRunningState.starting;
@@ -74,8 +67,7 @@ class CamerawesomePlugin {
   }
 
   static Future<bool> stop() async {
-    if (currentState == CameraRunningState.stopped ||
-        currentState == CameraRunningState.stopping) {
+    if (currentState == CameraRunningState.stopped || currentState == CameraRunningState.stopping) {
       return true;
     }
     _orientationStream = null;
@@ -93,8 +85,7 @@ class CamerawesomePlugin {
   static Stream<CameraOrientations>? getNativeOrientation() {
     _orientationStream ??= _orientationChannel
         .receiveBroadcastStream('orientationChannel')
-        .transform(StreamTransformer<dynamic, CameraOrientations>.fromHandlers(
-            handleData: (data, sink) {
+        .transform(StreamTransformer<dynamic, CameraOrientations>.fromHandlers(handleData: (data, sink) {
       CameraOrientations? newOrientation;
       switch (data) {
         case 'LANDSCAPE_LEFT':
@@ -119,9 +110,7 @@ class CamerawesomePlugin {
   static Stream<CameraPhysicalButton>? listenPhysicalButton() {
     _physicalButtonStream ??= _physicalButtonChannel
         .receiveBroadcastStream('physicalButtonChannel')
-        .transform(
-            StreamTransformer<dynamic, CameraPhysicalButton>.fromHandlers(
-                handleData: (data, sink) {
+        .transform(StreamTransformer<dynamic, CameraPhysicalButton>.fromHandlers(handleData: (data, sink) {
       CameraPhysicalButton? physicalButton;
       switch (data) {
         case 'VOLUME_UP':
@@ -140,8 +129,7 @@ class CamerawesomePlugin {
   static Stream<bool>? listenPermissionResult() {
     _permissionsStream ??= _permissionsChannel
         .receiveBroadcastStream('permissionsChannel')
-        .transform(StreamTransformer<dynamic, bool>.fromHandlers(
-            handleData: (data, sink) {
+        .transform(StreamTransformer<dynamic, bool>.fromHandlers(handleData: (data, sink) {
       sink.add(data);
     }));
     return _permissionsStream;
@@ -162,8 +150,7 @@ class CamerawesomePlugin {
   }
 
   static Stream<Map<String, dynamic>>? listenCameraImages() {
-    _imagesStream ??=
-        _imagesChannel.receiveBroadcastStream('imagesChannel').transform(
+    _imagesStream ??= _imagesChannel.receiveBroadcastStream('imagesChannel').transform(
       StreamTransformer<dynamic, Map<String, dynamic>>.fromHandlers(
         handleData: (data, sink) {
           sink.add(Map<String, dynamic>.from(data));
@@ -206,10 +193,7 @@ class CamerawesomePlugin {
 
   static Future<List<Size>> getSizes() async {
     final availableSizes = await CameraInterface().availableSizes();
-    return availableSizes
-        .whereType<PreviewSize>()
-        .map((e) => Size(e.width, e.height))
-        .toList();
+    return availableSizes.whereType<PreviewSize>().map((e) => Size(e.width, e.height)).toList();
   }
 
   static Future<num?> getPreviewTexture(final int cameraPosition) {
@@ -217,8 +201,7 @@ class CamerawesomePlugin {
   }
 
   static Future<void> setPreviewSize(int width, int height) {
-    return CameraInterface().setPreviewSize(
-        PreviewSize(width: width.toDouble(), height: height.toDouble()));
+    return CameraInterface().setPreviewSize(PreviewSize(width: width.toDouble(), height: height.toDouble()));
   }
 
   static Future<void> refresh() {
@@ -269,8 +252,7 @@ class CamerawesomePlugin {
       single: (single) => {
         single.sensor.toPigeon(): single.file?.path,
       },
-      multiple: (multiple) => multiple.fileBySensor
-          .map((key, value) => MapEntry(key.toPigeon(), value?.path)),
+      multiple: (multiple) => multiple.fileBySensor.map((key, value) => MapEntry(key.toPigeon(), value?.path)),
     );
     if (Platform.isAndroid) {
       return CameraInterface().recordVideo(
@@ -341,13 +323,9 @@ class CamerawesomePlugin {
     return CameraInterface().setSensor(
       sensors.map((e) {
         return PigeonSensor(
-          position: e?.position?.name != null
-              ? PigeonSensorPosition.values.byName(e!.position!.name)
-              : PigeonSensorPosition.unknown,
+          position: e?.position?.name != null ? PigeonSensorPosition.values.byName(e!.position!.name) : PigeonSensorPosition.unknown,
           deviceId: e?.deviceId,
-          type: e?.type?.name != null
-              ? PigeonSensorType.values.byName(e!.type!.name)
-              : PigeonSensorType.unknown,
+          type: e?.type?.name != null ? PigeonSensorType.values.byName(e!.type!.name) : PigeonSensorType.unknown,
         );
       }).toList(),
     );
@@ -481,13 +459,8 @@ class CamerawesomePlugin {
   }) async {
     try {
       if (Platform.isAndroid) {
-        return CameraInterface()
-            .requestPermissions(saveGpsLocation)
-            .then((givenPermissions) {
-          return givenPermissions
-              .map((e) => CamerAwesomePermission.values
-                  .firstWhere((element) => element.name == e))
-              .toList();
+        return CameraInterface().requestPermissions(saveGpsLocation).then((givenPermissions) {
+          return givenPermissions.map((e) => CamerAwesomePermission.values.firstWhere((element) => element.name == e)).toList();
         });
       } else if (Platform.isIOS) {
         // TODO iOS Return only permissions that were given
@@ -500,8 +473,7 @@ class CamerawesomePlugin {
           permissions.add("camera");
         }
 
-        return CamerawesomePlugin.checkiOSPermissions(permissions)
-            .then((givenPermissions) => CamerAwesomePermission.values);
+        return CamerawesomePlugin.checkiOSPermissions(permissions).then((givenPermissions) => CamerAwesomePermission.values);
       }
     } catch (e) {
       printLog("failed to check permissions here...");

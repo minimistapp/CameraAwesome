@@ -47,9 +47,7 @@ class CameraPage extends StatelessWidget {
           previewDecoratorBuilder: (state, _) {
             return Center(
               child: FutureBuilder<bool>(
-                  future: CameraCharacteristics
-                      .isVideoRecordingAndImageAnalysisSupported(
-                          sensor.position!),
+                  future: CameraCharacteristics.isVideoRecordingAndImageAnalysisSupported(sensor.position!),
                   builder: (_, snapshot) {
                     debugPrint("___---___--- received result ${snapshot.data}");
                     if (snapshot.data == null) {

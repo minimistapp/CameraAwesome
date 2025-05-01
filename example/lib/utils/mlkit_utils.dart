@@ -31,8 +31,7 @@ extension MLKitUtils on AnalysisImage {
     )!;
   }
 
-  InputImageRotation get inputImageRotation =>
-      InputImageRotation.values.byName(rotation.name);
+  InputImageRotation get inputImageRotation => InputImageRotation.values.byName(rotation.name);
 
   InputImageFormat get inputImageFormat {
     switch (format) {

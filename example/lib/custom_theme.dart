@@ -59,8 +59,7 @@ class CameraPage extends StatelessWidget {
           ),
         ),
         onMediaTap: (mediaCapture) {
-          mediaCapture.captureRequest
-              .when(single: (single) => single.file?.open());
+          mediaCapture.captureRequest.when(single: (single) => single.file?.open());
         },
       ),
     );

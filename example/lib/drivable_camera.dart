@@ -18,9 +18,7 @@ class DrivableCamera extends StatelessWidget {
         body: CameraAwesomeBuilder.awesome(
           saveConfig: saveConfig,
           onMediaTap: (media) {},
-          sensorConfig: sensors.length == 1
-              ? SensorConfig.single(sensor: sensors.first)
-              : SensorConfig.multiple(sensors: sensors),
+          sensorConfig: sensors.length == 1 ? SensorConfig.single(sensor: sensors.first) : SensorConfig.multiple(sensors: sensors),
         ),
       ),
     );

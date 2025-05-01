@@ -142,8 +142,7 @@ class CameraContext {
 
   Future<void> setSensorConfig(SensorConfig newConfig) async {
     sensorConfigController.sink.add(newConfig);
-    if (sensorConfigController.hasValue &&
-        !identical(newConfig, sensorConfigController.value)) {
+    if (sensorConfigController.hasValue && !identical(newConfig, sensorConfigController.value)) {
       sensorConfigController.value.dispose();
     }
     await CamerawesomePlugin.setSensor(
@@ -201,8 +200,7 @@ class CameraContext {
       return CamerawesomePlugin.focusOnPoint(
         position: pixelPosition,
         previewSize: pixelPreviewSize,
-        androidFocusSettings: androidFocusSettings ??
-            AndroidFocusSettings(autoCancelDurationInMillis: 5000),
+        androidFocusSettings: androidFocusSettings ?? AndroidFocusSettings(autoCancelDurationInMillis: 5000),
       );
     }
   }
@@ -216,7 +214,6 @@ class CameraContext {
   }
 
   Future<int?> previewTextureId(int cameraPosition) {
-    return CamerawesomePlugin.getPreviewTexture(cameraPosition)
-        .then(((value) => value?.toInt()));
+    return CamerawesomePlugin.getPreviewTexture(cameraPosition).then(((value) => value?.toInt()));
   }
 }

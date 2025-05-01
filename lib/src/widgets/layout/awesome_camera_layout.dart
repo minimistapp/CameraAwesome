@@ -39,8 +39,7 @@ class AwesomeCameraLayout extends StatelessWidget {
               ],
             )),
         topActions = topActions ?? AwesomeTopActions(state: state),
-        bottomActions = bottomActions ??
-            AwesomeBottomActions(state: state, onMediaTap: onMediaTap);
+        bottomActions = bottomActions ?? AwesomeBottomActions(state: state, onMediaTap: onMediaTap);
 
   @override
   Widget build(BuildContext context) {

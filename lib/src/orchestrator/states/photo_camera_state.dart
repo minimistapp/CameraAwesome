@@ -26,8 +26,7 @@ class PhotoCameraState extends CameraState {
     required this.filePathBuilder,
     required this.exifPreferences,
   }) : super(cameraContext) {
-    _saveGpsLocationController =
-        BehaviorSubject.seeded(exifPreferences.saveGPSLocation);
+    _saveGpsLocationController = BehaviorSubject.seeded(exifPreferences.saveGPSLocation);
     saveGpsLocation$ = _saveGpsLocationController.stream;
   }
 
@@ -70,8 +69,7 @@ class PhotoCameraState extends CameraState {
     OnPhotoCallback? onPhoto,
     OnPhotoFailedCallback? onPhotoFailed,
   }) async {
-    CaptureRequest captureRequest =
-        await filePathBuilder(sensorConfig.sensors..nonNulls.toList());
+    CaptureRequest captureRequest = await filePathBuilder(sensorConfig.sensors..nonNulls.toList());
     final mediaCapture = MediaCapture.capturing(captureRequest: captureRequest);
     if (!mediaCapture.isPicture) {
       throw ("CaptureRequest must be a picture. ${captureRequest.when(
@@ -105,8 +103,7 @@ class PhotoCameraState extends CameraState {
 
   bool get hasFilters => cameraContext.availableFilters?.isNotEmpty ?? false;
 
-  List<AwesomeFilter>? get availableFilters =>
-      cameraContext.availableFilters?.toList();
+  List<AwesomeFilter>? get availableFilters => cameraContext.availableFilters?.toList();
 
   /// PRIVATES
 

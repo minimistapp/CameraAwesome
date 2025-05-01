@@ -7,11 +7,9 @@ import 'package:open_filex/open_filex.dart';
 
 Future<String> path(CaptureMode captureMode) async {
   final Directory extDir = await getTemporaryDirectory();
-  final testDir =
-      await Directory('${extDir.path}/test').create(recursive: true);
+  final testDir = await Directory('${extDir.path}/test').create(recursive: true);
   final String fileExtension = captureMode == CaptureMode.photo ? 'jpg' : 'mp4';
-  final String filePath =
-      '${testDir.path}/${DateTime.now().millisecondsSinceEpoch}.$fileExtension';
+  final String filePath = '${testDir.path}/${DateTime.now().millisecondsSinceEpoch}.$fileExtension';
   return filePath;
 }
 

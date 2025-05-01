@@ -160,8 +160,7 @@ class _BarcodeDisplayWidgetState extends State<_BarcodeDisplayWidget> {
                       padding: const EdgeInsets.only(top: 8),
                       controller: widget.scrollController,
                       itemCount: value.data!.length,
-                      separatorBuilder: (context, index) =>
-                          const SizedBox(height: 4),
+                      separatorBuilder: (context, index) => const SizedBox(height: 4),
                       itemBuilder: (context, index) => Text(value.data![index]),
                     ),
             ),

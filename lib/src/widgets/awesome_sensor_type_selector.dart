@@ -10,8 +10,7 @@ class AwesomeSensorTypeSelector extends StatefulWidget {
   });
 
   @override
-  State<AwesomeSensorTypeSelector> createState() =>
-      _AwesomeSensorTypeSelectorState();
+  State<AwesomeSensorTypeSelector> createState() => _AwesomeSensorTypeSelectorState();
 }
 
 class _AwesomeSensorTypeSelectorState extends State<AwesomeSensorTypeSelector> {
@@ -48,8 +47,7 @@ class _AwesomeSensorTypeSelectorState extends State<AwesomeSensorTypeSelector> {
 
     if (sensorConfigSnapshot.data != null &&
         sensorConfigSnapshot.data!.sensors.isNotEmpty &&
-        sensorConfigSnapshot.data!.sensors.first.position ==
-            SensorPosition.front) {
+        sensorConfigSnapshot.data!.sensors.first.position == SensorPosition.front) {
       return const SizedBox.shrink();
     }
 
@@ -61,16 +59,14 @@ class _AwesomeSensorTypeSelectorState extends State<AwesomeSensorTypeSelector> {
           return const SizedBox.shrink();
         }
 
-        if (_sensorDeviceData == null ||
-            _sensorDeviceData!.availableBackSensors <= 0) {
+        if (_sensorDeviceData == null || _sensorDeviceData!.availableBackSensors <= 0) {
           return const SizedBox.shrink();
         }
 
         return Container(
           height: 50,
           decoration: BoxDecoration(
-            color: _sensorDeviceData != null &&
-                    _sensorDeviceData!.availableBackSensors > 1
+            color: _sensorDeviceData != null && _sensorDeviceData!.availableBackSensors > 1
                 ? Colors.black.withValues(alpha: 0.2)
                 : Colors.transparent,
             borderRadius: BorderRadius.circular(30),
@@ -87,8 +83,7 @@ class _AwesomeSensorTypeSelectorState extends State<AwesomeSensorTypeSelector> {
                     sensorType: SensorType.ultraWideAngle,
                     isSelected: snapshot.data == SensorType.ultraWideAngle,
                     onTap: () {
-                      widget.state.setSensorType(0, SensorType.ultraWideAngle,
-                          _sensorDeviceData!.ultraWideAngle!.uid);
+                      widget.state.setSensorType(0, SensorType.ultraWideAngle, _sensorDeviceData!.ultraWideAngle!.uid);
                     },
                   ),
                 if (_sensorDeviceData?.wideAngle != null)
@@ -96,8 +91,7 @@ class _AwesomeSensorTypeSelectorState extends State<AwesomeSensorTypeSelector> {
                     sensorType: SensorType.wideAngle,
                     isSelected: snapshot.data == SensorType.wideAngle,
                     onTap: () {
-                      widget.state.setSensorType(0, SensorType.wideAngle,
-                          _sensorDeviceData!.wideAngle!.uid);
+                      widget.state.setSensorType(0, SensorType.wideAngle, _sensorDeviceData!.wideAngle!.uid);
                     },
                   ),
                 if (_sensorDeviceData?.telephoto != null)
@@ -105,8 +99,7 @@ class _AwesomeSensorTypeSelectorState extends State<AwesomeSensorTypeSelector> {
                     sensorType: SensorType.telephoto,
                     isSelected: snapshot.data == SensorType.telephoto,
                     onTap: () {
-                      widget.state.setSensorType(0, SensorType.telephoto,
-                          _sensorDeviceData!.telephoto!.uid);
+                      widget.state.setSensorType(0, SensorType.telephoto, _sensorDeviceData!.telephoto!.uid);
                     },
                   ),
                 // Text(snapshot.data.toString()),

@@ -22,15 +22,13 @@ class AwesomePauseResumeButton extends StatefulWidget {
   }
 }
 
-class _AwesomePauseResumeButtonState extends State<AwesomePauseResumeButton>
-    with SingleTickerProviderStateMixin {
+class _AwesomePauseResumeButtonState extends State<AwesomePauseResumeButton> with SingleTickerProviderStateMixin {
   late AnimationController _controller;
   late Animation<double> _animation;
 
   @override
   void initState() {
-    _controller = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 300));
+    _controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 300));
     _animation = Tween<double>(begin: 0.0, end: 1.0).animate(_controller);
     super.initState();
   }

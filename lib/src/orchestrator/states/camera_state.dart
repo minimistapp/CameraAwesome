@@ -81,8 +81,7 @@ abstract class CameraState {
       // new : [wide, front, telephoto]
       final newSensorsCopy = [...previous.sensors.nonNulls];
       next = SensorConfig.multiple(
-        sensors: newSensorsCopy
-          ..insert(0, newSensorsCopy.removeAt(newSensorsCopy.length - 1)),
+        sensors: newSensorsCopy..insert(0, newSensorsCopy.removeAt(newSensorsCopy.length - 1)),
         // TODO Initial values are not set in native when set like this
         aspectRatio: aspectRatio ?? CameraAspectRatios.ratio_4_3,
         zoom: zoom ?? 0.0,
@@ -190,6 +189,5 @@ abstract class CameraState {
     return cameraContext.previewTextureId(cameraPosition);
   }
 
-  AnalysisController? get analysisController =>
-      cameraContext.analysisController;
+  AnalysisController? get analysisController => cameraContext.analysisController;
 }

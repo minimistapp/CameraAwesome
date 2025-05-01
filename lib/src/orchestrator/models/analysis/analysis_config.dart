@@ -78,6 +78,5 @@ class CupertinoAnalysisOptions {
     required this.outputFormat,
   });
 
-  const CupertinoAnalysisOptions.bgra8888()
-      : this._(outputFormat: InputAnalysisImageFormat.bgra8888);
+  const CupertinoAnalysisOptions.bgra8888() : this._(outputFormat: InputAnalysisImageFormat.bgra8888);
 }

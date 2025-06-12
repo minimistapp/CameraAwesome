@@ -81,8 +81,7 @@ abstract class CameraState {
       // new : [wide, front, telephoto]
       final newSensorsCopy = [...previous.sensors.nonNulls];
       next = SensorConfig.multiple(
-        sensors: newSensorsCopy
-          ..insert(0, newSensorsCopy.removeAt(newSensorsCopy.length - 1)),
+        sensors: newSensorsCopy..insert(0, newSensorsCopy.removeAt(newSensorsCopy.length - 1)),
         // TODO Initial values are not set in native when set like this
         aspectRatio: aspectRatio ?? CameraAspectRatios.ratio_4_3,
         zoom: zoom ?? 0.0,
@@ -127,25 +126,13 @@ abstract class CameraState {
           .toList(),
       aspectRatio: previous.aspectRatio,
       flashMode: previous.flashMode,
-      zoom: previous.zoom,
+      zoom: 0.0,
     );
     cameraContext.setSensorConfig(next);
-  }
 
-  // PigeonSensorType? _sensorTypeFromPigeon(SensorType type) {
-  //   switch (type) {
-  //     case SensorType.wideAngle:
-  //       return PigeonSensorType.wideAngle;
-  //     case SensorType.telephoto:
-  //       return PigeonSensorType.telephoto;
-  //     case SensorType.trueDepth:
-  //       return PigeonSensorType.trueDepth;
-  //     case SensorType.ultraWideAngle:
-  //       return PigeonSensorType.ultraWideAngle;
-  //     default:
-  //       return null;
-  //   }
-  // }
+    // Also send a native call to reset the zoom factor on the new device.
+    next.setZoom(0.0);
+  }
 
   void toggleFilterSelector() {
     cameraContext.toggleFilterSelector();
@@ -190,6 +177,5 @@ abstract class CameraState {
     return cameraContext.previewTextureId(cameraPosition);
   }
 
-  AnalysisController? get analysisController =>
-      cameraContext.analysisController;
+  AnalysisController? get analysisController => cameraContext.analysisController;
 }

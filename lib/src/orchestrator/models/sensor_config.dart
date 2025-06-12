@@ -34,8 +34,7 @@ class SensorConfig {
   late BehaviorSubject<double> _zoomController;
 
   /// Use this stream to debounce brightness events
-  final BehaviorSubject<double> _brightnessController =
-      BehaviorSubject<double>();
+  final BehaviorSubject<double> _brightnessController = BehaviorSubject<double>();
   StreamSubscription? _brightnessSubscription;
 
   SensorConfig.single({
@@ -73,8 +72,7 @@ class SensorConfig {
     _flashModeController = BehaviorSubject<FlashMode>.seeded(flash);
     flashMode$ = _flashModeController.stream;
 
-    _sensorTypeController = BehaviorSubject<SensorType>.seeded(
-        sensors.first.type ?? SensorType.wideAngle);
+    _sensorTypeController = BehaviorSubject<SensorType>.seeded(sensors.first.type ?? SensorType.wideAngle);
     sensorType$ = _sensorTypeController.stream;
 
     _zoomController = BehaviorSubject<double>.seeded(currentZoom);
@@ -92,6 +90,7 @@ class SensorConfig {
     if (zoom < 0 || zoom > 1) {
       throw "Zoom value must be between 0 and 1";
     }
+    print('[Camerawesome] Setting zoom to normalized value: $zoom');
     await CamerawesomePlugin.setZoom(zoom);
     if (!_zoomController.isClosed) {
       _zoomController.sink.add(zoom);

@@ -10,23 +10,30 @@ class PreviewSize {
 class PreviewData {
   double? textureId;
   PreviewSize? size;
+
+  PreviewData({
+    this.textureId,
+    this.size,
+  });
 }
 
 class ExifPreferences {
   bool saveGPSLocation;
 
-  ExifPreferences({required this.saveGPSLocation});
+  ExifPreferences(this.saveGPSLocation);
 }
 
 class PigeonSensor {
   final PigeonSensorPosition position;
   final PigeonSensorType type;
   final String? deviceId;
+  final double? zoomFactor;
 
   PigeonSensor({
     this.position = PigeonSensorPosition.unknown,
     this.type = PigeonSensorType.unknown,
     this.deviceId,
+    this.zoomFactor,
   });
 }
 
@@ -34,6 +41,7 @@ enum PigeonSensorPosition {
   back,
   front,
   unknown,
+  external,
 }
 
 /// Video recording quality, from [sd] to [uhd], with [highest] and [lowest] to
@@ -166,12 +174,16 @@ class PigeonSensorTypeDevice {
   /// An identifier that uniquely identifies the device.
   final String uid;
 
+  /// The zoom factor relative to the wide-angle camera.
+  final double? zoomFactor;
+
   PigeonSensorTypeDevice({
     required this.sensorType,
     required this.name,
     required this.iso,
     required this.flashAvailable,
     required this.uid,
+    this.zoomFactor,
   });
 }
 
@@ -238,7 +250,7 @@ class AndroidFocusSettings {
 }
 
 class PlaneWrapper {
-  final Uint8List bytes;
+  final List<int?> bytes;
   final int bytesPerRow;
   final int? bytesPerPixel;
   final int? width;
@@ -259,7 +271,7 @@ enum AnalysisRotation {
   rotation0deg,
   rotation90deg,
   rotation180deg,
-  rotation270deg
+  rotation270deg;
 }
 
 class CropRectWrapper {
@@ -278,7 +290,7 @@ class CropRectWrapper {
 
 class AnalysisImageWrapper {
   final AnalysisImageFormat format;
-  final Uint8List? bytes;
+  final List<int?>? bytes;
   final int width;
   final int height;
   final List<PlaneWrapper?>? planes;

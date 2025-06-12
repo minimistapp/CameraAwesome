@@ -127,7 +127,7 @@ extension AnalysisUnwrapper on AnalysisImageWrapper {
         return JpegImage(
           height: height,
           width: width,
-          bytes: bytes!,
+          bytes: Uint8List.fromList(bytes!.whereType<int>().toList()),
           cropRect: cropRect != null
               ? Rect.fromLTWH(
                   cropRect!.left.toDouble(),
@@ -143,7 +143,7 @@ extension AnalysisUnwrapper on AnalysisImageWrapper {
         return Nv21Image(
           height: height,
           width: width,
-          bytes: bytes!,
+          bytes: Uint8List.fromList(bytes!.whereType<int>().toList()),
           planes: planes!.map((p) => p!.unwrap()).toList(),
           cropRect: Rect.fromLTWH(
             cropRect!.left.toDouble(),
@@ -181,7 +181,7 @@ extension PlaneUnwrap on PlaneWrapper {
     return ImagePlane(
       width: width,
       height: height,
-      bytes: bytes,
+      bytes: Uint8List.fromList(bytes.whereType<int>().toList()),
       bytesPerRow: bytesPerRow,
       bytesPerPixel: bytesPerPixel,
     );

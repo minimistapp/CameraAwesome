@@ -3,16 +3,19 @@ package com.apparence.camerawesome.cameraX
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.*
 import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.location.Location
 import android.os.*
 import android.util.Log
 import android.util.Rational
 import android.util.Size
 import androidx.camera.camera2.Camera2Config
+import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -28,6 +31,8 @@ import com.apparence.camerawesome.buttons.PhysicalButtonsHandler
 import com.apparence.camerawesome.buttons.PlayerService
 import com.apparence.camerawesome.models.FlashMode
 import com.apparence.camerawesome.sensors.SensorOrientationListener
+import com.apparence.camerawesome.utils.getSensorType
+import com.apparence.camerawesome.utils.hasFlashUnit
 import com.apparence.camerawesome.utils.isMultiCamSupported
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
@@ -41,14 +46,13 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.view.TextureRegistry
 import io.reactivex.rxjava3.disposables.Disposable
 import io.reactivex.rxjava3.subjects.BehaviorSubject
-import kotlinx.coroutines.*
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.math.roundToInt
-
+import kotlinx.coroutines.*
 
 enum class CaptureModes {
     PHOTO, VIDEO, PREVIEW, ANALYSIS_ONLY,
@@ -547,12 +551,58 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware {
         }
     }
 
+    @OptIn(ExperimentalCamera2Interop::class)
+    private fun getSensors(cameraManager: CameraManager, lensFacing: Int): List<PigeonSensorTypeDevice> {
+        val cameraProvider = getCameraProvider()
+
+        val cameraSelector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
+        val cameraInfos = cameraSelector.filter(cameraProvider.availableCameraInfos)
+
+        val characteristics = cameraInfos.map {
+            val cameraId = Camera2CameraInfo.from(it).cameraId
+            cameraManager.getCameraCharacteristics(cameraId) to it
+        }
+
+        val wideAngleLens = characteristics.firstOrNull { (char, _) ->
+            val focalLengths =
+                char.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+            focalLengths != null && focalLengths.isNotEmpty() && focalLengths.minOrNull()!! < 4.0
+        }
+
+        return characteristics.mapNotNull { (cameraCharacteristics, cameraInfo) ->
+            val focalLengths =
+                cameraCharacteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+            if (focalLengths == null || focalLengths.isEmpty()) {
+                return@mapNotNull null
+            }
+            val zoomFactor = if (wideAngleLens != null) {
+                val wideAngleFocalLength =
+                    wideAngleLens.first.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                        ?.minOrNull() ?: 1.0f
+                focalLengths.minOrNull()!! / wideAngleFocalLength
+            } else {
+                1.0f
+            }
+
+            PigeonSensorTypeDevice(
+                sensorType = Camera2CameraInfo.from(cameraInfo).getSensorType(),
+                name = Camera2CameraInfo.from(cameraInfo).getSensorType().name,
+                iso = 0.0,
+                flashAvailable = cameraCharacteristics.hasFlashUnit(),
+                uid = cameraCharacteristics.toString(),
+                zoomFactor = zoomFactor.toDouble(),
+            )
+        }
+    }
+
     override fun getFrontSensors(): List<PigeonSensorTypeDevice> {
-        TODO("Not yet implemented")
+        val cameraManager = activity!!.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        return getSensors(cameraManager, CameraSelector.LENS_FACING_FRONT)
     }
 
     override fun getBackSensors(): List<PigeonSensorTypeDevice> {
-        TODO("Not yet implemented")
+        val cameraManager = activity!!.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        return getSensors(cameraManager, CameraSelector.LENS_FACING_BACK)
     }
 
     override fun pauseVideoRecording() {
@@ -569,8 +619,11 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware {
 
 
     override fun start(): Boolean {
-        // Already started on setUp
-        return true
+        if (cameraState.currentCaptureMode != CaptureModes.ANALYSIS_ONLY) {
+            // Already started on setUp
+            return true
+        }
+        return false
     }
 
     override fun stop(): Boolean {

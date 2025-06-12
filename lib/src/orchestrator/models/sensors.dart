@@ -1,4 +1,5 @@
 import 'package:camerawesome/camerawesome_plugin.dart';
+import 'package:camerawesome/pigeon.dart';
 
 enum CameraAspectRatios {
   ratio_16_9,
@@ -11,6 +12,35 @@ enum CameraAspectRatios {
 enum SensorPosition {
   front,
   back,
+  unknown,
+}
+
+extension SensorPositionExt on SensorPosition {
+  PigeonSensorPosition toPigeon() {
+    switch (this) {
+      case SensorPosition.back:
+        return PigeonSensorPosition.back;
+      case SensorPosition.front:
+        return PigeonSensorPosition.front;
+      case SensorPosition.unknown:
+      default:
+        return PigeonSensorPosition.unknown;
+    }
+  }
+}
+
+extension PigeonSensorPositionExt on PigeonSensorPosition {
+  SensorPosition toSensorPosition() {
+    switch (this) {
+      case PigeonSensorPosition.back:
+        return SensorPosition.back;
+      case PigeonSensorPosition.front:
+        return SensorPosition.front;
+      case PigeonSensorPosition.unknown:
+      default:
+        return SensorPosition.unknown;
+    }
+  }
 }
 
 class Sensor {

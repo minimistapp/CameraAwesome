@@ -29,29 +29,28 @@ import java.util.concurrent.Executor
 /// Hold the settings of the camera and use cases in this class and
 /// call updateLifecycle() to refresh the state
 data class CameraXState(
-    private var cameraProvider: ProcessCameraProvider,
+    val cameraProvider: ProcessCameraProvider,
     val textureEntries: Map<String, TextureRegistry.SurfaceTextureEntry>,
-//    var cameraSelector: CameraSelector,
     var sensors: List<PigeonSensor>,
     var imageCaptures: MutableList<ImageCapture> = mutableListOf(),
     var videoCaptures: MutableMap<PigeonSensor, VideoCapture<Recorder>> = mutableMapOf(),
     var previews: MutableList<Preview>? = null,
     var concurrentCamera: ConcurrentCamera? = null,
     var previewCamera: Camera? = null,
-    private var currentCaptureMode: CaptureModes,
+    var currentCaptureMode: CaptureModes,
     var enableAudioRecording: Boolean = true,
     var recordings: MutableList<Recording>? = null,
-    var enableImageStream: Boolean = false,
+    var enableImageStream: Boolean,
     var photoSize: Size? = null,
     var previewSize: Size? = null,
     var aspectRatio: Int? = null,
     // Rational is used only in ratio 1:1
     var rational: Rational = Rational(3, 4),
     var flashMode: FlashMode = FlashMode.NONE,
-    val onStreamReady: (state: CameraXState) -> Unit,
-    var mirrorFrontCamera: Boolean = false,
+    val onStreamReady: (CameraXState) -> Unit,
+    var mirrorFrontCamera: Boolean,
     val videoRecordingQuality: VideoRecordingQuality?,
-    val videoOptions: AndroidVideoOptions?,
+    var videoOptions: AndroidVideoOptions? = null,
 ) : EventChannel.StreamHandler, SensorOrientation {
 
     var imageAnalysisBuilder: ImageAnalysisBuilder? = null

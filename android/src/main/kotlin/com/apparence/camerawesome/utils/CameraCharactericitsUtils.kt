@@ -49,9 +49,9 @@ fun Camera2CameraInfo.getSensorType(): PigeonSensorType {
     if (containsTelephoto)
         return PigeonSensorType.TELEPHOTO
     if (containsWideAngle)
-        return PigeonSensorType.WIDEANGLE
+        return PigeonSensorType.WIDE_ANGLE
     if (containsUltraWideAngle)
-        return PigeonSensorType.ULTRAWIDEANGLE
+        return PigeonSensorType.ULTRA_WIDE_ANGLE
     return PigeonSensorType.UNKNOWN
 }
 

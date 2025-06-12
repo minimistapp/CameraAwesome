@@ -7,6 +7,21 @@ import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import kotlin.math.min
 
+// Helper to convert List<Long?> to ByteArray
+private fun List<Long?>?.toByteArray(): ByteArray? {
+    if (this == null) return null
+    val bytes = ByteArray(this.size)
+    for (i in this.indices) {
+        bytes[i] = this[i]?.toByte() ?: 0
+    }
+    return bytes
+}
+
+// Helper to convert ByteArray to List<Long?>
+private fun ByteArray.toLongList(): List<Long?> {
+    return this.map { it.toLong() }
+}
+
 class AnalysisImageConverter : AnalysisImageUtils {
     override fun nv21toJpeg(
         nv21Image: AnalysisImageWrapper,
@@ -15,7 +30,7 @@ class AnalysisImageConverter : AnalysisImageUtils {
     ) {
         val out = ByteArrayOutputStream()
         val yuv = YuvImage(
-            nv21Image.bytes, ImageFormat.NV21,
+            nv21Image.bytes.toByteArray(), ImageFormat.NV21,
             nv21Image.width.toInt(), nv21Image.height.toInt(),
             // TODO strides might not always be null
             null
@@ -40,7 +55,7 @@ class AnalysisImageConverter : AnalysisImageUtils {
         callback(
             Result.success(
                 AnalysisImageWrapper(
-                    bytes = out.toByteArray(),
+                    bytes = out.toByteArray().toLongList(),
                     width = nv21Image.width,
                     height = nv21Image.height,
                     cropRect = nv21Image.cropRect,
@@ -122,9 +137,9 @@ class AnalysisImageConverter : AnalysisImageUtils {
         val uPlane = yuvImage.planes[1]!!
         val vPlane = yuvImage.planes[2]!!
 
-        val yBuffer = ByteBuffer.wrap(yPlane.bytes)
-        val uBuffer = ByteBuffer.wrap(uPlane.bytes)
-        val vBuffer = ByteBuffer.wrap(vPlane.bytes)
+        val yBuffer = ByteBuffer.wrap(yPlane.bytes.toByteArray())
+        val uBuffer = ByteBuffer.wrap(uPlane.bytes.toByteArray())
+        val vBuffer = ByteBuffer.wrap(vPlane.bytes.toByteArray())
         yBuffer.rewind()
         uBuffer.rewind()
         vBuffer.rewind()
@@ -175,7 +190,7 @@ class AnalysisImageConverter : AnalysisImageUtils {
         callback(
             Result.success(
                 AnalysisImageWrapper(
-                    bytes = nv21,
+                    bytes = nv21.toLongList(),
                     width = yuvImage.width,
                     height = yuvImage.height,
                     cropRect = yuvImage.cropRect,
@@ -200,7 +215,7 @@ class AnalysisImageConverter : AnalysisImageUtils {
             val bitmap = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
             
             // Convert BGRA to ARGB by swapping B and R channels
-            val bgraBuffer = ByteBuffer.wrap(bgra8888image.bytes)
+            val bgraBuffer = ByteBuffer.wrap(bgra8888image.bytes.toByteArray())
             val pixels = IntArray(width * height)
             for (i in 0 until width * height) {
                 val b = bgraBuffer.get().toInt() and 0xFF
@@ -220,7 +235,7 @@ class AnalysisImageConverter : AnalysisImageUtils {
             
             // Create new AnalysisImageWrapper with JPEG data
             val jpegImage = AnalysisImageWrapper(
-                bytes = outputStream.toByteArray(),
+                bytes = outputStream.toByteArray().toLongList(),
                 width = bgra8888image.width,
                 height = bgra8888image.height,
                 rotation = bgra8888image.rotation,

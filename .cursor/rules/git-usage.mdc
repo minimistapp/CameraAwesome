@@ -1,0 +1,10 @@
+---
+description: Whenever you use the git CLI
+globs: 
+alwaysApply: false
+---
+These commands must be used with `--no-pager`: log, show, diff. Examples:
+
+- `git --no-pager log --oneline -6`
+- `git --no-pager diff --name-only`
+- `git --no-pager show HEAD~3..HEAD`

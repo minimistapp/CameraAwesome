@@ -24,7 +24,7 @@ typedef void(^OnPictureTaken)(void);
 @property(readonly, nonatomic) bool saveGPSLocation;
 @property(readonly, nonatomic) bool mirrorFrontCamera;
 @property(readonly, copy) void (^completion)(NSNumber * _Nullable, FlutterError * _Nullable);
-@property(readonly, nonatomic) PigeonSensorPosition sensorPosition;
+@property(readonly, nonatomic) CAPigeonSensorPosition sensorPosition;
 @property(readonly, nonatomic) float aspectRatio;
 @property(readonly, nonatomic) AspectRatio aspectRatioType;
 @property NSInteger orientation;

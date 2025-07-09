@@ -6,6 +6,11 @@
 //
 
 #import "MultiCameraPreview.h"
+#import "VideoController.h"
+
+@interface MultiCameraPreview()
+@property(readonly, nonatomic) VideoController *videoController;
+@end
 
 @implementation MultiCameraPreview
 
@@ -27,6 +32,7 @@
     _motionController = [[MotionController alloc] init];
     _locationController = [[LocationController alloc] init];
     _physicalButtonController = [[PhysicalButtonController alloc] init];
+    _videoController = [[VideoController alloc] init];
     
     if (enablePhysicalButton) {
       [_physicalButtonController startListening];
@@ -343,9 +349,8 @@
     PigeonSensor *sensor = [sensors objectAtIndex:i];
     NSString *path = [paths objectAtIndex:i];
     
-    // TODO: take pictures for each sensors
     CameraPictureController *cameraPicture = [[CameraPictureController alloc] initWithPath:path
-                                                                               orientation:_motionController.deviceOrientation
+                                                                               orientation:[_motionController getDeviceOrientation]
                                                                             sensorPosition:sensor.position
                                                                            saveGPSLocation:_saveGPSLocation
                                                                          mirrorFrontCamera:_mirrorFrontCamera
@@ -372,18 +377,41 @@
   }
 }
 
-- (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
-  int index = 0;
-  for (CameraDeviceInfo *device in _devices) {
-    if (device.videoDataOutput == output) {
-      [_textures[index] updateBuffer:sampleBuffer];
-      if (_onPreviewFrameAvailable) {
-        _onPreviewFrameAvailable(@(index));
-      }
-    }
-    
-    index++;
+- (void)recordVideo:(nonnull NSArray<NSString *> *)paths completion:(nonnull void (^)(FlutterError * _Nullable))completion {
+  if ([self.devices count] <= 0) {
+    completion([FlutterError errorWithCode:@"NO_DEVICE" message:@"no device found" details:nil]);
+    return;
   }
+  
+  AVCaptureDevice *mainDevice = self.devices.firstObject.device;
+  
+  // TODO: add quality
+  [self.videoController recordVideoAtPath:paths.firstObject
+                            captureDevice:mainDevice
+                              orientation:[_motionController getDeviceOrientation]
+                       audioSetupCallback:^{
+    [self.cameraSession addInput:self.videoController.audioInput];
+    [self.cameraSession addOutput:self.videoController.audioOutput];
+  } videoWriterCallback:^{
+    
+  } options:nil quality:CAVideoRecordingQualityHighest completion:completion];
+}
+
+- (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
+  if (output == self.devices.firstObject.videoDataOutput) {
+    CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (self.onPreviewFrameAvailable) {
+        self.onPreviewFrameAvailable([NSNumber numberWithInt:0]);
+      }
+      
+      // TODO: handle multiple textures
+      [self.textures.firstObject setPixelBuffer:pixelBuffer];
+    });
+  }
+  
+  [_videoController captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection captureVideoOutput:self.devices.firstObject.videoDataOutput];
 }
 
 @end

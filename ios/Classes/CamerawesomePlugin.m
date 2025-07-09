@@ -1,12 +1,13 @@
+#import <Flutter/Flutter.h>
 #import "CamerawesomePlugin.h"
 #import "Pigeon.h"
 #import "Permissions.h"
 #import "SensorsController.h"
 #import "SingleCameraPreview.h"
 #import "MultiCameraController.h"
-#import "AspectRatioUtils.h"
-#import "CaptureModeUtils.h"
-#import "FlashModeUtils.h"
+#import "Utils/AspectRatio/AspectRatioUtils.h"
+#import "Utils/CaptureMode/CaptureModeUtils.h"
+#import "Utils/FlashMode/FlashModeUtils.h"
 #import "AnalysisController.h"
 
 FlutterEventSink orientationEventSink;
@@ -14,7 +15,7 @@ FlutterEventSink videoRecordingEventSink;
 FlutterEventSink imageStreamEventSink;
 FlutterEventSink physicalButtonEventSink;
 
-@interface CamerawesomePlugin () <CameraInterface, AnalysisImageUtils>
+@interface CamerawesomePlugin ()
 @property(readonly, nonatomic) NSObject<FlutterTextureRegistry> *textureRegistry;
 @property NSMutableArray<NSNumber *> *texturesIds;
 @property SingleCameraPreview *camera;
@@ -59,21 +60,14 @@ FlutterEventSink physicalButtonEventSink;
   [imageStreamChannel setStreamHandler:instance];
   [physicalButtonChannel setStreamHandler:instance];
   
-  CameraInterfaceSetup(registrar.messenger, instance);
-  AnalysisImageUtilsSetup(registrar.messenger, instance);
+  CACameraInterfaceSetup(registrar.messenger, instance);
+  CAAnalysisImageUtilsSetup(registrar.messenger, instance);
 }
 
 #pragma mark - Camera engine methods
 
-- (void)setupCameraSensorIds:(nonnull NSArray<NSString *> *)sensorIds aspectRatio:(nonnull NSString *)aspectRatio zoom:(nonnull NSNumber *)zoom mirrorFrontCamera:(nonnull NSNumber *)mirrorFrontCamera enablePhysicalButton:(nonnull NSNumber *)enablePhysicalButton flashMode:(nonnull NSString *)flashMode captureMode:(nonnull NSString *)captureMode enableImageStream:(nonnull NSNumber *)enableImageStream exifPreferences:(nonnull ExifPreferences *)exifPreferences videoOptions:(nullable VideoOptions *)videoOptions completion:(nonnull void (^)(NSNumber * _Nullable, FlutterError * _Nullable))completion {
+- (void)setupCameraSensors:(NSArray<CAPigeonSensor *> *)sensors aspectRatio:(NSString *)aspectRatio zoom:(NSNumber *)zoom mirrorFrontCamera:(NSNumber *)mirrorFrontCamera enablePhysicalButton:(NSNumber *)enablePhysicalButton flashMode:(NSString *)flashMode captureMode:(NSString *)captureMode enableImageStream:(NSNumber *)enableImageStream exifPreferences:(CAExifPreferences *)exifPreferences videoOptions:(nullable CAVideoOptions *)videoOptions completion:(void (^)(NSNumber * _Nullable, FlutterError * _Nullable))completion {
   
-  NSMutableArray<PigeonSensor *> *sensors = [NSMutableArray new];
-  for (NSString *sensorId in sensorIds) {
-    // TODO: get sensor type and position from sensorId
-    [sensors addObject:[PigeonSensor makeWithPosition:PigeonSensorPositionUnknown type:PigeonSensorTypeUnknown deviceId:sensorId zoomFactor:nil]];
-  }
-
-  CaptureModes captureModeType = [CaptureModeUtils captureModeFromCaptureModeType:captureMode];
   if (![CameraPermissionsController checkAndRequestPermission]) {
     completion(nil, [FlutterError errorWithCode:@"MISSING_PERMISSION" message:@"you got to accept all permissions" details:nil]);
     return;
@@ -109,7 +103,7 @@ FlutterEventSink physicalButtonEventSink;
                                                  mirrorFrontCamera:[mirrorFrontCamera boolValue]
                                               enablePhysicalButton:[enablePhysicalButton boolValue]
                                                    aspectRatioMode:aspectRatioMode
-                                                       captureMode:captureModeType
+                                                       captureMode:captureMode
                                                      dispatchQueue:dispatch_queue_create("camerawesome.multi_preview.dispatchqueue", NULL)];
     
     for (int i = 0; i < [sensors count]; i++) {
@@ -127,15 +121,15 @@ FlutterEventSink physicalButtonEventSink;
       [weakSelf.textureRegistry textureFrameAvailable:[textureNumber longLongValue]];
     };
   } else {
-    PigeonSensor *firstSensor = sensors.firstObject;
+    CAPigeonSensor *firstSensor = sensors.firstObject;
     self.camera = [[SingleCameraPreview alloc] initWithCameraSensor:firstSensor.position
                                                        videoOptions:videoOptions != nil ? videoOptions.ios : nil
-                                                   recordingQuality:videoOptions != nil ? videoOptions.quality : VideoRecordingQualityHighest
+                                                   recordingQuality:videoOptions != nil ? videoOptions.quality : CAVideoRecordingQualityHighest
                                                        streamImages:[enableImageStream boolValue]
                                                   mirrorFrontCamera:[mirrorFrontCamera boolValue]
                                                enablePhysicalButton:[enablePhysicalButton boolValue]
                                                     aspectRatioMode:aspectRatioMode
-                                                        captureMode:captureModeType
+                                                        captureMode:captureMode
                                                          completion:completion
                                                       dispatchQueue:dispatch_queue_create("camerawesome.single_preview.dispatchqueue", NULL)];
     
@@ -267,24 +261,7 @@ FlutterEventSink physicalButtonEventSink;
 #pragma mark - Permissions methods
 
 - (void)requestPermissionsSaveGpsLocation:(nonnull NSNumber *)saveGpsLocation completion:(nonnull void (^)(NSArray<NSString *> * _Nullable, FlutterError * _Nullable))completion {
-  NSMutableArray *permissions = [NSMutableArray new];
-  
-  const BOOL cameraGranted = [CameraPermissionsController checkAndRequestPermission];
-  if (cameraGranted) {
-    [permissions addObject:@"camera"];
-  }
-  
-  bool needToSaveGPSLocation = [saveGpsLocation boolValue];
-  if (needToSaveGPSLocation) {
-    // TODO: move this to permissions object
-    [self.camera.locationController requestWhenInUseAuthorizationOnGranted:^{
-      [permissions addObject:@"location"];
-      
-      completion(permissions, nil);
-    } declined:^{
-      completion(permissions, nil);
-    }];
-  }
+  return [CameraPermissionsController requestPermissions:[saveGpsLocation boolValue] completion:completion];
 }
 
 - (nullable NSArray<NSString *> *)checkPermissionsPermissions:(nonnull NSArray<NSString *> *)permissions error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
@@ -312,7 +289,7 @@ FlutterEventSink physicalButtonEventSink;
 
 #pragma mark - Focus methods
 
-- (void)focusOnPointPreviewSize:(nonnull PreviewSize *)previewSize x:(nonnull NSNumber *)x y:(nonnull NSNumber *)y androidFocusSettings:(nullable AndroidFocusSettings *)androidFocusSettings error:(FlutterError *_Nullable __autoreleasing *_Nonnull)error {
+- (void)focusOnPointPreviewSize:(nonnull CAPreviewSize *)previewSize x:(nonnull NSNumber *)x y:(nonnull NSNumber *)y androidFocusSettings:(nullable CAAndroidFocusSettings *)androidFocusSettings error:(FlutterError *_Nullable __autoreleasing *_Nonnull)error {
   if (previewSize.width <= 0 || previewSize.height <= 0) {
     *error = [FlutterError errorWithCode:@"INVALID_PREVIEW" message:@"preview size width and height must be set" details:nil];
     return;
@@ -336,48 +313,30 @@ FlutterEventSink physicalButtonEventSink;
 
 #pragma mark - Video recording methods
 
-- (void)pauseVideoRecordingWithError:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
+- (nullable FlutterError *)pauseVideoRecording {
   if (self.camera == nil && self.multiCamera == nil) {
-    *error = [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil];
-    return;
+    return [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil];
   }
   
   if (self.camera == nil) {
-    *error = [FlutterError errorWithCode:@"MULTI_CAMERA_UNSUPPORTED" message:@"this feature is currently not supported with multi camera feature" details:nil];
-    return;
+    return [FlutterError errorWithCode:@"MULTI_CAMERA_UNSUPPORTED" message:@"this feature is currently not supported with multi camera feature" details:nil];
   }
   
   [self.camera pauseVideoRecording];
+  return nil;
 }
 
-- (void)recordVideoSensorIds:(nonnull NSArray<NSString *> *)sensorIds paths:(nonnull NSArray<NSString *> *)paths completion:(nonnull void (^)(FlutterError * _Nullable))completion {
-  NSMutableArray<PigeonSensor *> *sensors = [NSMutableArray new];
-  for (NSString *sensorId in sensorIds) {
-    // TODO: get sensor type and position from sensorId
-    [sensors addObject:[PigeonSensor makeWithPosition:PigeonSensorPositionUnknown type:PigeonSensorTypeUnknown deviceId:sensorId zoomFactor:nil]];
-  }
-
+- (void)recordVideoSensors:(nonnull NSArray<CAPigeonSensor *> *)sensors paths:(nonnull NSArray<NSString *> *)paths withReply:(nonnull void (^)(FlutterError * _Nullable))reply {
   if (self.camera == nil && self.multiCamera == nil) {
-    completion([FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil]);
+    reply([FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil]);
     return;
   }
   
-  if (self.camera == nil) {
-    completion([FlutterError errorWithCode:@"MULTI_CAMERA_UNSUPPORTED" message:@"this feature is currently not supported with multi camera feature" details:nil]);
-    return;
+  if (self.multiCamera != nil) {
+    [self.multiCamera recordVideo:paths completion:reply];
+  } else {
+    [self.camera recordVideoAtPath:paths.firstObject completion:reply];
   }
-  
-  if (sensors == nil || [sensors count] <= 0 || paths == nil || [paths count] <= 0) {
-    completion([FlutterError errorWithCode:@"PATH_NOT_SET" message:@"at least one path must be set" details:nil]);
-    return;
-  }
-  
-  if ([sensors count] != [paths count]) {
-    completion([FlutterError errorWithCode:@"PATH_INVALID" message:@"sensors & paths list seems to be different" details:nil]);
-    return;
-  }
-  
-  [self.camera recordVideoAtPath:[paths firstObject] completion:completion];
 }
 
 - (void)resumeVideoRecordingWithError:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
@@ -394,7 +353,7 @@ FlutterEventSink physicalButtonEventSink;
   [self.camera resumeVideoRecording];
 }
 
-- (void)setRecordingAudioModeEnableAudio:(NSNumber *)enableAudio completion:(void(^)(NSNumber *_Nullable, FlutterError *_Nullable))completion {
+- (void)setRecordingAudioModeEnableAudio:(nonnull NSNumber *)enableAudio completion:(void(^)(NSNumber *_Nullable, FlutterError *_Nullable))completion {
   if (self.camera == nil && self.multiCamera == nil) {
     completion(nil, [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil]);
     return;
@@ -426,13 +385,7 @@ FlutterEventSink physicalButtonEventSink;
 
 #pragma mark - General methods
 
-- (void)takePhotoSensorIds:(nonnull NSArray<NSString *> *)sensorIds paths:(nonnull NSArray<NSString *> *)paths completion:(nonnull void (^)(NSNumber * _Nullable, FlutterError * _Nullable))completion {
-  NSMutableArray<PigeonSensor *> *sensors = [NSMutableArray new];
-  for (NSString *sensorId in sensorIds) {
-    // TODO: get sensor type and position from sensorId
-    [sensors addObject:[PigeonSensor makeWithPosition:PigeonSensorPositionUnknown type:PigeonSensorTypeUnknown deviceId:sensorId zoomFactor:nil]];
-  }
-
+- (void)takePhotoSensors:(nonnull NSArray<CAPigeonSensor *> *)sensors paths:(nonnull NSArray<NSString *> *)paths completion:(nonnull void (^)(NSNumber * _Nullable, FlutterError * _Nullable))completion {
   if (self.camera == nil && self.multiCamera == nil) {
     completion(nil, [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil]);
     return;
@@ -452,9 +405,22 @@ FlutterEventSink physicalButtonEventSink;
     if (self.multiCamera != nil) {
       [self->_multiCamera takePhotoSensors:sensors paths:paths completion:completion];
     } else {
-      [self->_camera takePictureAtPath:[paths firstObject] completion:completion];
+      [self->_camera takePictureAtPath:paths.firstObject completion:completion];
     }
   });
+}
+
+- (void)recordVideoSensors:(nonnull NSArray<CAPigeonSensor *> *)sensors paths:(nonnull NSArray<NSString *> *)paths withReply:(nonnull void (^)(FlutterError * _Nullable))reply {
+  if (self.camera == nil && self.multiCamera == nil) {
+    reply([FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil]);
+    return;
+  }
+  
+  if (self.multiCamera != nil) {
+    [self.multiCamera recordVideo:paths completion:reply];
+  } else {
+    [self.camera recordVideoAtPath:paths.firstObject completion:reply];
+  }
 }
 
 - (void)setMirrorFrontCameraMirror:(nonnull NSNumber *)mirror error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
@@ -502,7 +468,7 @@ FlutterEventSink physicalButtonEventSink;
   }
 }
 
-- (void)setExifPreferencesExifPreferences:(ExifPreferences *)exifPreferences completion:(void(^)(NSNumber *_Nullable, FlutterError *_Nullable))completion {
+- (void)setExifPreferencesExifPreferences:(nonnull CAExifPreferences *)exifPreferences completion:(void(^)(NSNumber *_Nullable, FlutterError *_Nullable))completion {
   if (self.camera == nil && self.multiCamera == nil) {
     completion(nil, [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil]);
     return;
@@ -534,7 +500,7 @@ FlutterEventSink physicalButtonEventSink;
   }
 }
 
-- (void)setPhotoSizeSize:(nonnull PreviewSize *)size error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
+- (void)setPhotoSizeSize:(nonnull CAPreviewSize *)size error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
   if (size.width <= 0 || size.height <= 0) {
     *error = [FlutterError errorWithCode:@"NO_SIZE_SET" message:@"width and height must be set" details:nil];
     return;
@@ -550,7 +516,7 @@ FlutterEventSink physicalButtonEventSink;
     return;
   }
   
-  [self.camera setCameraPreset:CGSizeMake([size.width floatValue], [size.height floatValue])];
+  [self.camera setPhotoSize:size];
 }
 
 - (void)setAspectRatioAspectRatio:(nonnull NSString *)aspectRatio error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
@@ -574,20 +540,20 @@ FlutterEventSink physicalButtonEventSink;
 
 #pragma mark - Preview methods
 
-- (nullable NSArray<PreviewSize *> *)availableSizesWithError:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
+- (nonnull NSArray<CAPreviewSize *> *)availableSizesWithError:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
   if (self.camera == nil && self.multiCamera == nil) {
     *error = [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil];
-    return @[];
+    return [NSArray new];
   }
   
   if (self.multiCamera != nil) {
-    return [CameraQualities captureFormatsForDevice:self.multiCamera.devices.firstObject.device];
-  } else {
-    return [CameraQualities captureFormatsForDevice:self.camera.captureDevice];
+    return [self.multiCamera availableSizes];
   }
+  
+  return [self.camera availableSizes];
 }
 
-- (void)setPreviewSizeSize:(nonnull PreviewSize *)size error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
+- (void)setPreviewSizeSize:(nonnull CAPreviewSize *)size error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
   if (size.width <= 0 || size.height <= 0) {
     *error = [FlutterError errorWithCode:@"NO_SIZE_SET" message:@"width and height must be set" details:nil];
     return;
@@ -605,20 +571,12 @@ FlutterEventSink physicalButtonEventSink;
   }
 }
 
-- (nullable PreviewSize *)getEffectivPreviewSizeIndex:(nonnull NSNumber *)index error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
-  if (self.camera == nil && self.multiCamera == nil) {
+- (nullable CAPreviewSize *)getEffectivPreviewSizeIndex:(nonnull NSNumber *)index error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
+  if (self.camera == nil) {
     *error = [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil];
+    return nil;
   }
-  
-  CGSize previewSize;
-  if (self.multiCamera != nil) {
-    previewSize = [self.multiCamera getEffectivPreviewSize];
-  } else {
-    previewSize = [self.camera getEffectivPreviewSize];
-  }
-  
-  // height & width are inverted, this is intentionnal, because camera is always on portrait mode
-  return [PreviewSize makeWithWidth:@(previewSize.height) height:@(previewSize.width)];
+  return [self.camera getEffectivPreviewSize];
 }
 
 #pragma mark - Zoom methods
@@ -654,112 +612,60 @@ FlutterEventSink physicalButtonEventSink;
 
 #pragma mark - Image stream methods
 
-- (void)receivedImageFromStreamWithError:(FlutterError *_Nullable *_Nonnull)error {
-  if (self.camera == nil && self.multiCamera == nil) {
-    *error = [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil];
-    return;
-  }
-  
-  if (self.camera == nil) {
-    *error = [FlutterError errorWithCode:@"MULTI_CAMERA_UNSUPPORTED" message:@"this feature is currently not supported with multi camera feature" details:nil];
-    return;
-  }
-  
+- (nullable FlutterError *)receivedImageFromStream {
   [self.camera receivedImageFromStream];
+  return nil;
 }
 
-- (void)setupImageAnalysisStreamFormat:(nonnull NSString *)format width:(nonnull NSNumber *)width maxFramesPerSecond:(nullable NSNumber *)maxFramesPerSecond autoStart:(nonnull NSNumber *)autoStart error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
-  if (self.camera == nil && self.multiCamera == nil) {
-    *error = [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil];
-    return;
-  }
-  
+- (void)setupImageAnalysisStreamFormat:(nonnull NSString *)format width:(nonnull NSNumber *)width maxFramesPerSecond:(nullable NSNumber *)maxFramesPerSecond autoStart:(nonnull NSNumber *)autoStart {
+  [self.camera setupImageAnalysisStream:format width:[width longValue] maxFramesPerSecond:[maxFramesPerSecond doubleValue] autoStart: [autoStart boolValue]];
+}
+
+- (void)startAnalysis {
   if (self.camera == nil) {
-    *error = [FlutterError errorWithCode:@"MULTI_CAMERA_UNSUPPORTED" message:@"this feature is currently not supported with multi camera feature" details:nil];
     return;
   }
-  
-  [self.camera.imageStreamController setStreamImages:autoStart];
-  
-  // Force a frame rate to improve performance
-  [self.camera.imageStreamController setMaxFramesPerSecond:[maxFramesPerSecond floatValue]];
+  [self.camera startAnalysis];
 }
 
-- (void)startAnalysisWithError:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
-  if (self.camera == nil && self.multiCamera == nil) {
-    *error = [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil];
-    return;
-  }
-  
+- (void)stopAnalysis {
   if (self.camera == nil) {
-    *error = [FlutterError errorWithCode:@"MULTI_CAMERA_UNSUPPORTED" message:@"this feature is currently not supported with multi camera feature" details:nil];
     return;
   }
-  
-  [self.camera.imageStreamController setStreamImages:true];
+  [self.camera stopAnalysis];
 }
 
-- (void)stopAnalysisWithError:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
-  if (self.camera == nil && self.multiCamera == nil) {
-    *error = [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil];
-    return;
-  }
-  
-  if (self.camera == nil) {
-    *error = [FlutterError errorWithCode:@"MULTI_CAMERA_UNSUPPORTED" message:@"this feature is currently not supported with multi camera feature" details:nil];
-    return;
-  }
-  
-  [self.camera.imageStreamController setStreamImages:false];
+- (void)setFilterMatrix:(nonnull NSArray<NSNumber *> *)matrix {
+  [self.camera setFilter:matrix];
 }
 
-- (void)isVideoRecordingAndImageAnalysisSupportedSensor:(PigeonSensorPosition)sensor completion:(void (^)(NSNumber *_Nullable, FlutterError *_Nullable))completion {
-  completion(@(YES), nil);
+- (void)setFilterMatrix:(nonnull FlutterStandardTypedData *)matrix error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
+  if (self.camera != nil) {
+    [self.camera setFilter:matrix.data];
+  } else if (self.multiCamera != nil) {
+    [self.multiCamera setFilter:matrix.data];
+  }
 }
 
 #pragma mark - Sensors methods
 
-- (nullable NSArray<PigeonSensorTypeDevice *> *)getFrontSensorsWithError:(FlutterError *_Nullable *_Nonnull)error {
+- (nonnull NSArray<CAPigeonSensorTypeDevice *> *)getFrontSensorsWithError:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
   return [SensorsController getSensors:AVCaptureDevicePositionFront];
 }
 
-- (nullable NSArray<PigeonSensorTypeDevice *> *)getBackSensorsWithError:(FlutterError *_Nullable *_Nonnull)error {
+- (nonnull NSArray<CAPigeonSensorTypeDevice *> *)getBackSensorsWithError:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
   return [SensorsController getSensors:AVCaptureDevicePositionBack];
 }
 
-- (void)setSensorSensorId:(nonnull NSString *)sensorId error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
-  // TODO: get sensor type and position from sensorId
-  PigeonSensor *sensor = [PigeonSensor makeWithPosition:PigeonSensorPositionUnknown type:PigeonSensorTypeUnknown deviceId:sensorId zoomFactor:nil];
-  NSArray<PigeonSensor *> *sensors = @[sensor];
-
-  if (self.camera == nil && self.multiCamera == nil) {
-    *error = [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil];
-    return;
-  }
-  
-  if (sensors != nil && [sensors count] > 1 && self.multiCamera != nil) {
-    if ([self.multiCamera.sensors count] != [sensors count]) {
-      *error = [FlutterError errorWithCode:@"SENSORS_COUNT_INVALID" message:@"sensors count seems to be different, you can only update current sensors, adding or deleting is impossible for now" details:nil];
-      return;
-    }
-    
+- (void)setSensorSensors:(nonnull NSArray<CAPigeonSensor *> *)sensors {
+  if (self.multiCamera != nil) {
     [self.multiCamera setSensors:sensors];
   } else {
-    [self.camera setSensor:sensors.firstObject];
+    [self.camera setSensors:sensors];
   }
 }
 
 #pragma mark - Filter methods
-
-- (void)setFilterMatrix:(NSArray<NSNumber *> *)matrix error:(FlutterError *_Nullable *_Nonnull)error {
-  if (self.camera != nil) {
-    [self.camera setFilter:matrix];
-  } else if (self.multiCamera != nil) {
-    [self.multiCamera setFilter:matrix];
-  } else {
-    *error = [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before setFilter" details:nil];
-  }
-}
 
 - (void)setFilter:(nonnull ColorMatrix *)matrix error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
   if (self.camera != nil) {
@@ -773,26 +679,28 @@ FlutterEventSink physicalButtonEventSink;
 
 #pragma mark - Multi camera methods
 
-- (nullable NSNumber *)isMultiCamSupportedWithError:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
-  return [NSNumber numberWithBool: [MultiCameraController isMultiCamSupported]];
+- (nonnull NSNumber *)isMultiCamSupportedWithError:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
+  return [NSNumber numberWithBool:[MultiCameraController isMultiCamSupported]];
 }
 
-- (void)bgra8888toJpegBgra8888image:(nonnull AnalysisImageWrapper *)bgra8888image jpegQuality:(nonnull NSNumber *)jpegQuality completion:(nonnull void (^)(AnalysisImageWrapper * _Nullable, FlutterError * _Nullable))completion {
-  dispatch_async(_dispatchQueueAnalysis, ^{
-    [AnalysisController bgra8888toJpegBgra8888image:bgra8888image jpegQuality:jpegQuality completion:completion];
-  });
+- (nonnull CAAnalysisImageWrapper *)nv21toJpegNv21Image:(nonnull CAAnalysisImageWrapper *)nv21Image jpegQuality:(nonnull NSNumber *)jpegQuality error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
+  return [AnalysisController nv21toJpeg:nv21Image withQuality:[jpegQuality intValue]];
 }
 
-- (void)nv21toJpegNv21Image:(nonnull AnalysisImageWrapper *)nv21Image jpegQuality:(nonnull NSNumber *)jpegQuality completion:(nonnull void (^)(AnalysisImageWrapper * _Nullable, FlutterError * _Nullable))completion {
-  [AnalysisController nv21toJpegNv21Image:nv21Image jpegQuality:jpegQuality completion:completion];
+- (nonnull CAAnalysisImageWrapper *)yuv420toJpegYuvImage:(nonnull CAAnalysisImageWrapper *)yuvImage jpegQuality:(nonnull NSNumber *)jpegQuality error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
+  return [AnalysisController yuv420toJpeg:yuvImage withQuality:[jpegQuality intValue]];
 }
 
-- (void)yuv420toJpegYuvImage:(nonnull AnalysisImageWrapper *)yuvImage jpegQuality:(nonnull NSNumber *)jpegQuality completion:(nonnull void (^)(AnalysisImageWrapper * _Nullable, FlutterError * _Nullable))completion {
-  [AnalysisController yuv420toJpegYuvImage:yuvImage jpegQuality:jpegQuality completion:completion];
+- (nonnull CAAnalysisImageWrapper *)yuv420toNv21YuvImage:(nonnull CAAnalysisImageWrapper *)yuvImage error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
+  return [AnalysisController yuv420toNv21:yuvImage];
 }
 
-- (void)yuv420toNv21YuvImage:(nonnull AnalysisImageWrapper *)yuvImage completion:(nonnull void (^)(AnalysisImageWrapper * _Nullable, FlutterError * _Nullable))completion {
-  [AnalysisController yuv420toNv21YuvImage:yuvImage completion:completion];
+- (nonnull CAAnalysisImageWrapper *)bgra8888toJpegBgra8888image:(nonnull CAAnalysisImageWrapper *)bgra8888image jpegQuality:(nonnull NSNumber *)jpegQuality error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
+  return [AnalysisController bgra8888toJpeg:bgra8888image withQuality:[jpegQuality intValue]];
+}
+
+- (nonnull NSNumber *)isVideoRecordingAndImageAnalysisSupportedSensor:(CAPigeonSensorPosition)sensor error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
+  return [NSNumber numberWithBool:[self.camera isVideoRecordingAndImageAnalysisSupported:sensor]];
 }
 
 @end

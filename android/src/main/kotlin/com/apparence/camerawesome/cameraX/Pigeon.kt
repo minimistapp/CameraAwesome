@@ -411,7 +411,7 @@ data class AndroidFocusSettings (
 
 /** Generated class from Pigeon that represents data sent in messages. */
 data class PlaneWrapper (
-  val bytes: List<Long?>,
+  val bytes: ByteArray,
   val bytesPerRow: Long,
   val bytesPerPixel: Long? = null,
   val width: Long? = null,
@@ -420,7 +420,7 @@ data class PlaneWrapper (
  {
   companion object {
     fun fromList(pigeonVar_list: List<Any?>): PlaneWrapper {
-      val bytes = pigeonVar_list[0] as List<Long?>
+      val bytes = pigeonVar_list[0] as ByteArray
       val bytesPerRow = pigeonVar_list[1].let { num -> if (num is Int) num.toLong() else num as Long }
       val bytesPerPixel = pigeonVar_list[2].let { num -> if (num is Int) num.toLong() else num as Long? }
       val width = pigeonVar_list[3].let { num -> if (num is Int) num.toLong() else num as Long? }
@@ -469,7 +469,7 @@ data class CropRectWrapper (
 /** Generated class from Pigeon that represents data sent in messages. */
 data class AnalysisImageWrapper (
   val format: AnalysisImageFormat,
-  val bytes: List<Long?>? = null,
+  val bytes: ByteArray? = null,
   val width: Long,
   val height: Long,
   val planes: List<PlaneWrapper?>? = null,
@@ -480,7 +480,7 @@ data class AnalysisImageWrapper (
   companion object {
     fun fromList(pigeonVar_list: List<Any?>): AnalysisImageWrapper {
       val format = pigeonVar_list[0] as AnalysisImageFormat
-      val bytes = pigeonVar_list[1] as List<Long?>?
+      val bytes = pigeonVar_list[1] as ByteArray?
       val width = pigeonVar_list[2].let { num -> if (num is Int) num.toLong() else num as Long }
       val height = pigeonVar_list[3].let { num -> if (num is Int) num.toLong() else num as Long }
       val planes = pigeonVar_list[4] as List<PlaneWrapper?>?
@@ -844,7 +844,7 @@ interface CameraInterface {
   fun setExifPreferences(exifPreferences: ExifPreferences, callback: (Result<Boolean>) -> Unit)
   fun startAnalysis()
   fun stopAnalysis()
-  fun setFilter(matrix: List<Double>)
+  fun setFilter(matrix: ByteArray)
   fun isVideoRecordingAndImageAnalysisSupported(sensor: PigeonSensorPosition, callback: (Result<Boolean>) -> Unit)
   fun isMultiCamSupported(): Boolean
 
@@ -1482,7 +1482,7 @@ interface CameraInterface {
         if (api != null) {
           channel.setMessageHandler { message, reply ->
             val args = message as List<Any?>
-            val matrixArg = args[0] as List<Double>
+            val matrixArg = args[0] as ByteArray
             val wrapped: List<Any?> = try {
               api.setFilter(matrixArg)
               listOf(null)

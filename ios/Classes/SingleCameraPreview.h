@@ -47,13 +47,13 @@ AVCaptureAudioDataOutputSampleBufferDelegate>
 @property(readonly, nonatomic) AVCaptureFlashMode flashMode;
 @property(readonly, nonatomic) AVCaptureTorchMode torchMode;
 @property(readonly, nonatomic) AVCaptureAudioDataOutput *audioOutput;
-@property(readonly, nonatomic) PigeonSensorPosition cameraSensorPosition;
+@property(readonly, nonatomic) CAPigeonSensorPosition cameraSensorPosition;
 @property(readonly, nonatomic) NSString *captureDeviceId;
 @property(readonly, nonatomic) CaptureModes captureMode;
 @property(readonly, nonatomic) NSString *currentPreset;
 @property(readonly, nonatomic) AspectRatio aspectRatio;
-@property(readonly, nonatomic) CupertinoVideoOptions *videoOptions;
-@property(readonly, nonatomic) VideoRecordingQuality recordingQuality;
+@property(readonly, nonatomic) CACupertinoVideoOptions *videoOptions;
+@property(readonly, nonatomic) CAVideoRecordingQuality recordingQuality;
 @property(readonly, nonatomic) CameraPreviewTexture* previewTexture;
 @property(readonly, nonatomic) bool saveGPSLocation;
 @property(readonly, nonatomic) bool mirrorFrontCamera;
@@ -66,9 +66,9 @@ AVCaptureAudioDataOutputSampleBufferDelegate>
 @property(readonly, copy) void (^completion)(NSNumber * _Nullable, FlutterError * _Nullable);
 @property(nonatomic, copy) void (^onPreviewFrameAvailable)(void);
 
-- (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
-                        videoOptions:(nullable CupertinoVideoOptions *)videoOptions
-                    recordingQuality:(VideoRecordingQuality)recordingQuality
+- (instancetype)initWithCameraSensor:(CAPigeonSensorPosition)sensor
+                        videoOptions:(nullable CACupertinoVideoOptions *)videoOptions
+                    recordingQuality:(CAVideoRecordingQuality)recordingQuality
                         streamImages:(BOOL)streamImages
                    mirrorFrontCamera:(BOOL)mirrorFrontCamera
                 enablePhysicalButton:(BOOL)enablePhysicalButton
@@ -97,7 +97,7 @@ AVCaptureAudioDataOutputSampleBufferDelegate>
 - (void)stopRecordingVideo:(nonnull void (^)(NSNumber * _Nullable, FlutterError * _Nullable))completion;
 - (void)focusOnPoint:(CGPoint)position preview:(CGSize)preview error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error;
 - (void)dispose;
-- (void)setSensor:(PigeonSensor *)sensor;
+- (void)setSensor:(CAPigeonSensor *)sensor;
 - (void)setZoom:(float)value error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error;
 - (void)setMirrorFrontCamera:(bool)value error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error;
 - (CGFloat)getMaxZoom;

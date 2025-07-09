@@ -1,0 +1,6 @@
+---
+description: 
+globs: *.m,*.h,*.swift
+alwaysApply: false
+---
+Do a `ls -R` in the packages/camerawesome folder before you start to create or move files. It'll be enlightening.

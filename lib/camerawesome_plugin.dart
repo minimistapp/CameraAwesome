@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:camerawesome/camerawesome_plugin.dart';
-import 'package:camerawesome/pigeon.dart';
 import 'package:camerawesome/src/logger.dart';
+import 'package:camerawesome/src/orchestrator/pigeon/pigeon_generated.dart' as pigeon;
 import 'package:camerawesome/src/orchestrator/adapters/pigeon_sensor_adapter.dart';
 import 'package:camerawesome/src/orchestrator/models/camera_physical_button.dart';
 import 'package:camerawesome/src/orchestrator/models/sensor_data_internal.dart';
+import 'package:camerawesome/src/orchestrator/models/video_options.dart';
 import 'package:collection/collection.dart';
 import 'package:flutter/services.dart';
 
@@ -52,9 +54,32 @@ class CamerawesomePlugin {
   /// Set it to true to print dart logs from camerawesome
   static bool printLogs = false;
 
-  static Future<bool?> checkiOSPermissions(List<String?> permissionsName) async {
-    final permissions = await CameraInterface().checkPermissions(permissionsName);
-    return permissions.isEmpty;
+  static pigeon.CameraInterface _cameraInstance = pigeon.CameraInterface();
+
+  static Future<List<pigeon.CamerAwesomePermission>> checkPermissions(List<pigeon.CamerAwesomePermission> permissions) async {
+    final res = await _cameraInstance.checkPermissions(permissions.map((e) => e.name).toList());
+    return res.whereType<String>().map((e) => pigeon.CamerAwesomePermission.values.firstWhere((p) => p.name == e)).toList();
+  }
+
+  static Future<List<pigeon.CamerAwesomePermission>> requestPermissions(bool saveGpsLocation) {
+    try {
+      if (Platform.isAndroid) {
+        return _cameraInstance.requestPermissions(saveGpsLocation).then((givenPermissions) {
+          return givenPermissions
+              .whereType<String>()
+              .map((e) => pigeon.CamerAwesomePermission.values.firstWhere((element) => element.name == e))
+              .toList();
+        });
+      } else {
+        return checkPermissions([
+          pigeon.CamerAwesomePermission.camera,
+          pigeon.CamerAwesomePermission.record_audio,
+        ]);
+      }
+    } on PlatformException catch (e) {
+      printLog('failed to request permissions: $e');
+      return Future.value([]);
+    }
   }
 
   static Future<bool> start() async {
@@ -62,7 +87,7 @@ class CamerawesomePlugin {
       return true;
     }
     currentState = CameraRunningState.starting;
-    bool res = await CameraInterface().start();
+    bool res = await _cameraInstance.start();
     if (res) currentState = CameraRunningState.started;
     return res;
   }
@@ -75,7 +100,7 @@ class CamerawesomePlugin {
     currentState = CameraRunningState.stopping;
     bool res;
     try {
-      res = await CameraInterface().stop();
+      res = await _cameraInstance.stop();
     } catch (e) {
       return false;
     }
@@ -139,10 +164,10 @@ class CamerawesomePlugin {
   static Future<void> setupAnalysis({
     int width = 0,
     double? maxFramesPerSecond,
-    required InputAnalysisImageFormat format,
+    required pigeon.AnalysisImageFormat format,
     required bool autoStart,
   }) async {
-    return CameraInterface().setupImageAnalysisStream(
+    return _cameraInstance.setupImageAnalysisStream(
       format.name,
       width,
       maxFramesPerSecond,
@@ -162,7 +187,7 @@ class CamerawesomePlugin {
   }
 
   static Future receivedImageFromStream() {
-    return CameraInterface().receivedImageFromStream();
+    return _cameraInstance.receivedImageFromStream();
   }
 
   static Future<bool?> init(
@@ -170,19 +195,19 @@ class CamerawesomePlugin {
     bool enableImageStream,
     bool enablePhysicalButton, {
     CaptureMode captureMode = CaptureMode.photo,
-    required ExifPreferences exifPreferences,
-    required VideoOptions? videoOptions,
+    required pigeon.ExifPreferences exifPreferences,
+    required pigeon.VideoOptions? videoOptions,
     required bool mirrorFrontCamera,
   }) async {
-    return CameraInterface()
+    return _cameraInstance
         .setupCamera(
           sensorConfig.sensors.map((e) => e.toPigeon()).toList(),
           sensorConfig.aspectRatio.name.toUpperCase(),
           sensorConfig.zoom,
           mirrorFrontCamera,
           enablePhysicalButton,
-          sensorConfig.flashMode.name.toUpperCase(),
-          captureMode.name.toUpperCase(),
+          sensorConfig.flashMode.name,
+          captureMode.name,
           enableImageStream,
           exifPreferences,
           videoOptions,
@@ -191,38 +216,38 @@ class CamerawesomePlugin {
   }
 
   static Future<List<Size>> getSizes() async {
-    final availableSizes = await CameraInterface().availableSizes();
-    return availableSizes.whereType<PreviewSize>().map((e) => Size(e.width, e.height)).toList();
+    final availableSizes = await _cameraInstance.availableSizes();
+    return availableSizes.whereType<pigeon.PreviewSize>().map((e) => Size(e.width, e.height)).toList();
   }
 
-  static Future<num?> getPreviewTexture(final int cameraPosition) {
-    return CameraInterface().getPreviewTextureId(cameraPosition);
+  static Future<int> getPreviewTexture(final int cameraPosition) {
+    return _cameraInstance.getPreviewTextureId(cameraPosition);
   }
 
   static Future<void> setPreviewSize(int width, int height) {
-    return CameraInterface().setPreviewSize(PreviewSize(width: width.toDouble(), height: height.toDouble()));
+    return _cameraInstance.setPreviewSize(pigeon.PreviewSize(width: width.toDouble(), height: height.toDouble()));
   }
 
   static Future<void> refresh() {
-    return CameraInterface().refresh();
+    return _cameraInstance.refresh();
   }
 
   /// android has a limits on preview size and fallback to 1920x1080 if preview is too big
   /// So to prevent having different ratio we get the real preview Size directly from nativ side
-  static Future<PreviewSize> getEffectivPreviewSize(int index) async {
-    final ps = await CameraInterface().getEffectivPreviewSize(index);
+  static Future<pigeon.PreviewSize> getEffectivPreviewSize(int index) async {
+    final ps = await _cameraInstance.getEffectivPreviewSize(index);
     if (ps != null) {
-      return PreviewSize(width: ps.width, height: ps.height);
+      return pigeon.PreviewSize(width: ps.width, height: ps.height);
     } else {
-      return PreviewSize(width: 0, height: 0);
+      return pigeon.PreviewSize(width: 0, height: 0);
     }
   }
 
   /// you can set a different size for preview and for photo
   /// for iOS, when taking a photo, best quality is automatically used
   static Future<void> setPhotoSize(int width, int height) {
-    return CameraInterface().setPhotoSize(
-      PreviewSize(
+    return _cameraInstance.setPhotoSize(
+      pigeon.PreviewSize(
         width: width.toDouble(),
         height: height.toDouble(),
       ),
@@ -239,7 +264,7 @@ class CamerawesomePlugin {
       }),
     );
 
-    return CameraInterface().takePhoto(
+    return _cameraInstance.takePhoto(
       request.keys.toList(),
       request.values.toList(),
     );
@@ -250,40 +275,35 @@ class CamerawesomePlugin {
       single: (single) => {
         single.sensor.toPigeon(): single.file?.path,
       },
-      multiple: (multiple) => multiple.fileBySensor.map((key, value) => MapEntry(key.toPigeon(), value?.path)),
+      multiple: (multiple) => multiple.fileBySensor.map((key, value) {
+        return MapEntry(key.toPigeon(), value?.path);
+      }),
     );
-    if (Platform.isAndroid) {
-      return CameraInterface().recordVideo(
-        pathBySensor.keys.toList(),
-        pathBySensor.values.toList(),
-      );
-    } else {
-      return CameraInterface().recordVideo(
-        pathBySensor.keys.toList(),
-        pathBySensor.values.toList(),
-      );
-    }
+    return _cameraInstance.recordVideo(
+      pathBySensor.keys.toList(),
+      pathBySensor.values.toList(),
+    );
   }
 
-  static pauseVideoRecording() {
-    CameraInterface().pauseVideoRecording();
+  static Future<void> pauseVideoRecording() {
+    return _cameraInstance.pauseVideoRecording();
   }
 
-  static resumeVideoRecording() {
-    return CameraInterface().resumeVideoRecording();
+  static Future<void> resumeVideoRecording() {
+    return _cameraInstance.resumeVideoRecording();
   }
 
-  static stopRecordingVideo() {
-    return CameraInterface().stopRecordingVideo();
+  static Future<bool> stopRecordingVideo() {
+    return _cameraInstance.stopRecordingVideo();
   }
 
   /// Switch flash mode from Android / iOS
-  static Future<void> setFlashMode(FlashMode flashMode) {
-    return CameraInterface().setFlashMode(flashMode.name.toUpperCase());
+  static Future<void> setFlashMode(String flashMode) {
+    return _cameraInstance.setFlashMode(flashMode);
   }
 
-  static startAutoFocus() {
-    return CameraInterface().handleAutoFocus();
+  static Future<void> handleAutoFocus() {
+    return _cameraInstance.handleAutoFocus();
   }
 
   /// Start auto focus on a specific [position] with a given [previewSize].
@@ -297,46 +317,39 @@ class CamerawesomePlugin {
   /// cancelled and passive focus will not resume. After this, if you want to
   /// focus on an other point, you'll have to call again [focusOnPoint].
   static Future<void> focusOnPoint({
-    required PreviewSize previewSize,
+    required Size previewSize,
     required Offset position,
-    required AndroidFocusSettings? androidFocusSettings,
   }) {
-    return CameraInterface().focusOnPoint(
-      previewSize,
+    return _cameraInstance.focusOnPoint(
+      pigeon.PreviewSize(width: previewSize.width, height: previewSize.height),
       position.dx,
       position.dy,
-      androidFocusSettings,
+      null,
     );
   }
 
   /// calls zoom from Android / iOS --
-  static Future<void> setZoom(num zoom) {
-    return CameraInterface().setZoom(zoom.toDouble());
+  static Future<void> setZoom(double zoom) {
+    return _cameraInstance.setZoom(zoom);
   }
 
   /// switch camera sensor between [Sensors.back] and [Sensors.front]
   /// on iOS, you can specify the deviceId if you have multiple cameras
   /// call [getSensors] to get the list of available cameras
-  static Future<void> setSensor(List<Sensor?> sensors) {
-    return CameraInterface().setSensor(
-      sensors.map((e) {
-        return PigeonSensor(
-          position: e?.position?.name != null ? PigeonSensorPosition.values.byName(e!.position!.name) : PigeonSensorPosition.unknown,
-          deviceId: e?.deviceId,
-          type: e?.type?.name != null ? PigeonSensorType.values.byName(e!.type!.name) : PigeonSensorType.unknown,
-        );
-      }).toList(),
+  static Future<void> setSensor(SensorConfig sensorConfig) {
+    return _cameraInstance.setSensor(
+      sensorConfig.sensors.map((e) => e.toPigeon()).toList(),
     );
   }
 
   /// change capture mode between [CaptureMode.photo] and [CaptureMode.video]
-  static Future<void> setCaptureMode(CaptureMode captureMode) {
-    return CameraInterface().setCaptureMode(captureMode.name.toUpperCase());
+  static Future<void> setCaptureMode(String captureMode) {
+    return _cameraInstance.setCaptureMode(captureMode);
   }
 
   /// enable audio mode recording or not
-  static Future<void> setAudioMode(bool enableAudio) {
-    return CameraInterface().setRecordingAudioMode(enableAudio);
+  static Future<bool> setRecordingAudioMode(bool enableAudio) {
+    return _cameraInstance.setRecordingAudioMode(enableAudio);
   }
 
   /// set exif preferences when a photo is saved
@@ -345,35 +358,35 @@ class CamerawesomePlugin {
   /// - Location is disabled on the phone
   /// - ExifPreferences.saveGPSLocation is false
   /// - Permission ACCESS_FINE_LOCATION has not been granted
-  static Future<bool> setExifPreferences(ExifPreferences savedExifData) {
-    return CameraInterface().setExifPreferences(savedExifData);
+  static Future<bool> setExifPreferences(pigeon.ExifPreferences savedExifData) {
+    return _cameraInstance.setExifPreferences(savedExifData);
   }
 
   /// set brightness manually with range [0,1]
-  static Future<void> setBrightness(double brightness) {
+  static Future<void> setCorrection(double brightness) {
     if (brightness < 0 || brightness > 1) {
       throw "Value must be between [0,1]";
     }
-    return CameraInterface().setCorrection(brightness);
+    return _cameraInstance.setCorrection(brightness);
   }
 
   /// returns the max zoom available on device
-  static Future<double?> getMaxZoom() {
-    return CameraInterface().getMaxZoom();
+  static Future<double> getMaxZoom() {
+    return _cameraInstance.getMaxZoom();
   }
 
   /// returns the min zoom available on device
-  static Future<double?> getMinZoom() {
-    return CameraInterface().getMinZoom();
+  static Future<double> getMinZoom() {
+    return _cameraInstance.getMinZoom();
   }
 
   static Future<bool> isMultiCamSupported() {
-    return CameraInterface().isMultiCamSupported();
+    return _cameraInstance.isMultiCamSupported();
   }
 
   /// Change aspect ratio when a photo is taken
-  static Future<void> setAspectRatio(String ratio) {
-    return CameraInterface().setAspectRatio(ratio.toUpperCase());
+  static Future<void> setAspectRatio(String aspectRatio) {
+    return _cameraInstance.setAspectRatio(aspectRatio);
   }
 
   /// Returns the list of available sensors on device.
@@ -384,8 +397,8 @@ class CamerawesomePlugin {
   /// Only available on iOS for now
   static Future<SensorDeviceData> getSensors() async {
     // Can't use getter with pigeon, so we have to map the data manually...
-    final frontSensors = await CameraInterface().getFrontSensors();
-    final backSensors = await CameraInterface().getBackSensors();
+    final frontSensors = await _cameraInstance.getFrontSensors();
+    final backSensors = await _cameraInstance.getBackSensors();
 
     final frontSensorsData = frontSensors
         .map(
@@ -417,50 +430,48 @@ class CamerawesomePlugin {
   // ---------------------------------------------------
   // UTILITY METHODS
   // ---------------------------------------------------
-  static Future<List<CamerAwesomePermission>?> checkAndRequestPermissions(
-    bool saveGpsLocation, {
-    bool checkMicrophonePermissions = true,
-    bool checkCameraPermissions = true,
+  static Future<List<pigeon.CamerAwesomePermission>?> checkAndRequestPermissions({
+    required bool saveGpsLocation,
   }) async {
-    try {
-      if (Platform.isAndroid) {
-        return CameraInterface().requestPermissions(saveGpsLocation).then((givenPermissions) {
-          return givenPermissions.map((e) => CamerAwesomePermission.values.firstWhere((element) => element.name == e)).toList();
-        });
-      } else if (Platform.isIOS) {
-        // TODO iOS Return only permissions that were given
-
-        List<String> permissions = [];
-        if (checkMicrophonePermissions) {
-          permissions.add("microphone");
-        }
-        if (checkCameraPermissions) {
-          permissions.add("camera");
-        }
-
-        return CamerawesomePlugin.checkiOSPermissions(permissions).then((givenPermissions) => CamerAwesomePermission.values);
-      }
-    } catch (e) {
-      printLog("failed to check permissions here...");
-      // ignore: avoid_print
-      print(e);
-    }
-    return Future.value([]);
+    return requestPermissions(saveGpsLocation);
   }
 
   static Future<void> startAnalysis() {
-    return CameraInterface().startAnalysis();
+    return _cameraInstance.startAnalysis();
   }
 
   static Future<void> stopAnalysis() {
-    return CameraInterface().stopAnalysis();
+    return _cameraInstance.stopAnalysis();
   }
 
-  static Future<void> setFilter(AwesomeFilter filter) {
-    return CameraInterface().setFilter(filter.matrix);
+  static Future<void> setFilter(AwesomeFilter newFilter) async {
+    return _cameraInstance.setFilter(Float64List.fromList(newFilter.matrix).buffer.asUint8List());
   }
 
   static Future<void> setMirrorFrontCamera(bool mirrorFrontCamera) {
-    return CameraInterface().setMirrorFrontCamera(mirrorFrontCamera);
+    return _cameraInstance.setMirrorFrontCamera(mirrorFrontCamera);
+  }
+
+  static Future<bool> isVideoRecordingAndImageAnalysisSupported(SensorPosition sensor) {
+    return _cameraInstance.isVideoRecordingAndImageAnalysisSupported(
+      sensor == SensorPosition.back ? pigeon.PigeonSensorPosition.back : pigeon.PigeonSensorPosition.front,
+    );
+  }
+
+  /// Only for tests
+  static void setMock(pigeon.CameraInterface mock) {
+    _cameraInstance = mock;
+  }
+}
+
+extension ExifPreferencesExt on pigeon.ExifPreferences {
+  pigeon.ExifPreferences toPigeon() {
+    return this;
+  }
+}
+
+extension VideoOptionsExt on pigeon.VideoOptions {
+  pigeon.VideoOptions toPigeon() {
+    return this;
   }
 }

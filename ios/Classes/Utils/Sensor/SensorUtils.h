@@ -13,8 +13,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface SensorUtils : NSObject
 
-+ (PigeonSensorType)sensorTypeFromDeviceType:(AVCaptureDeviceType)type;
-+ (AVCaptureDeviceType)deviceTypeFromSensorType:(PigeonSensorType)sensorType;
++ (CAPigeonSensorType)sensorTypeFromDeviceType:(AVCaptureDeviceType)type;
++ (AVCaptureDeviceType)deviceTypeFromSensorType:(CAPigeonSensorType)sensorType;
 
 @end
 

@@ -83,7 +83,7 @@ class SensorConfig {
 
     _brightnessSubscription = _brightnessController.stream
         .debounceTime(const Duration(milliseconds: 500))
-        .listen((value) => CamerawesomePlugin.setBrightness(value));
+        .listen((value) => CamerawesomePlugin.setCorrection(value));
   }
 
   Future<void> setZoom(double zoom) async {
@@ -106,7 +106,7 @@ class SensorConfig {
   /// [FlashMode.auto] let the camera decide if it should use flash or not
   /// [FlashMode.always] flash light stays open
   Future<void> setFlashMode(FlashMode flashMode) async {
-    await CamerawesomePlugin.setFlashMode(flashMode);
+    await CamerawesomePlugin.setFlashMode(flashMode.name);
     _flashModeController.sink.add(flashMode);
   }
 

@@ -6,31 +6,32 @@
 //
 
 #import "SensorUtils.h"
+#import "../../Pigeon.h"
 
 @implementation SensorUtils
 
-+ (PigeonSensorType)sensorTypeFromDeviceType:(AVCaptureDeviceType)type {
++ (CAPigeonSensorType)sensorTypeFromDeviceType:(AVCaptureDeviceType)type {
   if (type == AVCaptureDeviceTypeBuiltInTelephotoCamera) {
-    return PigeonSensorTypeTelephoto;
+    return CAPigeonSensorTypeTelephoto;
   } else if (type == AVCaptureDeviceTypeBuiltInUltraWideCamera) {
-    return PigeonSensorTypeUltraWideAngle;
+    return CAPigeonSensorTypeUltraWideAngle;
   } else if (type == AVCaptureDeviceTypeBuiltInTrueDepthCamera) {
-    return PigeonSensorTypeTrueDepth;
+    return CAPigeonSensorTypeTrueDepth;
   } else if (type == AVCaptureDeviceTypeBuiltInWideAngleCamera) {
-    return PigeonSensorTypeWideAngle;
+    return CAPigeonSensorTypeWideAngle;
   } else {
-    return PigeonSensorTypeUnknown;
+    return CAPigeonSensorTypeUnknown;
   }
 }
 
-+ (AVCaptureDeviceType)deviceTypeFromSensorType:(PigeonSensorType)sensorType {
-  if (sensorType == PigeonSensorTypeTelephoto) {
++ (AVCaptureDeviceType)deviceTypeFromSensorType:(CAPigeonSensorType)sensorType {
+  if (sensorType == CAPigeonSensorTypeTelephoto) {
     return AVCaptureDeviceTypeBuiltInTelephotoCamera;
-  } else if (sensorType == PigeonSensorTypeUltraWideAngle) {
+  } else if (sensorType == CAPigeonSensorTypeUltraWideAngle) {
     return AVCaptureDeviceTypeBuiltInUltraWideCamera;
-  } else if (sensorType == PigeonSensorTypeTrueDepth) {
+  } else if (sensorType == CAPigeonSensorTypeTrueDepth) {
     return AVCaptureDeviceTypeBuiltInTrueDepthCamera;
-  } else if (sensorType == PigeonSensorTypeWideAngle) {
+  } else if (sensorType == CAPigeonSensorTypeWideAngle) {
     return AVCaptureDeviceTypeBuiltInWideAngleCamera;
   } else {
     return AVCaptureDeviceTypeBuiltInWideAngleCamera;

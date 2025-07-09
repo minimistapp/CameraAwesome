@@ -3,6 +3,25 @@ import 'dart:io';
 
 import 'package:camerawesome/camerawesome_plugin.dart';
 import 'package:camerawesome/src/logger.dart';
+import 'package:camerawesome/src/orchestrator/pigeon/pigeon_generated.dart' as pigeon;
+
+extension InputAnalysisImageFormatExt on InputAnalysisImageFormat {
+  pigeon.AnalysisImageFormat toPigeon() {
+    switch (this) {
+      case InputAnalysisImageFormat.yuv_420:
+        return pigeon.AnalysisImageFormat.yuv_420;
+      case InputAnalysisImageFormat.bgra8888:
+        return pigeon.AnalysisImageFormat.bgra8888;
+      case InputAnalysisImageFormat.jpeg:
+        return pigeon.AnalysisImageFormat.jpeg;
+      case InputAnalysisImageFormat.nv21:
+        return pigeon.AnalysisImageFormat.nv21;
+      case InputAnalysisImageFormat.unknown:
+      default:
+        return pigeon.AnalysisImageFormat.unknown;
+    }
+  }
+}
 
 class AnalysisController {
   final OnImageForAnalysis? onImageListener;
@@ -46,7 +65,7 @@ class AnalysisController {
 
     if (Platform.isIOS) {
       await CamerawesomePlugin.setupAnalysis(
-        format: conf.cupertinoOptions.outputFormat,
+        format: conf.cupertinoOptions.outputFormat.toPigeon(),
         // TODO Can't set width on iOS
         width: 0,
         maxFramesPerSecond: conf.maxFramesPerSecond,
@@ -54,7 +73,7 @@ class AnalysisController {
       );
     } else {
       await CamerawesomePlugin.setupAnalysis(
-        format: conf.androidOptions.outputFormat,
+        format: conf.androidOptions.outputFormat.toPigeon(),
         width: conf.androidOptions.width,
         maxFramesPerSecond: conf.maxFramesPerSecond,
         autoStart: conf.autoStart,

@@ -1,7 +1,9 @@
-import 'package:camerawesome/pigeon.dart';
+import 'dart:ui';
+
 import 'package:camerawesome/src/orchestrator/adapters/pigeon_sensor_type_adapter.dart';
 import 'package:camerawesome/src/orchestrator/models/sensor_data.dart';
 import 'package:camerawesome/src/orchestrator/models/sensor_type.dart';
+import 'package:camerawesome/src/orchestrator/pigeon/pigeon_generated.dart';
 
 /// used to expose Brightness level
 class SensorData {

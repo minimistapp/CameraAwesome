@@ -10,17 +10,17 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-typedef NS_ENUM(NSUInteger, PigeonSensorPosition) {
-  PigeonSensorPositionBack = 0,
-  PigeonSensorPositionFront = 1,
-  PigeonSensorPositionUnknown = 2,
-  PigeonSensorPositionExternal = 3,
+typedef NS_ENUM(NSUInteger, CAPigeonSensorPosition) {
+  CAPigeonSensorPositionBack = 0,
+  CAPigeonSensorPositionFront = 1,
+  CAPigeonSensorPositionUnknown = 2,
+  CAPigeonSensorPositionExternal = 3,
 };
 
-/// Wrapper for PigeonSensorPosition to allow for nullability.
-@interface PigeonSensorPositionBox : NSObject
-@property(nonatomic, assign) PigeonSensorPosition value;
-- (instancetype)initWithValue:(PigeonSensorPosition)value;
+/// Wrapper for CAPigeonSensorPosition to allow for nullability.
+@interface CAPigeonSensorPositionBox : NSObject
+@property(nonatomic, assign) CAPigeonSensorPosition value;
+- (instancetype)initWithValue:(CAPigeonSensorPosition)value;
 @end
 
 /// Video recording quality, from [sd] to [uhd], with [highest] and [lowest] to
@@ -29,141 +29,142 @@ typedef NS_ENUM(NSUInteger, PigeonSensorPosition) {
 ///
 /// Qualities are defined like this:
 /// [sd] < [hd] < [fhd] < [uhd]
-typedef NS_ENUM(NSUInteger, VideoRecordingQuality) {
-  VideoRecordingQualityLowest = 0,
-  VideoRecordingQualitySd = 1,
-  VideoRecordingQualityHd = 2,
-  VideoRecordingQualityFhd = 3,
-  VideoRecordingQualityUhd = 4,
-  VideoRecordingQualityHighest = 5,
+typedef NS_ENUM(NSUInteger, CAVideoRecordingQuality) {
+  CAVideoRecordingQualityLowest = 0,
+  CAVideoRecordingQualitySd = 1,
+  CAVideoRecordingQualityHd = 2,
+  CAVideoRecordingQualityFhd = 3,
+  CAVideoRecordingQualityUhd = 4,
+  CAVideoRecordingQualityHighest = 5,
 };
 
-/// Wrapper for VideoRecordingQuality to allow for nullability.
-@interface VideoRecordingQualityBox : NSObject
-@property(nonatomic, assign) VideoRecordingQuality value;
-- (instancetype)initWithValue:(VideoRecordingQuality)value;
+/// Wrapper for CAVideoRecordingQuality to allow for nullability.
+@interface CAVideoRecordingQualityBox : NSObject
+@property(nonatomic, assign) CAVideoRecordingQuality value;
+- (instancetype)initWithValue:(CAVideoRecordingQuality)value;
 @end
 
 /// If the specified [VideoRecordingQuality] is not available on the device,
 /// the [VideoRecordingQuality] will fallback to [higher] or [lower] quality.
 /// [higher] is the default fallback strategy.
-typedef NS_ENUM(NSUInteger, QualityFallbackStrategy) {
-  QualityFallbackStrategyHigher = 0,
-  QualityFallbackStrategyLower = 1,
+typedef NS_ENUM(NSUInteger, CAQualityFallbackStrategy) {
+  CAQualityFallbackStrategyHigher = 0,
+  CAQualityFallbackStrategyLower = 1,
 };
 
-/// Wrapper for QualityFallbackStrategy to allow for nullability.
-@interface QualityFallbackStrategyBox : NSObject
-@property(nonatomic, assign) QualityFallbackStrategy value;
-- (instancetype)initWithValue:(QualityFallbackStrategy)value;
+/// Wrapper for CAQualityFallbackStrategy to allow for nullability.
+@interface CAQualityFallbackStrategyBox : NSObject
+@property(nonatomic, assign) CAQualityFallbackStrategy value;
+- (instancetype)initWithValue:(CAQualityFallbackStrategy)value;
 @end
 
-typedef NS_ENUM(NSUInteger, CupertinoFileType) {
-  CupertinoFileTypeQuickTimeMovie = 0,
-  CupertinoFileTypeMpeg4 = 1,
-  CupertinoFileTypeAppleM4V = 2,
-  CupertinoFileTypeType3GPP = 3,
-  CupertinoFileTypeType3GPP2 = 4,
+typedef NS_ENUM(NSUInteger, CACupertinoFileType) {
+  CACupertinoFileTypeQuickTimeMovie = 0,
+  CACupertinoFileTypeMpeg4 = 1,
+  CACupertinoFileTypeAppleM4V = 2,
+  CACupertinoFileTypeType3GPP = 3,
+  CACupertinoFileTypeType3GPP2 = 4,
 };
 
-/// Wrapper for CupertinoFileType to allow for nullability.
-@interface CupertinoFileTypeBox : NSObject
-@property(nonatomic, assign) CupertinoFileType value;
-- (instancetype)initWithValue:(CupertinoFileType)value;
+/// Wrapper for CACupertinoFileType to allow for nullability.
+@interface CACupertinoFileTypeBox : NSObject
+@property(nonatomic, assign) CACupertinoFileType value;
+- (instancetype)initWithValue:(CACupertinoFileType)value;
 @end
 
-typedef NS_ENUM(NSUInteger, CupertinoCodecType) {
-  CupertinoCodecTypeH264 = 0,
-  CupertinoCodecTypeHevc = 1,
-  CupertinoCodecTypeHevcWithAlpha = 2,
-  CupertinoCodecTypeJpeg = 3,
-  CupertinoCodecTypeAppleProRes4444 = 4,
-  CupertinoCodecTypeAppleProRes422 = 5,
-  CupertinoCodecTypeAppleProRes422HQ = 6,
-  CupertinoCodecTypeAppleProRes422LT = 7,
-  CupertinoCodecTypeAppleProRes422Proxy = 8,
+typedef NS_ENUM(NSUInteger, CACupertinoCodecType) {
+  CACupertinoCodecTypeH264 = 0,
+  CACupertinoCodecTypeHevc = 1,
+  CACupertinoCodecTypeHevcWithAlpha = 2,
+  CACupertinoCodecTypeJpeg = 3,
+  CACupertinoCodecTypeAppleProRes4444 = 4,
+  CACupertinoCodecTypeAppleProRes422 = 5,
+  CACupertinoCodecTypeAppleProRes422HQ = 6,
+  CACupertinoCodecTypeAppleProRes422LT = 7,
+  CACupertinoCodecTypeAppleProRes422Proxy = 8,
 };
 
-/// Wrapper for CupertinoCodecType to allow for nullability.
-@interface CupertinoCodecTypeBox : NSObject
-@property(nonatomic, assign) CupertinoCodecType value;
-- (instancetype)initWithValue:(CupertinoCodecType)value;
+/// Wrapper for CACupertinoCodecType to allow for nullability.
+@interface CACupertinoCodecTypeBox : NSObject
+@property(nonatomic, assign) CACupertinoCodecType value;
+- (instancetype)initWithValue:(CACupertinoCodecType)value;
 @end
 
-typedef NS_ENUM(NSUInteger, PigeonSensorType) {
+typedef NS_ENUM(NSUInteger, CAPigeonSensorType) {
   /// A built-in wide-angle camera.
   ///
   /// The wide angle sensor is the default sensor for iOS
-  PigeonSensorTypeWideAngle = 0,
+  CAPigeonSensorTypeWideAngle = 0,
   /// A built-in camera with a shorter focal length than that of the wide-angle camera.
-  PigeonSensorTypeUltraWideAngle = 1,
+  CAPigeonSensorTypeUltraWideAngle = 1,
   /// A built-in camera device with a longer focal length than the wide-angle camera.
-  PigeonSensorTypeTelephoto = 2,
+  CAPigeonSensorTypeTelephoto = 2,
   /// A device that consists of two cameras, one Infrared and one YUV.
   ///
   /// iOS only
-  PigeonSensorTypeTrueDepth = 3,
-  PigeonSensorTypeUnknown = 4,
+  CAPigeonSensorTypeTrueDepth = 3,
+  CAPigeonSensorTypeUnknown = 4,
 };
 
-/// Wrapper for PigeonSensorType to allow for nullability.
-@interface PigeonSensorTypeBox : NSObject
-@property(nonatomic, assign) PigeonSensorType value;
-- (instancetype)initWithValue:(PigeonSensorType)value;
+/// Wrapper for CAPigeonSensorType to allow for nullability.
+@interface CAPigeonSensorTypeBox : NSObject
+@property(nonatomic, assign) CAPigeonSensorType value;
+- (instancetype)initWithValue:(CAPigeonSensorType)value;
 @end
 
-typedef NS_ENUM(NSUInteger, CamerAwesomePermission) {
-  CamerAwesomePermissionStorage = 0,
-  CamerAwesomePermissionCamera = 1,
-  CamerAwesomePermissionLocation = 2,
-  CamerAwesomePermissionRecord_audio = 3,
+typedef NS_ENUM(NSUInteger, CACamerAwesomePermission) {
+  CACamerAwesomePermissionStorage = 0,
+  CACamerAwesomePermissionCamera = 1,
+  CACamerAwesomePermissionLocation = 2,
+  CACamerAwesomePermissionRecord_audio = 3,
 };
 
-/// Wrapper for CamerAwesomePermission to allow for nullability.
-@interface CamerAwesomePermissionBox : NSObject
-@property(nonatomic, assign) CamerAwesomePermission value;
-- (instancetype)initWithValue:(CamerAwesomePermission)value;
+/// Wrapper for CACamerAwesomePermission to allow for nullability.
+@interface CACamerAwesomePermissionBox : NSObject
+@property(nonatomic, assign) CACamerAwesomePermission value;
+- (instancetype)initWithValue:(CACamerAwesomePermission)value;
 @end
 
-typedef NS_ENUM(NSUInteger, AnalysisImageFormat) {
-  AnalysisImageFormatYuv_420 = 0,
-  AnalysisImageFormatBgra8888 = 1,
-  AnalysisImageFormatJpeg = 2,
-  AnalysisImageFormatNv21 = 3,
-  AnalysisImageFormatUnknown = 4,
+typedef NS_ENUM(NSUInteger, CAAnalysisImageFormat) {
+  CAAnalysisImageFormatYuv_420 = 0,
+  CAAnalysisImageFormatBgra8888 = 1,
+  CAAnalysisImageFormatJpeg = 2,
+  CAAnalysisImageFormatNv21 = 3,
+  CAAnalysisImageFormatUnknown = 4,
 };
 
-/// Wrapper for AnalysisImageFormat to allow for nullability.
-@interface AnalysisImageFormatBox : NSObject
-@property(nonatomic, assign) AnalysisImageFormat value;
-- (instancetype)initWithValue:(AnalysisImageFormat)value;
+/// Wrapper for CAAnalysisImageFormat to allow for nullability.
+@interface CAAnalysisImageFormatBox : NSObject
+@property(nonatomic, assign) CAAnalysisImageFormat value;
+- (instancetype)initWithValue:(CAAnalysisImageFormat)value;
 @end
 
-typedef NS_ENUM(NSUInteger, AnalysisRotation) {
-  AnalysisRotationRotation0deg = 0,
-  AnalysisRotationRotation90deg = 1,
-  AnalysisRotationRotation180deg = 2,
-  AnalysisRotationRotation270deg = 3,
+typedef NS_ENUM(NSUInteger, CAAnalysisRotation) {
+  CAAnalysisRotationRotation0deg = 0,
+  CAAnalysisRotationRotation90deg = 1,
+  CAAnalysisRotationRotation180deg = 2,
+  CAAnalysisRotationRotation270deg = 3,
 };
 
-/// Wrapper for AnalysisRotation to allow for nullability.
-@interface AnalysisRotationBox : NSObject
-@property(nonatomic, assign) AnalysisRotation value;
-- (instancetype)initWithValue:(AnalysisRotation)value;
+/// Wrapper for CAAnalysisRotation to allow for nullability.
+@interface CAAnalysisRotationBox : NSObject
+@property(nonatomic, assign) CAAnalysisRotation value;
+- (instancetype)initWithValue:(CAAnalysisRotation)value;
 @end
 
-@class PreviewSize;
-@class ExifPreferences;
-@class VideoOptions;
-@class AndroidVideoOptions;
-@class CupertinoVideoOptions;
-@class PigeonSensorTypeDevice;
-@class AndroidFocusSettings;
-@class PlaneWrapper;
-@class CropRectWrapper;
-@class AnalysisImageWrapper;
+@class CAPreviewSize;
+@class CAExifPreferences;
+@class CAPigeonSensor;
+@class CAVideoOptions;
+@class CAAndroidVideoOptions;
+@class CACupertinoVideoOptions;
+@class CAPigeonSensorTypeDevice;
+@class CAAndroidFocusSettings;
+@class CAPlaneWrapper;
+@class CACropRectWrapper;
+@class CAAnalysisImageWrapper;
 
-@interface PreviewSize : NSObject
+@interface CAPreviewSize : NSObject
 /// `init` unavailable to enforce nonnull fields, see the `make` class method.
 - (instancetype)init NS_UNAVAILABLE;
 + (instancetype)makeWithWidth:(double )width
@@ -172,60 +173,73 @@ typedef NS_ENUM(NSUInteger, AnalysisRotation) {
 @property(nonatomic, assign) double  height;
 @end
 
-@interface ExifPreferences : NSObject
+@interface CAExifPreferences : NSObject
 /// `init` unavailable to enforce nonnull fields, see the `make` class method.
 - (instancetype)init NS_UNAVAILABLE;
 + (instancetype)makeWithSaveGPSLocation:(BOOL )saveGPSLocation;
 @property(nonatomic, assign) BOOL  saveGPSLocation;
 @end
 
+@interface CAPigeonSensor : NSObject
+/// `init` unavailable to enforce nonnull fields, see the `make` class method.
+- (instancetype)init NS_UNAVAILABLE;
++ (instancetype)makeWithPosition:(CAPigeonSensorPosition)position
+    type:(CAPigeonSensorType)type
+    deviceId:(nullable NSString *)deviceId
+    zoomFactor:(nullable NSNumber *)zoomFactor;
+@property(nonatomic, assign) CAPigeonSensorPosition position;
+@property(nonatomic, assign) CAPigeonSensorType type;
+@property(nonatomic, copy, nullable) NSString * deviceId;
+@property(nonatomic, strong, nullable) NSNumber * zoomFactor;
+@end
+
 /// Video recording options. Some of them are specific to each platform.
-@interface VideoOptions : NSObject
+@interface CAVideoOptions : NSObject
 /// `init` unavailable to enforce nonnull fields, see the `make` class method.
 - (instancetype)init NS_UNAVAILABLE;
 + (instancetype)makeWithEnableAudio:(BOOL )enableAudio
-    quality:(nullable VideoRecordingQualityBox *)quality
-    android:(nullable AndroidVideoOptions *)android
-    ios:(nullable CupertinoVideoOptions *)ios;
+    quality:(nullable CAVideoRecordingQualityBox *)quality
+    android:(nullable CAAndroidVideoOptions *)android
+    ios:(nullable CACupertinoVideoOptions *)ios;
 /// Enable audio while video recording
 @property(nonatomic, assign) BOOL  enableAudio;
 /// The quality of the video recording, defaults to [VideoRecordingQuality.highest].
-@property(nonatomic, strong, nullable) VideoRecordingQualityBox * quality;
-@property(nonatomic, strong, nullable) AndroidVideoOptions * android;
-@property(nonatomic, strong, nullable) CupertinoVideoOptions * ios;
+@property(nonatomic, strong, nullable) CAVideoRecordingQualityBox * quality;
+@property(nonatomic, strong, nullable) CAAndroidVideoOptions * android;
+@property(nonatomic, strong, nullable) CACupertinoVideoOptions * ios;
 @end
 
-@interface AndroidVideoOptions : NSObject
+@interface CAAndroidVideoOptions : NSObject
 + (instancetype)makeWithBitrate:(nullable NSNumber *)bitrate
-    fallbackStrategy:(nullable QualityFallbackStrategyBox *)fallbackStrategy;
+    fallbackStrategy:(nullable CAQualityFallbackStrategyBox *)fallbackStrategy;
 /// The bitrate of the video recording. Only set it if a custom bitrate is
 /// desired.
 @property(nonatomic, strong, nullable) NSNumber * bitrate;
-@property(nonatomic, strong, nullable) QualityFallbackStrategyBox * fallbackStrategy;
+@property(nonatomic, strong, nullable) CAQualityFallbackStrategyBox * fallbackStrategy;
 @end
 
-@interface CupertinoVideoOptions : NSObject
-+ (instancetype)makeWithFileType:(nullable CupertinoFileTypeBox *)fileType
-    codec:(nullable CupertinoCodecTypeBox *)codec
+@interface CACupertinoVideoOptions : NSObject
++ (instancetype)makeWithFileType:(nullable CACupertinoFileTypeBox *)fileType
+    codec:(nullable CACupertinoCodecTypeBox *)codec
     fps:(nullable NSNumber *)fps;
 /// Specify video file type, defaults to [AVFileTypeQuickTimeMovie].
-@property(nonatomic, strong, nullable) CupertinoFileTypeBox * fileType;
+@property(nonatomic, strong, nullable) CACupertinoFileTypeBox * fileType;
 /// Specify video codec, defaults to [AVVideoCodecTypeH264].
-@property(nonatomic, strong, nullable) CupertinoCodecTypeBox * codec;
+@property(nonatomic, strong, nullable) CACupertinoCodecTypeBox * codec;
 /// Specify video fps, defaults to [30].
 @property(nonatomic, strong, nullable) NSNumber * fps;
 @end
 
-@interface PigeonSensorTypeDevice : NSObject
+@interface CAPigeonSensorTypeDevice : NSObject
 /// `init` unavailable to enforce nonnull fields, see the `make` class method.
 - (instancetype)init NS_UNAVAILABLE;
-+ (instancetype)makeWithSensorType:(PigeonSensorType)sensorType
++ (instancetype)makeWithSensorType:(CAPigeonSensorType)sensorType
     name:(NSString *)name
     iso:(double )iso
     flashAvailable:(BOOL )flashAvailable
     uid:(NSString *)uid
     zoomFactor:(nullable NSNumber *)zoomFactor;
-@property(nonatomic, assign) PigeonSensorType sensorType;
+@property(nonatomic, assign) CAPigeonSensorType sensorType;
 /// A localized device name for display in the user interface.
 @property(nonatomic, copy) NSString * name;
 /// The current exposure ISO value.
@@ -238,7 +252,7 @@ typedef NS_ENUM(NSUInteger, AnalysisRotation) {
 @property(nonatomic, strong, nullable) NSNumber * zoomFactor;
 @end
 
-@interface AndroidFocusSettings : NSObject
+@interface CAAndroidFocusSettings : NSObject
 /// `init` unavailable to enforce nonnull fields, see the `make` class method.
 - (instancetype)init NS_UNAVAILABLE;
 + (instancetype)makeWithAutoCancelDurationInMillis:(NSInteger )autoCancelDurationInMillis;
@@ -251,22 +265,22 @@ typedef NS_ENUM(NSUInteger, AnalysisRotation) {
 @property(nonatomic, assign) NSInteger  autoCancelDurationInMillis;
 @end
 
-@interface PlaneWrapper : NSObject
+@interface CAPlaneWrapper : NSObject
 /// `init` unavailable to enforce nonnull fields, see the `make` class method.
 - (instancetype)init NS_UNAVAILABLE;
 + (instancetype)makeWithBytes:(FlutterStandardTypedData *)bytes
-    bytesPerRow:(NSNumber *)bytesPerRow
+    bytesPerRow:(NSInteger )bytesPerRow
     bytesPerPixel:(nullable NSNumber *)bytesPerPixel
     width:(nullable NSNumber *)width
     height:(nullable NSNumber *)height;
 @property(nonatomic, strong) FlutterStandardTypedData * bytes;
-@property(nonatomic, strong) NSNumber * bytesPerRow;
+@property(nonatomic, assign) NSInteger  bytesPerRow;
 @property(nonatomic, strong, nullable) NSNumber * bytesPerPixel;
 @property(nonatomic, strong, nullable) NSNumber * width;
 @property(nonatomic, strong, nullable) NSNumber * height;
 @end
 
-@interface CropRectWrapper : NSObject
+@interface CACropRectWrapper : NSObject
 /// `init` unavailable to enforce nonnull fields, see the `make` class method.
 - (instancetype)init NS_UNAVAILABLE;
 + (instancetype)makeWithLeft:(NSInteger )left
@@ -279,42 +293,42 @@ typedef NS_ENUM(NSUInteger, AnalysisRotation) {
 @property(nonatomic, assign) NSInteger  height;
 @end
 
-@interface AnalysisImageWrapper : NSObject
+@interface CAAnalysisImageWrapper : NSObject
 /// `init` unavailable to enforce nonnull fields, see the `make` class method.
 - (instancetype)init NS_UNAVAILABLE;
-+ (instancetype)makeWithFormat:(AnalysisImageFormat)format
++ (instancetype)makeWithFormat:(CAAnalysisImageFormat)format
     bytes:(nullable FlutterStandardTypedData *)bytes
-    width:(NSNumber *)width
-    height:(NSNumber *)height
-    planes:(nullable NSArray<PlaneWrapper *> *)planes
-    cropRect:(nullable CropRectWrapper *)cropRect
-    rotation:(nullable AnalysisRotationBox *)rotation;
-@property(nonatomic, assign) AnalysisImageFormat format;
+    width:(NSInteger )width
+    height:(NSInteger )height
+    planes:(nullable NSArray<CAPlaneWrapper *> *)planes
+    cropRect:(nullable CACropRectWrapper *)cropRect
+    rotation:(nullable CAAnalysisRotationBox *)rotation;
+@property(nonatomic, assign) CAAnalysisImageFormat format;
 @property(nonatomic, strong, nullable) FlutterStandardTypedData * bytes;
-@property(nonatomic, strong) NSNumber * width;
-@property(nonatomic, strong) NSNumber * height;
-@property(nonatomic, strong, nullable) NSArray<PlaneWrapper *> * planes;
-@property(nonatomic, strong, nullable) CropRectWrapper * cropRect;
-@property(nonatomic, strong, nullable) AnalysisRotationBox * rotation;
+@property(nonatomic, assign) NSInteger  width;
+@property(nonatomic, assign) NSInteger  height;
+@property(nonatomic, copy, nullable) NSArray<CAPlaneWrapper *> * planes;
+@property(nonatomic, strong, nullable) CACropRectWrapper * cropRect;
+@property(nonatomic, strong, nullable) CAAnalysisRotationBox * rotation;
 @end
 
 /// The codec used by all APIs.
-NSObject<FlutterMessageCodec> *nullGetPigeonCodec(void);
+NSObject<FlutterMessageCodec> *CAGetPigeonCodec(void);
 
-@protocol AnalysisImageUtils
-- (void)nv21toJpegNv21Image:(AnalysisImageWrapper *)nv21Image jpegQuality:(NSInteger)jpegQuality completion:(void (^)(AnalysisImageWrapper *_Nullable, FlutterError *_Nullable))completion;
-- (void)yuv420toJpegYuvImage:(AnalysisImageWrapper *)yuvImage jpegQuality:(NSInteger)jpegQuality completion:(void (^)(AnalysisImageWrapper *_Nullable, FlutterError *_Nullable))completion;
-- (void)yuv420toNv21YuvImage:(AnalysisImageWrapper *)yuvImage completion:(void (^)(AnalysisImageWrapper *_Nullable, FlutterError *_Nullable))completion;
-- (void)bgra8888toJpegBgra8888image:(AnalysisImageWrapper *)bgra8888image jpegQuality:(NSInteger)jpegQuality completion:(void (^)(AnalysisImageWrapper *_Nullable, FlutterError *_Nullable))completion;
+@protocol CAAnalysisImageUtils
+- (void)nv21toJpegNv21Image:(CAAnalysisImageWrapper *)nv21Image jpegQuality:(NSInteger)jpegQuality completion:(void (^)(CAAnalysisImageWrapper *_Nullable, FlutterError *_Nullable))completion;
+- (void)yuv420toJpegYuvImage:(CAAnalysisImageWrapper *)yuvImage jpegQuality:(NSInteger)jpegQuality completion:(void (^)(CAAnalysisImageWrapper *_Nullable, FlutterError *_Nullable))completion;
+- (void)yuv420toNv21YuvImage:(CAAnalysisImageWrapper *)yuvImage completion:(void (^)(CAAnalysisImageWrapper *_Nullable, FlutterError *_Nullable))completion;
+- (void)bgra8888toJpegBgra8888image:(CAAnalysisImageWrapper *)bgra8888image jpegQuality:(NSInteger)jpegQuality completion:(void (^)(CAAnalysisImageWrapper *_Nullable, FlutterError *_Nullable))completion;
 @end
 
-extern void SetUpAnalysisImageUtils(id<FlutterBinaryMessenger> binaryMessenger, NSObject<AnalysisImageUtils> *_Nullable api);
+extern void SetUpCAAnalysisImageUtils(id<FlutterBinaryMessenger> binaryMessenger, NSObject<CAAnalysisImageUtils> *_Nullable api);
 
-extern void SetUpAnalysisImageUtilsWithSuffix(id<FlutterBinaryMessenger> binaryMessenger, NSObject<AnalysisImageUtils> *_Nullable api, NSString *messageChannelSuffix);
+extern void SetUpCAAnalysisImageUtilsWithSuffix(id<FlutterBinaryMessenger> binaryMessenger, NSObject<CAAnalysisImageUtils> *_Nullable api, NSString *messageChannelSuffix);
 
 
-@protocol CameraInterface
-- (void)setupCameraSensorIds:(NSArray<NSString *> *)sensorIds aspectRatio:(NSString *)aspectRatio zoom:(double)zoom mirrorFrontCamera:(BOOL)mirrorFrontCamera enablePhysicalButton:(BOOL)enablePhysicalButton flashMode:(NSString *)flashMode captureMode:(NSString *)captureMode enableImageStream:(BOOL)enableImageStream exifPreferences:(ExifPreferences *)exifPreferences videoOptions:(nullable VideoOptions *)videoOptions completion:(void (^)(NSNumber *_Nullable, FlutterError *_Nullable))completion;
+@protocol CACameraInterface
+- (void)setupCameraSensors:(NSArray<CAPigeonSensor *> *)sensors aspectRatio:(NSString *)aspectRatio zoom:(double)zoom mirrorFrontCamera:(BOOL)mirrorFrontCamera enablePhysicalButton:(BOOL)enablePhysicalButton flashMode:(NSString *)flashMode captureMode:(NSString *)captureMode enableImageStream:(BOOL)enableImageStream exifPreferences:(CAExifPreferences *)exifPreferences videoOptions:(nullable CAVideoOptions *)videoOptions completion:(void (^)(NSNumber *_Nullable, FlutterError *_Nullable))completion;
 /// @return `nil` only when `error != nil`.
 - (nullable NSArray<NSString *> *)checkPermissionsPermissions:(NSArray<NSString *> *)permissions error:(FlutterError *_Nullable *_Nonnull)error;
 /// Returns given [CamerAwesomePermission] list (as String). Location permission might be
@@ -322,16 +336,16 @@ extern void SetUpAnalysisImageUtilsWithSuffix(id<FlutterBinaryMessenger> binaryM
 - (void)requestPermissionsSaveGpsLocation:(BOOL)saveGpsLocation completion:(void (^)(NSArray<NSString *> *_Nullable, FlutterError *_Nullable))completion;
 /// @return `nil` only when `error != nil`.
 - (nullable NSNumber *)getPreviewTextureIdCameraPosition:(NSInteger)cameraPosition error:(FlutterError *_Nullable *_Nonnull)error;
-- (void)takePhotoSensorIds:(NSArray<NSString *> *)sensorIds paths:(NSArray<NSString *> *)paths completion:(void (^)(NSNumber *_Nullable, FlutterError *_Nullable))completion;
-- (void)recordVideoSensorIds:(NSArray<NSString *> *)sensorIds paths:(NSArray<NSString *> *)paths completion:(void (^)(FlutterError *_Nullable))completion;
+- (void)takePhotoSensors:(NSArray<CAPigeonSensor *> *)sensors paths:(NSArray<NSString *> *)paths completion:(void (^)(NSNumber *_Nullable, FlutterError *_Nullable))completion;
+- (void)recordVideoSensors:(NSArray<CAPigeonSensor *> *)sensors paths:(NSArray<NSString *> *)paths completion:(void (^)(FlutterError *_Nullable))completion;
 - (void)pauseVideoRecordingWithError:(FlutterError *_Nullable *_Nonnull)error;
 - (void)resumeVideoRecordingWithError:(FlutterError *_Nullable *_Nonnull)error;
 - (void)receivedImageFromStreamWithError:(FlutterError *_Nullable *_Nonnull)error;
 - (void)stopRecordingVideoWithCompletion:(void (^)(NSNumber *_Nullable, FlutterError *_Nullable))completion;
 /// @return `nil` only when `error != nil`.
-- (nullable NSArray<PigeonSensorTypeDevice *> *)getFrontSensorsWithError:(FlutterError *_Nullable *_Nonnull)error;
+- (nullable NSArray<CAPigeonSensorTypeDevice *> *)getFrontSensorsWithError:(FlutterError *_Nullable *_Nonnull)error;
 /// @return `nil` only when `error != nil`.
-- (nullable NSArray<PigeonSensorTypeDevice *> *)getBackSensorsWithError:(FlutterError *_Nullable *_Nonnull)error;
+- (nullable NSArray<CAPigeonSensorTypeDevice *> *)getBackSensorsWithError:(FlutterError *_Nullable *_Nonnull)error;
 /// @return `nil` only when `error != nil`.
 - (nullable NSNumber *)startWithError:(FlutterError *_Nullable *_Nonnull)error;
 /// @return `nil` only when `error != nil`.
@@ -342,10 +356,10 @@ extern void SetUpAnalysisImageUtilsWithSuffix(id<FlutterBinaryMessenger> binaryM
 ///
 /// On Android, you can control after how much time you want to switch back
 /// to passive focus mode with [androidFocusSettings].
-- (void)focusOnPointPreviewSize:(PreviewSize *)previewSize x:(double)x y:(double)y androidFocusSettings:(nullable AndroidFocusSettings *)androidFocusSettings error:(FlutterError *_Nullable *_Nonnull)error;
+- (void)focusOnPointPreviewSize:(CAPreviewSize *)previewSize x:(double)x y:(double)y androidFocusSettings:(nullable CAAndroidFocusSettings *)androidFocusSettings error:(FlutterError *_Nullable *_Nonnull)error;
 - (void)setZoomZoom:(double)zoom error:(FlutterError *_Nullable *_Nonnull)error;
 - (void)setMirrorFrontCameraMirror:(BOOL)mirror error:(FlutterError *_Nullable *_Nonnull)error;
-- (void)setSensorSensorId:(NSString *)sensorId error:(FlutterError *_Nullable *_Nonnull)error;
+- (void)setSensorSensors:(NSArray<CAPigeonSensor *> *)sensors error:(FlutterError *_Nullable *_Nonnull)error;
 - (void)setCorrectionBrightness:(double)brightness error:(FlutterError *_Nullable *_Nonnull)error;
 /// @return `nil` only when `error != nil`.
 - (nullable NSNumber *)getMinZoomWithError:(FlutterError *_Nullable *_Nonnull)error;
@@ -354,24 +368,24 @@ extern void SetUpAnalysisImageUtilsWithSuffix(id<FlutterBinaryMessenger> binaryM
 - (void)setCaptureModeMode:(NSString *)mode error:(FlutterError *_Nullable *_Nonnull)error;
 - (void)setRecordingAudioModeEnableAudio:(BOOL)enableAudio completion:(void (^)(NSNumber *_Nullable, FlutterError *_Nullable))completion;
 /// @return `nil` only when `error != nil`.
-- (nullable NSArray<PreviewSize *> *)availableSizesWithError:(FlutterError *_Nullable *_Nonnull)error;
+- (nullable NSArray<CAPreviewSize *> *)availableSizesWithError:(FlutterError *_Nullable *_Nonnull)error;
 - (void)refreshWithError:(FlutterError *_Nullable *_Nonnull)error;
-- (nullable PreviewSize *)getEffectivPreviewSizeIndex:(NSInteger)index error:(FlutterError *_Nullable *_Nonnull)error;
-- (void)setPhotoSizeSize:(PreviewSize *)size error:(FlutterError *_Nullable *_Nonnull)error;
-- (void)setPreviewSizeSize:(PreviewSize *)size error:(FlutterError *_Nullable *_Nonnull)error;
+- (nullable CAPreviewSize *)getEffectivPreviewSizeIndex:(NSInteger)index error:(FlutterError *_Nullable *_Nonnull)error;
+- (void)setPhotoSizeSize:(CAPreviewSize *)size error:(FlutterError *_Nullable *_Nonnull)error;
+- (void)setPreviewSizeSize:(CAPreviewSize *)size error:(FlutterError *_Nullable *_Nonnull)error;
 - (void)setAspectRatioAspectRatio:(NSString *)aspectRatio error:(FlutterError *_Nullable *_Nonnull)error;
 - (void)setupImageAnalysisStreamFormat:(NSString *)format width:(NSInteger)width maxFramesPerSecond:(nullable NSNumber *)maxFramesPerSecond autoStart:(BOOL)autoStart error:(FlutterError *_Nullable *_Nonnull)error;
-- (void)setExifPreferencesExifPreferences:(ExifPreferences *)exifPreferences completion:(void (^)(NSNumber *_Nullable, FlutterError *_Nullable))completion;
+- (void)setExifPreferencesExifPreferences:(CAExifPreferences *)exifPreferences completion:(void (^)(NSNumber *_Nullable, FlutterError *_Nullable))completion;
 - (void)startAnalysisWithError:(FlutterError *_Nullable *_Nonnull)error;
 - (void)stopAnalysisWithError:(FlutterError *_Nullable *_Nonnull)error;
-- (void)setFilterMatrix:(NSArray<NSInteger> *)matrix error:(FlutterError *_Nullable *_Nonnull)error;
-- (void)isVideoRecordingAndImageAnalysisSupportedSensor:(PigeonSensorPosition)sensor completion:(void (^)(NSNumber *_Nullable, FlutterError *_Nullable))completion;
+- (void)setFilterMatrix:(FlutterStandardTypedData *)matrix error:(FlutterError *_Nullable *_Nonnull)error;
+- (void)isVideoRecordingAndImageAnalysisSupportedSensor:(CAPigeonSensorPosition)sensor completion:(void (^)(NSNumber *_Nullable, FlutterError *_Nullable))completion;
 /// @return `nil` only when `error != nil`.
 - (nullable NSNumber *)isMultiCamSupportedWithError:(FlutterError *_Nullable *_Nonnull)error;
 @end
 
-extern void SetUpCameraInterface(id<FlutterBinaryMessenger> binaryMessenger, NSObject<CameraInterface> *_Nullable api);
+extern void SetUpCACameraInterface(id<FlutterBinaryMessenger> binaryMessenger, NSObject<CACameraInterface> *_Nullable api);
 
-extern void SetUpCameraInterfaceWithSuffix(id<FlutterBinaryMessenger> binaryMessenger, NSObject<CameraInterface> *_Nullable api, NSString *messageChannelSuffix);
+extern void SetUpCACameraInterfaceWithSuffix(id<FlutterBinaryMessenger> binaryMessenger, NSObject<CACameraInterface> *_Nullable api, NSString *messageChannelSuffix);
 
 NS_ASSUME_NONNULL_END

@@ -1,8 +1,12 @@
 import 'dart:math';
 
 import 'package:camerawesome/camerawesome_plugin.dart';
-import 'package:camerawesome/pigeon.dart';
+import 'package:camerawesome/src/orchestrator/pigeon/pigeon_generated.dart';
 import 'package:flutter/material.dart';
+
+extension PreviewSizeExt on PreviewSize {
+  Size toSize() => Size(width, height);
+}
 
 final previewWidgetKey = GlobalKey();
 
@@ -193,6 +197,7 @@ class PreviewSizeCalculator {
   void compute() {
     _zoom ??= _computeZoom();
     _maxSize ??= _computeMaxSize();
+    _offset ??= _computeOffset();
   }
 
   double get zoom {
@@ -257,39 +262,54 @@ class PreviewSizeCalculator {
     return maxSize;
   }
 
+  Offset _computeOffset() {
+    var nativePreviewSize = previewSize.toSize();
+    final nativeWidthProjection = constraints.maxWidth * 1 / zoom;
+    final wDiff = nativePreviewSize.width - nativeWidthProjection;
+
+    final nativeHeightProjection = constraints.maxHeight * 1 / zoom;
+    final hDiff = nativePreviewSize.height - nativeHeightProjection;
+
+    switch (previewFit) {
+      case CameraPreviewFit.fitWidth:
+        return Offset(0, constraints.maxHeight - maxSize.height);
+      case CameraPreviewFit.fitHeight:
+        return Offset(constraints.maxWidth - maxSize.width, 0);
+      case CameraPreviewFit.cover:
+        if (constraints.maxWidth / constraints.maxHeight > previewSize.width / previewSize.height) {
+          return Offset((hDiff * zoom) * 2, 0);
+        } else {
+          return Offset(0, (wDiff * zoom));
+        }
+      case CameraPreviewFit.contain:
+        return Offset(
+          (constraints.maxWidth - maxSize.width) / 2,
+          (constraints.maxHeight - maxSize.height) / 2,
+        );
+    }
+  }
+
+  double _computeZoom() {
+    var nativePreviewSize = previewSize.toSize();
+    double ratioW = constraints.maxWidth / nativePreviewSize.width;
+    double ratioH = constraints.maxHeight / nativePreviewSize.height;
+    switch (previewFit) {
+      case CameraPreviewFit.fitWidth:
+        return ratioW;
+      case CameraPreviewFit.fitHeight:
+        return ratioH;
+      case CameraPreviewFit.cover:
+        return max(ratioW, ratioH);
+      case CameraPreviewFit.contain:
+        return min(ratioW, ratioH);
+    }
+  }
+
   PreviewSize getMaxPreviewSize() {
     return PreviewSize(
       width: maxSize.width,
       height: maxSize.height,
     );
-  }
-
-  double _computeZoom() {
-    late double ratio;
-    var nativePreviewSize = previewSize.toSize();
-
-    switch (previewFit) {
-      case CameraPreviewFit.fitWidth:
-        ratio = constraints.maxWidth / nativePreviewSize.width; // 800 / 960
-        break;
-      case CameraPreviewFit.fitHeight:
-        ratio = constraints.maxHeight / nativePreviewSize.height; // 1220 / 1280
-        break;
-      case CameraPreviewFit.cover:
-        if (constraints.maxWidth / constraints.maxHeight > nativePreviewSize.width / nativePreviewSize.height) {
-          ratio = constraints.maxWidth / nativePreviewSize.width;
-        } else {
-          ratio = constraints.maxHeight / nativePreviewSize.height;
-        }
-        break;
-      case CameraPreviewFit.contain:
-        final ratioW = constraints.maxWidth / nativePreviewSize.width;
-        final ratioH = constraints.maxHeight / nativePreviewSize.height;
-        final minRatio = min(ratioW, ratioH);
-        ratio = minRatio;
-        break;
-    }
-    return ratio;
   }
 
   @override

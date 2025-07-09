@@ -11,3 +11,4 @@ export 'sensor_config.dart';
 export 'permission_utils.dart';
 export 'filters/awesome_filter.dart';
 export 'analysis/analysis.dart';
+export 'video_options.dart';

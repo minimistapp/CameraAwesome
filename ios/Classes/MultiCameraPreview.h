@@ -20,7 +20,7 @@
 #import "LocationController.h"
 #import "CameraFlash.h"
 #import "CaptureModes.h"
-#import "SensorUtils.h"
+#import "Utils/Sensor/SensorUtils.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -29,7 +29,7 @@ AVCaptureAudioDataOutputSampleBufferDelegate>
 
 @property (nonatomic, strong) AVCaptureMultiCamSession  *cameraSession;
 
-@property (nonatomic, strong) NSArray<PigeonSensor *> *sensors;
+@property (nonatomic, strong) NSArray<CAPigeonSensor *> *sensors;
 @property (nonatomic, strong) NSMutableArray<CameraDeviceInfo *> *devices;
 @property (nonatomic, strong) dispatch_queue_t dispatchQueue;
 @property(readonly, nonatomic) AVCaptureFlashMode flashMode;
@@ -43,13 +43,13 @@ AVCaptureAudioDataOutputSampleBufferDelegate>
 @property(nonatomic, nonatomic) NSMutableArray<CameraPreviewTexture *> *textures;
 @property(nonatomic, copy) void (^onPreviewFrameAvailable)(NSNumber * _Nullable);
 
-- (instancetype)initWithSensors:(NSArray<PigeonSensor *> *)sensors mirrorFrontCamera:(BOOL)mirrorFrontCamera
+- (instancetype)initWithSensors:(NSArray<CAPigeonSensor *> *)sensors mirrorFrontCamera:(BOOL)mirrorFrontCamera
            enablePhysicalButton:(BOOL)enablePhysicalButton
                 aspectRatioMode:(AspectRatio)aspectRatioMode
                     captureMode:(CaptureModes)captureMode
                   dispatchQueue:(dispatch_queue_t)dispatchQueue;
-- (void)configInitialSession:(NSArray<PigeonSensor *> *)sensors;
-- (void)setSensors:(NSArray<PigeonSensor *> *)sensors;
+- (void)configInitialSession:(NSArray<CAPigeonSensor *> *)sensors;
+- (void)setSensors:(NSArray<CAPigeonSensor *> *)sensors;
 - (void)setMirrorFrontCamera:(bool)value error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error;
 - (void)setBrightness:(NSNumber *)brightness error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error;
 - (void)setFlashMode:(CameraFlashMode)flashMode error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error;
@@ -61,7 +61,8 @@ AVCaptureAudioDataOutputSampleBufferDelegate>
 - (CGFloat)getMaxZoom;
 - (void)setPreviewSize:(CGSize)previewSize error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error;
 - (CGSize)getEffectivPreviewSize;
-- (void)takePhotoSensors:(nonnull NSArray<PigeonSensor *> *)sensors paths:(nonnull NSArray<NSString *> *)paths completion:(nonnull void (^)(NSNumber * _Nullable, FlutterError * _Nullable))completion;
+- (void)takePhotoSensors:(nonnull NSArray<CAPigeonSensor *> *)sensors paths:(nonnull NSArray<NSString *> *)paths completion:(nonnull void (^)(NSNumber * _Nullable, FlutterError * _Nullable))completion;
+- (void)recordVideo:(nonnull NSArray<NSString *> *)paths completion:(nonnull void (^)(FlutterError * _Nullable))completion;
 - (void)dispose;
 - (void)setAspectRatio:(AspectRatio)ratio;
 - (void)setExifPreferencesGPSLocation:(bool)gpsLocation completion:(void(^)(NSNumber *_Nullable, FlutterError *_Nullable))completion;

@@ -18,8 +18,7 @@ class VideoRecordingCameraState extends CameraState {
     required this.filePathBuilder,
   }) : super(cameraContext);
 
-  factory VideoRecordingCameraState.from(CameraContext orchestrator) =>
-      VideoRecordingCameraState(
+  factory VideoRecordingCameraState.from(CameraContext orchestrator) => VideoRecordingCameraState(
         cameraContext: orchestrator,
         filePathBuilder: orchestrator.saveConfig!.videoPathBuilder!,
       );
@@ -50,9 +49,7 @@ class VideoRecordingCameraState extends CameraState {
       throw "Trying to pause a media capture in status ${currentCapture.status} instead of ${MediaCaptureStatus.capturing}";
     }
     await CamerawesomePlugin.pauseVideoRecording();
-    _mediaCapture = MediaCapture.capturing(
-        captureRequest: currentCapture.captureRequest,
-        videoState: VideoState.paused);
+    _mediaCapture = MediaCapture.capturing(captureRequest: currentCapture.captureRequest, videoState: VideoState.paused);
   }
 
   /// Resumes a video recording.
@@ -96,7 +93,7 @@ class VideoRecordingCameraState extends CameraState {
       );
       onVideoFailed?.call(Exception("Error while stop recording"));
     }
-    await CamerawesomePlugin.setCaptureMode(CaptureMode.video);
+    await CamerawesomePlugin.setCaptureMode(CaptureMode.video.name);
     cameraContext.changeState(VideoCameraState.from(cameraContext));
   }
 

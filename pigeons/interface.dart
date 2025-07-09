@@ -1,5 +1,20 @@
 import 'package:pigeon/pigeon.dart';
 
+@ConfigurePigeon(
+  PigeonOptions(
+    dartOut: 'lib/src/orchestrator/pigeon/pigeon_generated.dart',
+    objcHeaderOut: 'ios/Classes/Pigeon.h',
+    objcSourceOut: 'ios/Classes/Pigeon.m',
+    objcOptions: ObjcOptions(
+      prefix: 'CA',
+    ),
+    kotlinOut: 'android/src/main/kotlin/com/apparence/camerawesome/cameraX/Pigeon.kt',
+    kotlinOptions: KotlinOptions(
+      package: 'com.apparence.camerawesome.cameraX',
+    ),
+    input: 'pigeons/interface.dart',
+  ),
+)
 class PreviewSize {
   final double width;
   final double height;
@@ -250,7 +265,7 @@ class AndroidFocusSettings {
 }
 
 class PlaneWrapper {
-  final List<int?> bytes;
+  final Uint8List bytes;
   final int bytesPerRow;
   final int? bytesPerPixel;
   final int? width;
@@ -290,7 +305,7 @@ class CropRectWrapper {
 
 class AnalysisImageWrapper {
   final AnalysisImageFormat format;
-  final List<int?>? bytes;
+  final Uint8List? bytes;
   final int width;
   final int height;
   final List<PlaneWrapper?>? planes;
@@ -440,7 +455,7 @@ abstract class CameraInterface {
 
   void stopAnalysis();
 
-  void setFilter(List<double> matrix);
+  void setFilter(Uint8List matrix);
 
   @async
   bool isVideoRecordingAndImageAnalysisSupported(PigeonSensorPosition sensor);

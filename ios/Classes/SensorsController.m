@@ -21,23 +21,23 @@
                                                        position:AVCaptureDevicePositionUnspecified];
   
   for (AVCaptureDevice *device in discoverySession.devices) {
-    PigeonSensorType type;
+    CAPigeonSensorType type;
     double zoomFactor = 1.0;
     if (device.deviceType == AVCaptureDeviceTypeBuiltInTelephotoCamera) {
-      type = PigeonSensorTypeTelephoto;
+      type = CAPigeonSensorTypeTelephoto;
       zoomFactor = 2.0;
     } else if (device.deviceType == AVCaptureDeviceTypeBuiltInUltraWideCamera) {
-      type = PigeonSensorTypeUltraWideAngle;
+      type = CAPigeonSensorTypeUltraWideAngle;
       zoomFactor = 0.5;
     } else if (device.deviceType == AVCaptureDeviceTypeBuiltInTrueDepthCamera) {
-      type = PigeonSensorTypeTrueDepth;
+      type = CAPigeonSensorTypeTrueDepth;
     } else if (device.deviceType == AVCaptureDeviceTypeBuiltInWideAngleCamera) {
-      type = PigeonSensorTypeWideAngle;
+      type = CAPigeonSensorTypeWideAngle;
     } else {
-      type = PigeonSensorTypeUnknown;
+      type = CAPigeonSensorTypeUnknown;
     }
     
-    PigeonSensorTypeDevice *sensorType = [PigeonSensorTypeDevice makeWithSensorType:type name:device.localizedName iso:device.ISO flashAvailable:device.flashAvailable uid:device.uniqueID zoomFactor:@(zoomFactor)];
+    CAPigeonSensorTypeDevice *sensorType = [CAPigeonSensorTypeDevice makeWithSensorType:type name:device.localizedName iso:device.ISO flashAvailable:device.flashAvailable uid:device.uniqueID zoomFactor:@(zoomFactor)];
     
     if (device.position == position) {
       [sensors addObject:sensorType];

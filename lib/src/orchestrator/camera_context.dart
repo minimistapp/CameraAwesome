@@ -5,7 +5,8 @@ import 'dart:io';
 import 'dart:ui';
 
 import 'package:camerawesome/camerawesome_plugin.dart';
-import 'package:camerawesome/pigeon.dart';
+import 'package:camerawesome/src/orchestrator/adapters/pigeon_sensor_adapter.dart';
+import 'package:camerawesome/src/orchestrator/pigeon/pigeon_generated.dart';
 import 'package:rxdart/rxdart.dart';
 
 /// This class handle the current state of the camera
@@ -116,7 +117,7 @@ class CameraContext {
     if (state.captureMode != newState.captureMode) {
       // This should not be done multiple times for the same CaptureMode or it
       // generates problems (especially when recording a video)
-      await CamerawesomePlugin.setCaptureMode(newState.captureMode!);
+      await CamerawesomePlugin.setCaptureMode(newState.captureMode!.name);
     }
     if (!stateController.isClosed) {
       stateController.add(newState);
@@ -142,12 +143,11 @@ class CameraContext {
 
   Future<void> setSensorConfig(SensorConfig newConfig) async {
     sensorConfigController.sink.add(newConfig);
-    if (sensorConfigController.hasValue &&
-        !identical(newConfig, sensorConfigController.value)) {
+    if (sensorConfigController.hasValue && !identical(newConfig, sensorConfigController.value)) {
       sensorConfigController.value.dispose();
     }
     await CamerawesomePlugin.setSensor(
-      newConfig.sensors,
+      newConfig.sensors.map((e) => e.toPigeon()).toList(),
     );
   }
 
@@ -169,7 +169,7 @@ class CameraContext {
 
   /// Global focus
   void focus() {
-    CamerawesomePlugin.startAutoFocus();
+    CamerawesomePlugin.handleAutoFocus();
   }
 
   /// Start auto focus on a specific [flutterPosition].
@@ -190,19 +190,17 @@ class CameraContext {
       final yPercentage = flutterPosition.dy / flutterPreviewSize.height;
 
       return CamerawesomePlugin.focusOnPoint(
-        position: Offset(xPercentage, yPercentage),
         previewSize: pixelPreviewSize,
-        androidFocusSettings: null,
+        x: xPercentage,
+        y: yPercentage,
       );
     } else {
-      final ratio = pixelPreviewSize.height / flutterPreviewSize.height;
       // Transform flutter position to pixel position
-      Offset pixelPosition = flutterPosition.scale(ratio, ratio);
       return CamerawesomePlugin.focusOnPoint(
-        position: pixelPosition,
         previewSize: pixelPreviewSize,
-        androidFocusSettings: androidFocusSettings ??
-            AndroidFocusSettings(autoCancelDurationInMillis: 5000),
+        x: flutterPosition.dx,
+        y: flutterPosition.dy,
+        androidFocusSettings: androidFocusSettings ?? AndroidFocusSettings(autoCancelDurationInMillis: 5000),
       );
     }
   }
@@ -216,7 +214,6 @@ class CameraContext {
   }
 
   Future<int?> previewTextureId(int cameraPosition) {
-    return CamerawesomePlugin.getPreviewTexture(cameraPosition)
-        .then(((value) => value?.toInt()));
+    return CamerawesomePlugin.getPreviewTexture(cameraPosition).then(((value) => value?.toInt()));
   }
 }

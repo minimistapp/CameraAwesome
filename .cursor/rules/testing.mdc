@@ -1,0 +1,6 @@
+---
+description: 
+globs: *.m,*.h,*.kt,*.swift,*.dart
+alwaysApply: false
+---
+You can test whether your code changes have the wished for effect by going into `packages/camerawesome/example` and running `flutter build ios` and `flutter build apk`.

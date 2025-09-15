@@ -86,11 +86,17 @@ class _AnimatedPreviewFitState extends State<AnimatedPreviewFit> {
 
   void _handPreviewCalculated() {
     if (widget.onPreviewCalculated != null) {
+      // Alignment shift of the preview container inside the available constraints
+      final alignX = (widget.alignment.x + 1) / 2; // [-1,1] -> [0,1]
+      final alignY = (widget.alignment.y + 1) / 2; // [-1,1] -> [0,1]
+      final containerDx = (widget.constraints.maxWidth - sizeCalculator!.maxSize.width) * alignX;
+      final containerDy = (widget.constraints.maxHeight - sizeCalculator!.maxSize.height) * alignY;
+      final alignedOffset = sizeCalculator!.offset + Offset(containerDx, containerDy);
       widget.onPreviewCalculated!(
         AnalysisPreview(
           nativePreviewSize: widget.previewSize.toSize(),
           previewSize: sizeCalculator!.maxSize,
-          offset: sizeCalculator!.offset,
+          offset: alignedOffset,
           scale: sizeCalculator!.zoom,
           sensor: widget.sensor,
         ),
@@ -122,7 +128,6 @@ class _AnimatedPreviewFitState extends State<AnimatedPreviewFit> {
   }
 }
 
-
 class PreviewFitWidget extends StatelessWidget {
   final Alignment alignment;
   final BoxConstraints constraints;
@@ -147,8 +152,7 @@ class PreviewFitWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final transformController = TransformationController()
-      ..value = (Matrix4.identity()..scale(scale));
+    final transformController = TransformationController()..value = (Matrix4.identity()..scale(scale));
 
     return Align(
       alignment: alignment,
@@ -241,8 +245,7 @@ class PreviewSizeCalculator {
       case CameraPreviewFit.cover:
         maxSize = Size(constraints.maxWidth, constraints.maxHeight);
 
-        if (constraints.maxWidth / constraints.maxHeight >
-            previewSize.width / previewSize.height) {
+        if (constraints.maxWidth / constraints.maxHeight > previewSize.width / previewSize.height) {
           _offset = Offset((hDiff * zoom) * 2, 0);
         } else {
           _offset = Offset(0, (wDiff * zoom));
@@ -279,8 +282,7 @@ class PreviewSizeCalculator {
         ratio = constraints.maxHeight / nativePreviewSize.height; // 1220 / 1280
         break;
       case CameraPreviewFit.cover:
-        if (constraints.maxWidth / constraints.maxHeight >
-            nativePreviewSize.width / nativePreviewSize.height) {
+        if (constraints.maxWidth / constraints.maxHeight > nativePreviewSize.width / nativePreviewSize.height) {
           ratio = constraints.maxWidth / nativePreviewSize.width;
         } else {
           ratio = constraints.maxHeight / nativePreviewSize.height;

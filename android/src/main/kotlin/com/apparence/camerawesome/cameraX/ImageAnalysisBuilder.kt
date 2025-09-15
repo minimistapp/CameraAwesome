@@ -22,6 +22,7 @@ class ImageAnalysisBuilder private constructor(
     private val format: OutputImageFormat,
     private val width: Int,
     private val height: Int,
+    private val aspectRatio: Int,
     private val executor: Executor,
     var previewStreamSink: EventChannel.EventSink? = null,
     private val maxFramesPerSecond: Double?,
@@ -54,6 +55,7 @@ class ImageAnalysisBuilder private constructor(
                 format,
                 widthOrDefault,
                 height.toInt(),
+                aspectRatio,
                 executor,
                 maxFramesPerSecond = maxFps,
             )
@@ -64,7 +66,10 @@ class ImageAnalysisBuilder private constructor(
     fun build(): ImageAnalysis {
         val outputImageFormat = if (format == OutputImageFormat.RGBA_8888) ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888 else ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888
         countDownLatch.reset()
-        val imageAnalysis = ImageAnalysis.Builder().setTargetResolution(Size(width, height))
+        // Prefer aligning analysis with preview by targeting aspect ratio instead of resolution.
+        // This reduces mismatches across devices and rotations and mirrors the preview selection.
+        val imageAnalysis = ImageAnalysis.Builder()
+            .setTargetAspectRatio(aspectRatio)
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .setOutputImageFormat(outputImageFormat).build()
         imageAnalysis.setAnalyzer(Dispatchers.IO.asExecutor()) { imageProxy ->
@@ -139,8 +144,10 @@ class ImageAnalysisBuilder private constructor(
     @SuppressLint("RestrictedApi", "UnsafeOptInUsageError")
     private fun imageProxyBaseAdapter(imageProxy: ImageProxy): MutableMap<String, Any> {
         return mutableMapOf(
-            "height" to imageProxy.image!!.height,
-            "width" to imageProxy.image!!.width,
+            // Use ImageProxy width/height which reflect the current targetRotation,
+            // instead of the underlying Image's buffer dimensions.
+            "height" to imageProxy.height,
+            "width" to imageProxy.width,
             "format" to format.name.lowercase(),
             "rotation" to "rotation${imageProxy.imageInfo.rotationDegrees}deg",
         )

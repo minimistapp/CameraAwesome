@@ -267,13 +267,23 @@
     *error = [FlutterError errorWithCode:@"PREVIEW_SIZE" message:@"impossible to change preview size, video already recording" details:@""];
     return;
   }
-  
+  BOOL sessionIsRunning = _captureSession.isRunning;
+  if (sessionIsRunning) {
+      [_captureSession stopRunning];
+  }
   [self setCameraPreset:previewSize];
+  if (sessionIsRunning) {
+    dispatch_async(_dispatchQueue, ^{
+      [self->_captureSession startRunning];
+    });
+  }
 }
 
 /// Start camera preview
 - (void)start {
-  [_captureSession startRunning];
+  dispatch_async(_dispatchQueue, ^{
+    [self->_captureSession startRunning];
+  });
 }
 
 /// Stop camera preview
@@ -283,6 +293,11 @@
 
 /// Set sensor between Front & Rear camera
 - (void)setSensor:(PigeonSensor *)sensor {
+  // Check if the session is running before changing the preset
+  BOOL sessionIsRunning = _captureSession.isRunning;
+  if (sessionIsRunning) {
+      [_captureSession stopRunning];
+  }
   // First remove all input & output
   [_captureSession beginConfiguration];
   
@@ -295,8 +310,14 @@
       }
     }
   }
-  [_videoController setAudioIsDisconnected:YES];
-  
+  // FIX: Changed from setAudioIsDisconnected to setVideoIsDisconnected.
+  // VIDEO is what's being switched (brief gap while new camera initializes),
+  // not audio. Setting the wrong flag caused audio timestamps to be offset
+  // while video timestamps weren't compensated for the gap, causing desync.
+  // The videoIsDisconnected flag triggers proper timestamp gap compensation
+  // in VideoController.m's captureOutput method.
+  [_videoController setVideoIsDisconnected:YES];
+
   [_captureSession removeOutput:_capturePhotoOutput];
   [_captureSession removeConnection:_captureConnection];
   
@@ -305,10 +326,19 @@
   
   // Init the camera preview with the selected sensor
   [self initCameraPreview:sensor.position];
-  
+
+  // Update VideoController with new capture device to re-apply custom FPS if recording
+  // This fixes audio/video desync when switching cameras during recording with custom FPS
+  [_videoController updateCaptureDevice:_captureDevice];
+
   [self setBestPreviewQuality];
   
   [_captureSession commitConfiguration];
+  if (sessionIsRunning) {
+    dispatch_async(_dispatchQueue, ^{
+      [self->_captureSession startRunning];
+    });
+  }
 }
 
 /// Set zoom level
@@ -504,7 +534,7 @@
 /// Record video into the given path
 - (void)recordVideoAtPath:(NSString *)path completion:(nonnull void (^)(FlutterError * _Nullable))completion {
   if (!_videoController.isRecording) {
-    [_videoController recordVideoAtPath:path captureDevice:_captureDevice orientation:_deviceOrientation audioSetupCallback:^{
+    [_videoController recordVideoAtPath:path captureDevice:_captureDevice orientation:_motionController.deviceOrientation audioSetupCallback:^{
       [self setUpCaptureSessionForAudioError:^(NSError *error) {
         completion([FlutterError errorWithCode:@"VIDEO_ERROR" message:@"error when trying to setup audio" details:[error localizedDescription]]);
       }];
@@ -571,6 +601,7 @@
   }
   
   [_captureSession commitConfiguration];
+  completion(@(YES), nil);
 }
 
 # pragma mark - Audio

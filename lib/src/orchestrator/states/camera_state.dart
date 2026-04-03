@@ -206,6 +206,10 @@ abstract class CameraState {
     return cameraContext.getSensors();
   }
 
+  Future<bool> requestUsbCameraPermission() {
+    return CamerawesomePlugin.requestUsbCameraPermission();
+  }
+
   Future<int?> previewTextureId(int cameraPosition) {
     return cameraContext.previewTextureId(cameraPosition);
   }

@@ -3,8 +3,14 @@ package com.apparence.camerawesome.cameraX
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.hardware.usb.UsbConstants
+import android.hardware.usb.UsbManager
 import android.graphics.*
 import android.hardware.camera2.CameraCharacteristics
 import android.location.Location
@@ -743,6 +749,37 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware {
     @ExperimentalCamera2Interop
     override fun isMultiCamSupported(): Boolean {
         return getCameraProvider().isMultiCamSupported()
+    }
+
+    override fun requestUsbCameraPermission(callback: (Result<Boolean>) -> Unit) {
+        val ctx = activity ?: run { callback(Result.success(false)); return }
+        val usbManager = ctx.getSystemService(Context.USB_SERVICE) as UsbManager
+        val devices = usbManager.deviceList.values.filter { device ->
+            (0 until device.interfaceCount).any { i ->
+                device.getInterface(i).interfaceClass == UsbConstants.USB_CLASS_VIDEO
+            }
+        }
+        if (devices.isEmpty()) {
+            callback(Result.success(false))
+            return
+        }
+        val actionUsbPermission = "com.apparence.camerawesome.USB_PERMISSION"
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (actionUsbPermission == intent.action) {
+                    ctx.unregisterReceiver(this)
+                }
+            }
+        }
+        ctx.registerReceiver(receiver, IntentFilter(actionUsbPermission))
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
+        val permissionIntent = PendingIntent.getBroadcast(ctx, 0, Intent(actionUsbPermission), flags)
+        devices.forEach { device ->
+            if (!usbManager.hasPermission(device)) {
+                usbManager.requestPermission(device, permissionIntent)
+            }
+        }
+        callback(Result.success(true))
     }
 
     /// Changing the recording audio mode can't be changed once a recording has starded

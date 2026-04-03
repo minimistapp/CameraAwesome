@@ -394,6 +394,15 @@ class CamerawesomePlugin {
     return CameraInterface().isMultiCamSupported();
   }
 
+  /// Android only. Triggers the system USB device permission dialog for any
+  /// connected UVC camera. Call this when external camera support is enabled
+  /// so the user can grant access before the device appears in [getSensors].
+  /// Returns true if at least one USB video device was found to request.
+  static Future<bool> requestUsbCameraPermission() {
+    if (!Platform.isAndroid) return Future.value(false);
+    return CameraInterface().requestUsbCameraPermission();
+  }
+
   /// Change aspect ratio when a photo is taken
   static Future<void> setAspectRatio(String ratio) {
     return CameraInterface().setAspectRatio(ratio.toUpperCase());

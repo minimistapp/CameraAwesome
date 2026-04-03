@@ -437,4 +437,10 @@ abstract class CameraInterface {
   bool isVideoRecordingAndImageAnalysisSupported(PigeonSensorPosition sensor);
 
   bool isMultiCamSupported();
+
+  /// Android only. Requests USB device permission for any connected UVC camera
+  /// (USB video-class device). Shows the system permission dialog if needed.
+  /// No-op on iOS. Returns true if at least one device was found to request.
+  @async
+  bool requestUsbCameraPermission();
 }

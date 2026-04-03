@@ -809,6 +809,7 @@ interface CameraInterface {
   fun setFilter(matrix: List<Double>)
   fun isVideoRecordingAndImageAnalysisSupported(sensor: PigeonSensorPosition, callback: (Result<Boolean>) -> Unit)
   fun isMultiCamSupported(): Boolean
+  fun requestUsbCameraPermission(callback: (Result<Boolean>) -> Unit)
 
   companion object {
     /** The codec used by CameraInterface. */
@@ -1532,6 +1533,24 @@ interface CameraInterface {
               wrapped = wrapError(exception)
             }
             reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.CameraInterface.requestUsbCameraPermission", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            api.requestUsbCameraPermission() { result: Result<Boolean> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(listOf(data))
+              }
+            }
           }
         } else {
           channel.setMessageHandler(null)

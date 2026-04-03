@@ -562,7 +562,24 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware {
     }
 
     override fun getExternalSensors(): List<PigeonSensorTypeDevice> {
-        return getSensorsByFacing(android.hardware.camera2.CameraCharacteristics.LENS_FACING_EXTERNAL)
+        // First check if CameraManager already sees an external camera (permission already granted).
+        val fromCameraManager = getSensorsByFacing(android.hardware.camera2.CameraCharacteristics.LENS_FACING_EXTERNAL)
+        if (fromCameraManager.isNotEmpty()) return fromCameraManager
+
+        // CameraManager sees nothing — check UsbManager for video-class devices.
+        // UsbManager.deviceList is readable without permission, so this detects
+        // a camera plugged in after app launch. If found, trigger the permission
+        // dialog so the device appears in CameraManager on the next poll cycle.
+        val usbManager = activity!!.getSystemService(Context.USB_SERVICE) as UsbManager
+        val hasUsbVideoDevice = usbManager.deviceList.values.any { device ->
+            (0 until device.interfaceCount).any { i ->
+                device.getInterface(i).interfaceClass == UsbConstants.USB_CLASS_VIDEO
+            }
+        }
+        if (hasUsbVideoDevice) {
+            requestUsbCameraPermission { /* fire-and-forget */ }
+        }
+        return emptyList()
     }
 
     @SuppressLint("UnsafeOptInUsageError")

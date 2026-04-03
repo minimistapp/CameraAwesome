@@ -2,6 +2,7 @@ import 'package:camerawesome/camerawesome_plugin.dart';
 import 'package:camerawesome/pigeon.dart';
 import 'package:camerawesome/src/orchestrator/camera_context.dart';
 import 'package:flutter/foundation.dart';
+import 'package:rxdart/rxdart.dart';
 
 typedef OnVideoMode = Function(VideoCameraState);
 
@@ -55,17 +56,27 @@ abstract class CameraState {
   MediaCapture? get captureState => cameraContext.captureState;
 
   /// Switch camera from [Sensors.BACK] [Sensors.front]
-  /// All states can switch this
+  /// All states can switch this.
+  ///
+  /// Pass [sensor] to switch directly to a specific sensor instead of toggling.
   Future<void> switchCameraSensor({
     CameraAspectRatios? aspectRatio,
     double? zoom,
     FlashMode? flash,
     SensorType? type,
+    Sensor? sensor,
   }) async {
     final previous = cameraContext.sensorConfig;
 
     SensorConfig next;
-    if (previous.sensors.length <= 1) {
+    if (sensor != null) {
+      next = SensorConfig.single(
+        sensor: sensor,
+        aspectRatio: aspectRatio ?? CameraAspectRatios.ratio_4_3,
+        zoom: zoom ?? 0.0,
+        flashMode: flash ?? FlashMode.none,
+      );
+    } else if (previous.sensors.length <= 1) {
       next = SensorConfig.single(
         sensor: previous.sensors.first.position == SensorPosition.back
             ? Sensor.position(SensorPosition.front)
@@ -102,6 +113,15 @@ abstract class CameraState {
       await next.setFlashMode(flash);
     }
   }
+
+  /// Emits [true] when an external (USB-C / UVC) camera is connected, [false]
+  /// when disconnected. Polls every 2 seconds and only emits on change.
+  Stream<bool> get externalCameraConnected$ => Stream.periodic(
+        const Duration(seconds: 2),
+      )
+          .asyncMap((_) => getSensors())
+          .map((data) => data.hasExternalCamera)
+          .distinct();
 
   void setSensorType(int cameraPosition, SensorType type, String deviceId) {
     final previous = cameraContext.sensorConfig;

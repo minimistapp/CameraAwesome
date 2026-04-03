@@ -14,6 +14,7 @@ typedef NS_ENUM(NSUInteger, PigeonSensorPosition) {
   PigeonSensorPositionBack = 0,
   PigeonSensorPositionFront = 1,
   PigeonSensorPositionUnknown = 2,
+  PigeonSensorPositionExternal = 3,
 };
 
 /// Video recording quality, from [sd] to [uhd], with [highest] and [lowest] to
@@ -286,6 +287,8 @@ NSObject<FlutterMessageCodec> *CameraInterfaceGetCodec(void);
 - (nullable NSArray<PigeonSensorTypeDevice *> *)getFrontSensorsWithError:(FlutterError *_Nullable *_Nonnull)error;
 /// @return `nil` only when `error != nil`.
 - (nullable NSArray<PigeonSensorTypeDevice *> *)getBackSensorsWithError:(FlutterError *_Nullable *_Nonnull)error;
+/// @return `nil` only when `error != nil`.
+- (nullable NSArray<PigeonSensorTypeDevice *> *)getExternalSensorsWithError:(FlutterError *_Nullable *_Nonnull)error;
 /// @return `nil` only when `error != nil`.
 - (nullable NSNumber *)startWithError:(FlutterError *_Nullable *_Nonnull)error;
 /// @return `nil` only when `error != nil`.

@@ -44,4 +44,29 @@
   return sensors;
 }
 
++ (NSArray *)getExternalSensors {
+  NSMutableArray *sensors = [NSMutableArray new];
+
+#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 170000
+  if (@available(iOS 17.0, *)) {
+    NSArray *sensorsType = @[AVCaptureDeviceTypeExternal];
+    AVCaptureDeviceDiscoverySession *discoverySession = [AVCaptureDeviceDiscoverySession
+                                                         discoverySessionWithDeviceTypes:sensorsType
+                                                         mediaType:AVMediaTypeVideo
+                                                         position:AVCaptureDevicePositionUnspecified];
+    for (AVCaptureDevice *device in discoverySession.devices) {
+      PigeonSensorTypeDevice *sensorType = [PigeonSensorTypeDevice
+          makeWithSensorType:PigeonSensorTypeWideAngle
+          name:device.localizedName
+          iso:[NSNumber numberWithFloat:device.ISO]
+          flashAvailable:[NSNumber numberWithBool:device.flashAvailable]
+          uid:device.uniqueID];
+      [sensors addObject:sensorType];
+    }
+  }
+#endif
+
+  return sensors;
+}
+
 @end

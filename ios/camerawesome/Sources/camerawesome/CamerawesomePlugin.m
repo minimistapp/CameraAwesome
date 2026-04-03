@@ -709,6 +709,10 @@ FlutterEventSink physicalButtonEventSink;
   return [SensorsController getSensors:AVCaptureDevicePositionBack];
 }
 
+- (nullable NSArray<PigeonSensorTypeDevice *> *)getExternalSensorsWithError:(FlutterError *_Nullable *_Nonnull)error {
+  return [SensorsController getExternalSensors];
+}
+
 - (void)setSensorSensors:(nonnull NSArray<PigeonSensor *> *)sensors error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
   if (self.camera == nil && self.multiCamera == nil) {
     *error = [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil];

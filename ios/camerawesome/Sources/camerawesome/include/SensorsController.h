@@ -13,6 +13,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface SensorsController : NSObject
 
 + (NSArray *)getSensors:(AVCaptureDevicePosition)position;
++ (NSArray *)getExternalSensors;
 
 @end
 

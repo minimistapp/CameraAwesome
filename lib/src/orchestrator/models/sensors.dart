@@ -11,6 +11,7 @@ enum CameraAspectRatios {
 enum SensorPosition {
   front,
   back,
+  external,
 }
 
 class Sensor {

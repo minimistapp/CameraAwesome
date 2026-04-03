@@ -34,6 +34,7 @@ enum PigeonSensorPosition {
   back,
   front,
   unknown,
+  external,
 }
 
 /// Video recording quality, from [sd] to [uhd], with [highest] and [lowest] to
@@ -364,6 +365,8 @@ abstract class CameraInterface {
   List<PigeonSensorTypeDevice> getFrontSensors();
 
   List<PigeonSensorTypeDevice> getBackSensors();
+
+  List<PigeonSensorTypeDevice> getExternalSensors();
 
   bool start();
 

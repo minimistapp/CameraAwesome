@@ -46,7 +46,8 @@ class FlutterError (
 enum class PigeonSensorPosition(val raw: Int) {
   BACK(0),
   FRONT(1),
-  UNKNOWN(2);
+  UNKNOWN(2),
+  EXTERNAL(3);
 
   companion object {
     fun ofRaw(raw: Int): PigeonSensorPosition? {
@@ -775,6 +776,7 @@ interface CameraInterface {
   fun stopRecordingVideo(callback: (Result<Boolean>) -> Unit)
   fun getFrontSensors(): List<PigeonSensorTypeDevice>
   fun getBackSensors(): List<PigeonSensorTypeDevice>
+  fun getExternalSensors(): List<PigeonSensorTypeDevice>
   fun start(): Boolean
   fun stop(): Boolean
   fun setFlashMode(mode: String)
@@ -1034,6 +1036,22 @@ interface CameraInterface {
             var wrapped: List<Any?>
             try {
               wrapped = listOf<Any?>(api.getBackSensors())
+            } catch (exception: Throwable) {
+              wrapped = wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.CameraInterface.getExternalSensors", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            var wrapped: List<Any?>
+            try {
+              wrapped = listOf<Any?>(api.getExternalSensors())
             } catch (exception: Throwable) {
               wrapped = wrapError(exception)
             }

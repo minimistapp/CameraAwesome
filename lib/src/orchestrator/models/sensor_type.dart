@@ -68,12 +68,18 @@ class SensorDeviceData {
   /// iOS only
   SensorTypeDevice? trueDepth;
 
+  /// An external (USB-C / UVC) camera connected to the device.
+  SensorTypeDevice? externalCamera;
+
   SensorDeviceData({
     this.wideAngle,
     this.ultraWideAngle,
     this.telephoto,
     this.trueDepth,
+    this.externalCamera,
   });
+
+  bool get hasExternalCamera => externalCamera != null;
 
   List<SensorTypeDevice> get availableSensors {
     return [
@@ -81,6 +87,7 @@ class SensorDeviceData {
       ultraWideAngle,
       telephoto,
       trueDepth,
+      externalCamera,
     ].where((element) => element != null).cast<SensorTypeDevice>().toList();
   }
 

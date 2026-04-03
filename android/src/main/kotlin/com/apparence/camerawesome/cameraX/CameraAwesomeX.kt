@@ -548,11 +548,42 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware {
     }
 
     override fun getFrontSensors(): List<PigeonSensorTypeDevice> {
-        TODO("Not yet implemented")
+        return getSensorsByFacing(android.hardware.camera2.CameraCharacteristics.LENS_FACING_FRONT)
     }
 
     override fun getBackSensors(): List<PigeonSensorTypeDevice> {
-        TODO("Not yet implemented")
+        return getSensorsByFacing(android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK)
+    }
+
+    override fun getExternalSensors(): List<PigeonSensorTypeDevice> {
+        return getSensorsByFacing(android.hardware.camera2.CameraCharacteristics.LENS_FACING_EXTERNAL)
+    }
+
+    @SuppressLint("UnsafeOptInUsageError")
+    private fun getSensorsByFacing(lensFacing: Int): List<PigeonSensorTypeDevice> {
+        val cameraManager = activity!!.getSystemService(android.content.Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+        val result = mutableListOf<PigeonSensorTypeDevice>()
+        for (cameraId in cameraManager.cameraIdList) {
+            val characteristics = try {
+                cameraManager.getCameraCharacteristics(cameraId)
+            } catch (e: Exception) {
+                continue
+            }
+            val facing = characteristics.get(android.hardware.camera2.CameraCharacteristics.LENS_FACING)
+            if (facing != lensFacing) continue
+            val name = "Camera $cameraId"
+            val flashAvailable = characteristics.get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
+            result.add(
+                PigeonSensorTypeDevice(
+                    sensorType = PigeonSensorType.WIDEANGLE,
+                    name = name,
+                    iso = 0.0,
+                    flashAvailable = flashAvailable,
+                    uid = cameraId,
+                ),
+            )
+        }
+        return result
     }
 
     override fun pauseVideoRecording() {

@@ -12,6 +12,7 @@ enum PigeonSensorPosition {
   back,
   front,
   unknown,
+  external,
 }
 
 /// Video recording quality, from [sd] to [uhd], with [highest] and [lowest] to
@@ -1030,6 +1031,32 @@ class CameraInterface {
   Future<List<PigeonSensorTypeDevice?>> getBackSensors() async {
     final BasicMessageChannel<Object?> channel = BasicMessageChannel<Object?>(
         'dev.flutter.pigeon.CameraInterface.getBackSensors', codec,
+        binaryMessenger: _binaryMessenger);
+    final List<Object?>? replyList = await channel.send(null) as List<Object?>?;
+    if (replyList == null) {
+      throw PlatformException(
+        code: 'channel-error',
+        message: 'Unable to establish connection on channel.',
+      );
+    } else if (replyList.length > 1) {
+      throw PlatformException(
+        code: replyList[0]! as String,
+        message: replyList[1] as String?,
+        details: replyList[2],
+      );
+    } else if (replyList[0] == null) {
+      throw PlatformException(
+        code: 'null-error',
+        message: 'Host platform returned null value for non-null return value.',
+      );
+    } else {
+      return (replyList[0] as List<Object?>?)!.cast<PigeonSensorTypeDevice?>();
+    }
+  }
+
+  Future<List<PigeonSensorTypeDevice?>> getExternalSensors() async {
+    final BasicMessageChannel<Object?> channel = BasicMessageChannel<Object?>(
+        'dev.flutter.pigeon.CameraInterface.getExternalSensors', codec,
         binaryMessenger: _binaryMessenger);
     final List<Object?>? replyList = await channel.send(null) as List<Object?>?;
     if (replyList == null) {

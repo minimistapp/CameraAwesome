@@ -414,32 +414,31 @@ class CamerawesomePlugin {
       final frontSensors = await CameraInterface().getFrontSensors();
       final backSensors = await CameraInterface().getBackSensors();
 
-      final frontSensorsData = frontSensors
-          .map(
-            (data) => SensorTypeDevice(
-              flashAvailable: data!.flashAvailable,
-              iso: data.iso,
-              name: data.name,
-              uid: data.uid,
-              sensorType: SensorType.values.firstWhere(
-                (element) => element.name == data.sensorType.name,
-              ),
-            ),
-          )
-          .toList();
-      final backSensorsData = backSensors
-          .map(
-            (data) => SensorTypeDevice(
-              flashAvailable: data!.flashAvailable,
-              iso: data.iso,
-              name: data.name,
-              uid: data.uid,
-              sensorType: SensorType.values.firstWhere(
-                (element) => element.name == data.sensorType.name,
-              ),
-            ),
-          )
-          .toList();
+      // getExternalSensors() is only available on iOS 17+ — graceful fallback
+      List<PigeonSensorTypeDevice?> externalSensors = [];
+      try {
+        externalSensors = await CameraInterface().getExternalSensors();
+      } catch (_) {
+        // External camera API not available on this iOS version; ignore.
+      }
+
+      SensorTypeDevice? mapSensor(PigeonSensorTypeDevice? data) {
+        if (data == null) return null;
+        return SensorTypeDevice(
+          flashAvailable: data.flashAvailable,
+          iso: data.iso,
+          name: data.name,
+          uid: data.uid,
+          sensorType: SensorType.values.firstWhere(
+            (element) => element.name == data.sensorType.name,
+            orElse: () => SensorType.unknown,
+          ),
+        );
+      }
+
+      final frontSensorsData = frontSensors.map(mapSensor).nonNulls.toList();
+      final backSensorsData = backSensors.map(mapSensor).nonNulls.toList();
+      final externalSensorsData = externalSensors.map(mapSensor).nonNulls.toList();
 
       return SensorDeviceData(
         ultraWideAngle: backSensorsData
@@ -466,6 +465,7 @@ class CamerawesomePlugin {
             )
             .toList()
             .firstOrNull,
+        externalCamera: externalSensorsData.firstOrNull,
       );
     }
   }

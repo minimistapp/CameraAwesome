@@ -237,6 +237,27 @@ class AndroidFocusSettings {
   AndroidFocusSettings({required this.autoCancelDurationInMillis});
 }
 
+/// iOS-specific focus settings for [focusOnPoint].
+class IOSFocusSettings {
+  /// If true, uses AVCaptureFocusModeAutoFocus (one-shot lock like native Camera app).
+  /// If false, uses AVCaptureFocusModeContinuousAutoFocus (current default).
+  bool lockFocus;
+
+  /// If true, also sets the exposure point of interest to the tap location
+  /// and adjusts exposure mode to auto-expose.
+  bool setExposurePoint;
+
+  /// Focus range restriction hint:
+  /// 0 = none (default), 1 = near (better for close-up), 2 = far
+  int autoFocusRangeRestriction;
+
+  IOSFocusSettings({
+    required this.lockFocus,
+    required this.setExposurePoint,
+    required this.autoFocusRangeRestriction,
+  });
+}
+
 class PlaneWrapper {
   final Uint8List bytes;
   final int bytesPerRow;
@@ -382,6 +403,7 @@ abstract class CameraInterface {
     double x,
     double y,
     AndroidFocusSettings? androidFocusSettings,
+    IOSFocusSettings? iosFocusSettings,
   );
 
   void setZoom(double zoom);

@@ -439,20 +439,48 @@
 }
 
 /// Trigger focus on device at the specific point of the preview
-- (void)focusOnPoint:(CGPoint)position preview:(CGSize)preview error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
+- (void)focusOnPoint:(CGPoint)position preview:(CGSize)preview iosFocusSettings:(nullable IOSFocusSettings *)settings error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
   NSError *lockError;
-  if ([_captureDevice isFocusModeSupported:AVCaptureFocusModeAutoFocus] && [_captureDevice isFocusPointOfInterestSupported]) {
-    if ([_captureDevice lockForConfiguration:&lockError]) {
-      if (lockError != nil) {
-        *error = [FlutterError errorWithCode:@"FOCUS_ERROR" message:@"impossible to set focus point" details:@""];
-        return;
-      }
-      
+  if ([_captureDevice lockForConfiguration:&lockError]) {
+    // Focus point
+    if ([_captureDevice isFocusPointOfInterestSupported]) {
       [_captureDevice setFocusPointOfInterest:position];
-      [_captureDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
-      
-      [_captureDevice unlockForConfiguration];
     }
+
+    // Focus mode: one-shot lock vs continuous (default)
+    BOOL lockFocus = settings != nil && [settings.lockFocus boolValue];
+    if (lockFocus && [_captureDevice isFocusModeSupported:AVCaptureFocusModeAutoFocus]) {
+      [_captureDevice setFocusMode:AVCaptureFocusModeAutoFocus];
+    } else if ([_captureDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
+      [_captureDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
+    }
+
+    // Exposure adjustment (only when requested)
+    BOOL setExposure = settings != nil && [settings.setExposurePoint boolValue];
+    if (setExposure) {
+      if ([_captureDevice isExposurePointOfInterestSupported]) {
+        [_captureDevice setExposurePointOfInterest:position];
+      }
+      if ([_captureDevice isExposureModeSupported:AVCaptureExposureModeAutoExpose]) {
+        [_captureDevice setExposureMode:AVCaptureExposureModeAutoExpose];
+      }
+    }
+
+    // Focus range restriction hint
+    int rangeRestriction = settings != nil ? [settings.autoFocusRangeRestriction intValue] : 0;
+    if ([_captureDevice isAutoFocusRangeRestrictionSupported]) {
+      if (rangeRestriction == 1) {
+        [_captureDevice setAutoFocusRangeRestriction:AVCaptureAutoFocusRangeRestrictionNear];
+      } else if (rangeRestriction == 2) {
+        [_captureDevice setAutoFocusRangeRestriction:AVCaptureAutoFocusRangeRestrictionFar];
+      } else {
+        [_captureDevice setAutoFocusRangeRestriction:AVCaptureAutoFocusRangeRestrictionNone];
+      }
+    }
+
+    [_captureDevice unlockForConfiguration];
+  } else {
+    *error = [FlutterError errorWithCode:@"FOCUS_ERROR" message:@"impossible to set focus point" details:[lockError localizedDescription]];
   }
 }
 

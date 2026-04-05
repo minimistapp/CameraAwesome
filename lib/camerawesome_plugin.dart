@@ -9,6 +9,7 @@ import 'package:camerawesome/src/orchestrator/models/camera_physical_button.dart
 import 'package:collection/collection.dart';
 import 'package:flutter/services.dart';
 
+export 'pigeon.dart' show AndroidFocusSettings, IOSFocusSettings;
 export 'src/camera_characteristics/camera_characteristics.dart';
 export 'src/orchestrator/analysis/analysis_controller.dart';
 export 'src/orchestrator/models/models.dart';
@@ -319,12 +320,14 @@ class CamerawesomePlugin {
     required PreviewSize previewSize,
     required Offset position,
     required AndroidFocusSettings? androidFocusSettings,
+    IOSFocusSettings? iosFocusSettings,
   }) {
     return CameraInterface().focusOnPoint(
       previewSize,
       position.dx,
       position.dy,
       androidFocusSettings,
+      iosFocusSettings,
     );
   }
 

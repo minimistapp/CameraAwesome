@@ -69,6 +69,12 @@ static id GetNullableObjectAtIndex(NSArray *array, NSInteger key) {
 - (NSArray *)toList;
 @end
 
+@interface IOSFocusSettings ()
++ (IOSFocusSettings *)fromList:(NSArray *)list;
++ (nullable IOSFocusSettings *)nullableFromList:(NSArray *)list;
+- (NSArray *)toList;
+@end
+
 @interface PlaneWrapper ()
 + (PlaneWrapper *)fromList:(NSArray *)list;
 + (nullable PlaneWrapper *)nullableFromList:(NSArray *)list;
@@ -312,6 +318,38 @@ static id GetNullableObjectAtIndex(NSArray *array, NSInteger key) {
 - (NSArray *)toList {
   return @[
     (self.autoCancelDurationInMillis ?: [NSNull null]),
+  ];
+}
+@end
+
+@implementation IOSFocusSettings
++ (instancetype)makeWithLockFocus:(NSNumber *)lockFocus
+    setExposurePoint:(NSNumber *)setExposurePoint
+    autoFocusRangeRestriction:(NSNumber *)autoFocusRangeRestriction {
+  IOSFocusSettings* pigeonResult = [[IOSFocusSettings alloc] init];
+  pigeonResult.lockFocus = lockFocus;
+  pigeonResult.setExposurePoint = setExposurePoint;
+  pigeonResult.autoFocusRangeRestriction = autoFocusRangeRestriction;
+  return pigeonResult;
+}
++ (IOSFocusSettings *)fromList:(NSArray *)list {
+  IOSFocusSettings *pigeonResult = [[IOSFocusSettings alloc] init];
+  pigeonResult.lockFocus = GetNullableObjectAtIndex(list, 0);
+  NSAssert(pigeonResult.lockFocus != nil, @"");
+  pigeonResult.setExposurePoint = GetNullableObjectAtIndex(list, 1);
+  NSAssert(pigeonResult.setExposurePoint != nil, @"");
+  pigeonResult.autoFocusRangeRestriction = GetNullableObjectAtIndex(list, 2);
+  NSAssert(pigeonResult.autoFocusRangeRestriction != nil, @"");
+  return pigeonResult;
+}
++ (nullable IOSFocusSettings *)nullableFromList:(NSArray *)list {
+  return (list) ? [IOSFocusSettings fromList:list] : nil;
+}
+- (NSArray *)toList {
+  return @[
+    (self.lockFocus ?: [NSNull null]),
+    (self.setExposurePoint ?: [NSNull null]),
+    (self.autoFocusRangeRestriction ?: [NSNull null]),
   ];
 }
 @end
@@ -598,8 +636,10 @@ void AnalysisImageUtilsSetup(id<FlutterBinaryMessenger> binaryMessenger, NSObjec
       return [PreviewSize fromList:[self readValue]];
     case 135: 
       return [PreviewSize fromList:[self readValue]];
-    case 136: 
+    case 136:
       return [VideoOptions fromList:[self readValue]];
+    case 137:
+      return [IOSFocusSettings fromList:[self readValue]];
     default:
       return [super readValueOfType:type];
   }
@@ -636,6 +676,9 @@ void AnalysisImageUtilsSetup(id<FlutterBinaryMessenger> binaryMessenger, NSObjec
     [self writeValue:[value toList]];
   } else if ([value isKindOfClass:[VideoOptions class]]) {
     [self writeByte:136];
+    [self writeValue:[value toList]];
+  } else if ([value isKindOfClass:[IOSFocusSettings class]]) {
+    [self writeByte:137];
     [self writeValue:[value toList]];
   } else {
     [super writeValue:value];
@@ -975,15 +1018,16 @@ void CameraInterfaceSetup(id<FlutterBinaryMessenger> binaryMessenger, NSObject<C
         binaryMessenger:binaryMessenger
         codec:CameraInterfaceGetCodec()];
     if (api) {
-      NSCAssert([api respondsToSelector:@selector(focusOnPointPreviewSize:x:y:androidFocusSettings:error:)], @"CameraInterface api (%@) doesn't respond to @selector(focusOnPointPreviewSize:x:y:androidFocusSettings:error:)", api);
+      NSCAssert([api respondsToSelector:@selector(focusOnPointPreviewSize:x:y:androidFocusSettings:iosFocusSettings:error:)], @"CameraInterface api (%@) doesn't respond to @selector(focusOnPointPreviewSize:x:y:androidFocusSettings:iosFocusSettings:error:)", api);
       [channel setMessageHandler:^(id _Nullable message, FlutterReply callback) {
         NSArray *args = message;
         PreviewSize *arg_previewSize = GetNullableObjectAtIndex(args, 0);
         NSNumber *arg_x = GetNullableObjectAtIndex(args, 1);
         NSNumber *arg_y = GetNullableObjectAtIndex(args, 2);
         AndroidFocusSettings *arg_androidFocusSettings = GetNullableObjectAtIndex(args, 3);
+        IOSFocusSettings *arg_iosFocusSettings = GetNullableObjectAtIndex(args, 4);
         FlutterError *error;
-        [api focusOnPointPreviewSize:arg_previewSize x:arg_x y:arg_y androidFocusSettings:arg_androidFocusSettings error:&error];
+        [api focusOnPointPreviewSize:arg_previewSize x:arg_x y:arg_y androidFocusSettings:arg_androidFocusSettings iosFocusSettings:arg_iosFocusSettings error:&error];
         callback(wrapResult(nil, error));
       }];
     } else {

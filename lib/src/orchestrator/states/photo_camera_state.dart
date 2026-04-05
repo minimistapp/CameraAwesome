@@ -138,12 +138,14 @@ class PhotoCameraState extends CameraState {
     required PreviewSize pixelPreviewSize,
     required PreviewSize flutterPreviewSize,
     AndroidFocusSettings? androidFocusSettings,
+    IOSFocusSettings? iosFocusSettings,
   }) {
     return cameraContext.focusOnPoint(
       flutterPosition: flutterPosition,
       pixelPreviewSize: pixelPreviewSize,
       flutterPreviewSize: flutterPreviewSize,
       androidFocusSettings: androidFocusSettings,
+      iosFocusSettings: iosFocusSettings,
     );
   }
 }

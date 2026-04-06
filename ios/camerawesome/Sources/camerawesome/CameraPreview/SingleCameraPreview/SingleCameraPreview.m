@@ -175,6 +175,17 @@
   [_captureConnection setAutomaticallyAdjustsVideoMirroring:NO];
   [_captureConnection setVideoMirrored:(_cameraSensorPosition == PigeonSensorPositionFront)];
   [_captureConnection setVideoOrientation:AVCaptureVideoOrientationPortrait];
+
+  // Re-register subject-area change observer for the new device.
+  // This fires when the scene changes significantly after a tap-to-focus lock,
+  // allowing us to reset back to continuous AF so the next tap starts clean.
+  [[NSNotificationCenter defaultCenter] removeObserver:self
+      name:AVCaptureDeviceSubjectAreaDidChangeNotification
+    object:nil];
+  [[NSNotificationCenter defaultCenter] addObserver:self
+      selector:@selector(subjectAreaDidChange:)
+          name:AVCaptureDeviceSubjectAreaDidChangeNotification
+        object:_captureDevice];
 }
 
 - (void)dealloc {
@@ -261,6 +272,9 @@
 - (void)dispose {
   [self stop];
   [self.physicalButtonController stopListening];
+  [[NSNotificationCenter defaultCenter] removeObserver:self
+      name:AVCaptureDeviceSubjectAreaDidChangeNotification
+    object:nil];
   
   for (AVCaptureInput *input in [_captureSession inputs]) {
     [_captureSession removeInput:input];
@@ -478,10 +492,39 @@
       }
     }
 
+    // Enable subject-area change monitoring when locking focus so AVFoundation
+    // can notify us when the scene changes and we need to reset to continuous AF.
+    if (lockFocus) {
+      [_captureDevice setSubjectAreaChangeMonitoringEnabled:YES];
+    }
+
     [_captureDevice unlockForConfiguration];
   } else {
     *error = [FlutterError errorWithCode:@"FOCUS_ERROR" message:@"impossible to set focus point" details:[lockError localizedDescription]];
   }
+}
+
+/// Called by AVFoundation when the scene changes significantly after a focus lock.
+/// Resets focus and exposure back to continuous auto at the center so the next
+/// tap-to-focus starts from a clean state (matching native Camera app behaviour).
+- (void)subjectAreaDidChange:(NSNotification *)notification {
+  dispatch_async(_dispatchQueue, ^{
+    NSError *lockError;
+    if ([self->_captureDevice lockForConfiguration:&lockError]) {
+      [self->_captureDevice setFocusPointOfInterest:CGPointMake(0.5, 0.5)];
+      if ([self->_captureDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
+        [self->_captureDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
+      }
+      if ([self->_captureDevice isExposurePointOfInterestSupported]) {
+        [self->_captureDevice setExposurePointOfInterest:CGPointMake(0.5, 0.5)];
+      }
+      if ([self->_captureDevice isExposureModeSupported:AVCaptureExposureModeContinuousAutoExposure]) {
+        [self->_captureDevice setExposureMode:AVCaptureExposureModeContinuousAutoExposure];
+      }
+      [self->_captureDevice setSubjectAreaChangeMonitoringEnabled:NO];
+      [self->_captureDevice unlockForConfiguration];
+    }
+  });
 }
 
 - (void)receivedImageFromStream {

@@ -55,6 +55,9 @@
 }
 
 - (void)dispose {
+  [[NSNotificationCenter defaultCenter] removeObserver:self
+      name:AVCaptureDeviceSubjectAreaDidChangeNotification
+    object:nil];
   [self stop];
   [self cleanSession];
 }
@@ -138,10 +141,41 @@
       }
     }
 
+    // Enable subject-area change monitoring when locking focus so AVFoundation
+    // can notify us when the scene changes and we need to reset to continuous AF.
+    if (lockFocus) {
+      [mainDevice setSubjectAreaChangeMonitoringEnabled:YES];
+    }
+
     [mainDevice unlockForConfiguration];
   } else {
     *error = [FlutterError errorWithCode:@"FOCUS_ERROR" message:@"impossible to set focus point" details:[lockError localizedDescription]];
   }
+}
+
+/// Called by AVFoundation when the scene changes significantly after a focus lock.
+/// Resets focus and exposure back to continuous auto at the center so the next
+/// tap-to-focus starts from a clean state (matching native Camera app behaviour).
+- (void)subjectAreaDidChange:(NSNotification *)notification {
+  AVCaptureDevice *mainDevice = self.devices.firstObject.device;
+  if (mainDevice == nil) return;
+  dispatch_async(_dispatchQueue, ^{
+    NSError *lockError;
+    if ([mainDevice lockForConfiguration:&lockError]) {
+      [mainDevice setFocusPointOfInterest:CGPointMake(0.5, 0.5)];
+      if ([mainDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
+        [mainDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
+      }
+      if ([mainDevice isExposurePointOfInterestSupported]) {
+        [mainDevice setExposurePointOfInterest:CGPointMake(0.5, 0.5)];
+      }
+      if ([mainDevice isExposureModeSupported:AVCaptureExposureModeContinuousAutoExposure]) {
+        [mainDevice setExposureMode:AVCaptureExposureModeContinuousAutoExposure];
+      }
+      [mainDevice setSubjectAreaChangeMonitoringEnabled:NO];
+      [mainDevice unlockForConfiguration];
+    }
+  });
 }
 
 - (void)setExifPreferencesGPSLocation:(bool)gpsLocation completion:(void(^)(NSNumber *_Nullable, FlutterError *_Nullable))completion {
@@ -329,7 +363,18 @@
   cameraDevice.capturePhotoOutput = capturePhotoOutput;
   
   [_devices addObject:cameraDevice];
-  
+
+  // Register subject-area change notifications on the primary (first) device only.
+  if (index == 0) {
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+        name:AVCaptureDeviceSubjectAreaDidChangeNotification
+      object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+        selector:@selector(subjectAreaDidChange:)
+            name:AVCaptureDeviceSubjectAreaDidChangeNotification
+          object:device];
+  }
+
   return YES;
 }
 

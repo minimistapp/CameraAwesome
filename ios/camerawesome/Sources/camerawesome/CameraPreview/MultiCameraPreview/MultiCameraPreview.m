@@ -102,31 +102,10 @@
   AVCaptureDevice *mainDevice = self.devices.firstObject.device;
   NSError *lockError;
   if ([mainDevice lockForConfiguration:&lockError]) {
-    // Focus point
-    if ([mainDevice isFocusPointOfInterestSupported]) {
-      [mainDevice setFocusPointOfInterest:position];
-    }
-
-    // Focus mode: one-shot lock vs continuous (default)
     BOOL lockFocus = settings != nil && [settings.lockFocus boolValue];
-    if (lockFocus && [mainDevice isFocusModeSupported:AVCaptureFocusModeAutoFocus]) {
-      [mainDevice setFocusMode:AVCaptureFocusModeAutoFocus];
-    } else if ([mainDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
-      [mainDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
-    }
-
-    // Exposure adjustment (only when requested)
     BOOL setExposure = settings != nil && [settings.setExposurePoint boolValue];
-    if (setExposure) {
-      if ([mainDevice isExposurePointOfInterestSupported]) {
-        [mainDevice setExposurePointOfInterest:position];
-      }
-      if ([mainDevice isExposureModeSupported:AVCaptureExposureModeAutoExpose]) {
-        [mainDevice setExposureMode:AVCaptureExposureModeAutoExpose];
-      }
-    }
 
-    // Focus range restriction hint
+    // Focus range restriction hint (set before focusing so the AF system uses it)
     int rangeRestriction = settings != nil ? [settings.autoFocusRangeRestriction intValue] : 0;
     if ([mainDevice isAutoFocusRangeRestrictionSupported]) {
       if (rangeRestriction == 1) {
@@ -137,6 +116,39 @@
         [mainDevice setAutoFocusRangeRestriction:AVCaptureAutoFocusRangeRestrictionNone];
       }
     }
+
+    // Reset to continuous first to ensure a fresh focus scan is triggered on
+    // every tap, even when re-tapping the same point (where the device may
+    // already be in AVCaptureFocusModeLocked after a previous one-shot).
+    if (lockFocus && [mainDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
+      [mainDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
+    }
+
+    // Set focus point of interest
+    if ([mainDevice isFocusPointOfInterestSupported]) {
+      [mainDevice setFocusPointOfInterest:position];
+    }
+
+    // Focus mode: one-shot lock vs continuous (default)
+    if (lockFocus && [mainDevice isFocusModeSupported:AVCaptureFocusModeAutoFocus]) {
+      [mainDevice setFocusMode:AVCaptureFocusModeAutoFocus];
+    } else if ([mainDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
+      [mainDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
+    }
+
+    // Exposure adjustment (only when requested)
+    if (setExposure) {
+      if ([mainDevice isExposurePointOfInterestSupported]) {
+        [mainDevice setExposurePointOfInterest:position];
+      }
+      if ([mainDevice isExposureModeSupported:AVCaptureExposureModeContinuousAutoExposure]) {
+        [mainDevice setExposureMode:AVCaptureExposureModeContinuousAutoExposure];
+      }
+    }
+
+    // Enable subject area change monitoring so the system knows when the
+    // scene changes significantly (matching native Camera app behavior)
+    mainDevice.subjectAreaChangeMonitoringEnabled = lockFocus;
 
     [mainDevice unlockForConfiguration];
   } else {

@@ -442,31 +442,10 @@
 - (void)focusOnPoint:(CGPoint)position preview:(CGSize)preview iosFocusSettings:(nullable IOSFocusSettings *)settings error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
   NSError *lockError;
   if ([_captureDevice lockForConfiguration:&lockError]) {
-    // Focus point
-    if ([_captureDevice isFocusPointOfInterestSupported]) {
-      [_captureDevice setFocusPointOfInterest:position];
-    }
-
-    // Focus mode: one-shot lock vs continuous (default)
     BOOL lockFocus = settings != nil && [settings.lockFocus boolValue];
-    if (lockFocus && [_captureDevice isFocusModeSupported:AVCaptureFocusModeAutoFocus]) {
-      [_captureDevice setFocusMode:AVCaptureFocusModeAutoFocus];
-    } else if ([_captureDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
-      [_captureDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
-    }
-
-    // Exposure adjustment (only when requested)
     BOOL setExposure = settings != nil && [settings.setExposurePoint boolValue];
-    if (setExposure) {
-      if ([_captureDevice isExposurePointOfInterestSupported]) {
-        [_captureDevice setExposurePointOfInterest:position];
-      }
-      if ([_captureDevice isExposureModeSupported:AVCaptureExposureModeAutoExpose]) {
-        [_captureDevice setExposureMode:AVCaptureExposureModeAutoExpose];
-      }
-    }
 
-    // Focus range restriction hint
+    // Focus range restriction hint (set before focusing so the AF system uses it)
     int rangeRestriction = settings != nil ? [settings.autoFocusRangeRestriction intValue] : 0;
     if ([_captureDevice isAutoFocusRangeRestrictionSupported]) {
       if (rangeRestriction == 1) {
@@ -477,6 +456,39 @@
         [_captureDevice setAutoFocusRangeRestriction:AVCaptureAutoFocusRangeRestrictionNone];
       }
     }
+
+    // Reset to continuous first to ensure a fresh focus scan is triggered on
+    // every tap, even when re-tapping the same point (where the device may
+    // already be in AVCaptureFocusModeLocked after a previous one-shot).
+    if (lockFocus && [_captureDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
+      [_captureDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
+    }
+
+    // Set focus point of interest
+    if ([_captureDevice isFocusPointOfInterestSupported]) {
+      [_captureDevice setFocusPointOfInterest:position];
+    }
+
+    // Focus mode: one-shot lock vs continuous (default)
+    if (lockFocus && [_captureDevice isFocusModeSupported:AVCaptureFocusModeAutoFocus]) {
+      [_captureDevice setFocusMode:AVCaptureFocusModeAutoFocus];
+    } else if ([_captureDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
+      [_captureDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
+    }
+
+    // Exposure adjustment (only when requested)
+    if (setExposure) {
+      if ([_captureDevice isExposurePointOfInterestSupported]) {
+        [_captureDevice setExposurePointOfInterest:position];
+      }
+      if ([_captureDevice isExposureModeSupported:AVCaptureExposureModeContinuousAutoExposure]) {
+        [_captureDevice setExposureMode:AVCaptureExposureModeContinuousAutoExposure];
+      }
+    }
+
+    // Enable subject area change monitoring so the system knows when the
+    // scene changes significantly (matching native Camera app behavior)
+    _captureDevice.subjectAreaChangeMonitoringEnabled = lockFocus;
 
     [_captureDevice unlockForConfiguration];
   } else {

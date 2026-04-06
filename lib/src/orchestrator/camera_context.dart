@@ -184,6 +184,7 @@ class CameraContext {
     required PreviewSize pixelPreviewSize,
     required PreviewSize flutterPreviewSize,
     AndroidFocusSettings? androidFocusSettings,
+    IOSFocusSettings? iosFocusSettings,
   }) async {
     if (Platform.isIOS) {
       final xPercentage = flutterPosition.dx / flutterPreviewSize.width;
@@ -193,6 +194,7 @@ class CameraContext {
         position: Offset(xPercentage, yPercentage),
         previewSize: pixelPreviewSize,
         androidFocusSettings: null,
+        iosFocusSettings: iosFocusSettings,
       );
     } else {
       final ratio = pixelPreviewSize.height / flutterPreviewSize.height;

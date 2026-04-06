@@ -55,6 +55,9 @@
 }
 
 - (void)dispose {
+  [[NSNotificationCenter defaultCenter] removeObserver:self
+      name:AVCaptureDeviceSubjectAreaDidChangeNotification
+    object:nil];
   [self stop];
   [self cleanSession];
 }
@@ -98,22 +101,81 @@
   }
 }
 
-- (void)focusOnPoint:(CGPoint)position preview:(CGSize)preview error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
+- (void)focusOnPoint:(CGPoint)position preview:(CGSize)preview iosFocusSettings:(nullable IOSFocusSettings *)settings error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
   AVCaptureDevice *mainDevice = self.devices.firstObject.device;
   NSError *lockError;
-  if ([mainDevice isFocusModeSupported:AVCaptureFocusModeAutoFocus] && [mainDevice isFocusPointOfInterestSupported]) {
-    if ([mainDevice lockForConfiguration:&lockError]) {
-      if (lockError != nil) {
-        *error = [FlutterError errorWithCode:@"FOCUS_ERROR" message:@"impossible to set focus point" details:@""];
-        return;
-      }
-      
+  if ([mainDevice lockForConfiguration:&lockError]) {
+    // Focus point
+    if ([mainDevice isFocusPointOfInterestSupported]) {
       [mainDevice setFocusPointOfInterest:position];
+    }
+
+    // Focus mode: one-shot lock vs continuous (default)
+    BOOL lockFocus = settings != nil && [settings.lockFocus boolValue];
+    if (lockFocus && [mainDevice isFocusModeSupported:AVCaptureFocusModeAutoFocus]) {
+      [mainDevice setFocusMode:AVCaptureFocusModeAutoFocus];
+    } else if ([mainDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
       [mainDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
-      
+    }
+
+    // Exposure adjustment (only when requested)
+    BOOL setExposure = settings != nil && [settings.setExposurePoint boolValue];
+    if (setExposure) {
+      if ([mainDevice isExposurePointOfInterestSupported]) {
+        [mainDevice setExposurePointOfInterest:position];
+      }
+      if ([mainDevice isExposureModeSupported:AVCaptureExposureModeAutoExpose]) {
+        [mainDevice setExposureMode:AVCaptureExposureModeAutoExpose];
+      }
+    }
+
+    // Focus range restriction hint
+    int rangeRestriction = settings != nil ? [settings.autoFocusRangeRestriction intValue] : 0;
+    if ([mainDevice isAutoFocusRangeRestrictionSupported]) {
+      if (rangeRestriction == 1) {
+        [mainDevice setAutoFocusRangeRestriction:AVCaptureAutoFocusRangeRestrictionNear];
+      } else if (rangeRestriction == 2) {
+        [mainDevice setAutoFocusRangeRestriction:AVCaptureAutoFocusRangeRestrictionFar];
+      } else {
+        [mainDevice setAutoFocusRangeRestriction:AVCaptureAutoFocusRangeRestrictionNone];
+      }
+    }
+
+    // Enable subject-area change monitoring when locking focus so AVFoundation
+    // can notify us when the scene changes and we need to reset to continuous AF.
+    if (lockFocus) {
+      [mainDevice setSubjectAreaChangeMonitoringEnabled:YES];
+    }
+
+    [mainDevice unlockForConfiguration];
+  } else {
+    *error = [FlutterError errorWithCode:@"FOCUS_ERROR" message:@"impossible to set focus point" details:[lockError localizedDescription]];
+  }
+}
+
+/// Called by AVFoundation when the scene changes significantly after a focus lock.
+/// Resets focus and exposure back to continuous auto at the center so the next
+/// tap-to-focus starts from a clean state (matching native Camera app behaviour).
+- (void)subjectAreaDidChange:(NSNotification *)notification {
+  AVCaptureDevice *mainDevice = self.devices.firstObject.device;
+  if (mainDevice == nil) return;
+  dispatch_async(_dispatchQueue, ^{
+    NSError *lockError;
+    if ([mainDevice lockForConfiguration:&lockError]) {
+      [mainDevice setFocusPointOfInterest:CGPointMake(0.5, 0.5)];
+      if ([mainDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
+        [mainDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
+      }
+      if ([mainDevice isExposurePointOfInterestSupported]) {
+        [mainDevice setExposurePointOfInterest:CGPointMake(0.5, 0.5)];
+      }
+      if ([mainDevice isExposureModeSupported:AVCaptureExposureModeContinuousAutoExposure]) {
+        [mainDevice setExposureMode:AVCaptureExposureModeContinuousAutoExposure];
+      }
+      [mainDevice setSubjectAreaChangeMonitoringEnabled:NO];
       [mainDevice unlockForConfiguration];
     }
-  }
+  });
 }
 
 - (void)setExifPreferencesGPSLocation:(bool)gpsLocation completion:(void(^)(NSNumber *_Nullable, FlutterError *_Nullable))completion {
@@ -301,7 +363,18 @@
   cameraDevice.capturePhotoOutput = capturePhotoOutput;
   
   [_devices addObject:cameraDevice];
-  
+
+  // Register subject-area change notifications on the primary (first) device only.
+  if (index == 0) {
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+        name:AVCaptureDeviceSubjectAreaDidChangeNotification
+      object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+        selector:@selector(subjectAreaDidChange:)
+            name:AVCaptureDeviceSubjectAreaDidChangeNotification
+          object:device];
+  }
+
   return YES;
 }
 

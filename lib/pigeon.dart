@@ -369,6 +369,44 @@ class AndroidFocusSettings {
   }
 }
 
+/// iOS-specific focus settings for [focusOnPoint].
+class IOSFocusSettings {
+  IOSFocusSettings({
+    required this.lockFocus,
+    required this.setExposurePoint,
+    required this.autoFocusRangeRestriction,
+  });
+
+  /// If true, uses AVCaptureFocusModeAutoFocus (one-shot lock like native Camera app).
+  /// If false, uses AVCaptureFocusModeContinuousAutoFocus (current default).
+  bool lockFocus;
+
+  /// If true, also sets the exposure point of interest to the tap location
+  /// and adjusts exposure mode to auto-expose.
+  bool setExposurePoint;
+
+  /// Focus range restriction hint:
+  /// 0 = none (default), 1 = near (better for close-up), 2 = far
+  int autoFocusRangeRestriction;
+
+  Object encode() {
+    return <Object?>[
+      lockFocus,
+      setExposurePoint,
+      autoFocusRangeRestriction,
+    ];
+  }
+
+  static IOSFocusSettings decode(Object result) {
+    result as List<Object?>;
+    return IOSFocusSettings(
+      lockFocus: result[0]! as bool,
+      setExposurePoint: result[1]! as bool,
+      autoFocusRangeRestriction: result[2]! as int,
+    );
+  }
+}
+
 class PlaneWrapper {
   PlaneWrapper({
     required this.bytes,
@@ -665,6 +703,9 @@ class _CameraInterfaceCodec extends StandardMessageCodec {
     if (value is AndroidFocusSettings) {
       buffer.putUint8(128);
       writeValue(buffer, value.encode());
+    } else if (value is IOSFocusSettings) {
+      buffer.putUint8(137);
+      writeValue(buffer, value.encode());
     } else if (value is AndroidVideoOptions) {
       buffer.putUint8(129);
       writeValue(buffer, value.encode());
@@ -715,6 +756,8 @@ class _CameraInterfaceCodec extends StandardMessageCodec {
         return PreviewSize.decode(readValue(buffer)!);
       case 136:
         return VideoOptions.decode(readValue(buffer)!);
+      case 137:
+        return IOSFocusSettings.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
     }
@@ -1153,12 +1196,13 @@ class CameraInterface {
   /// On Android, you can control after how much time you want to switch back
   /// to passive focus mode with [androidFocusSettings].
   Future<void> focusOnPoint(PreviewSize arg_previewSize, double arg_x,
-      double arg_y, AndroidFocusSettings? arg_androidFocusSettings) async {
+      double arg_y, AndroidFocusSettings? arg_androidFocusSettings,
+      IOSFocusSettings? arg_iosFocusSettings) async {
     final BasicMessageChannel<Object?> channel = BasicMessageChannel<Object?>(
         'dev.flutter.pigeon.CameraInterface.focusOnPoint', codec,
         binaryMessenger: _binaryMessenger);
     final List<Object?>? replyList = await channel.send(
-            <Object?>[arg_previewSize, arg_x, arg_y, arg_androidFocusSettings])
+            <Object?>[arg_previewSize, arg_x, arg_y, arg_androidFocusSettings, arg_iosFocusSettings])
         as List<Object?>?;
     if (replyList == null) {
       throw PlatformException(

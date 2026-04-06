@@ -105,6 +105,7 @@ typedef NS_ENUM(NSUInteger, AnalysisRotation) {
 @class CupertinoVideoOptions;
 @class PigeonSensorTypeDevice;
 @class AndroidFocusSettings;
+@class IOSFocusSettings;
 @class PlaneWrapper;
 @class CropRectWrapper;
 @class AnalysisImageWrapper;
@@ -205,6 +206,23 @@ typedef NS_ENUM(NSUInteger, AnalysisRotation) {
 @property(nonatomic, strong) NSNumber * autoCancelDurationInMillis;
 @end
 
+/// iOS-specific focus settings for focusOnPoint.
+@interface IOSFocusSettings : NSObject
+/// `init` unavailable to enforce nonnull fields, see the `make` class method.
+- (instancetype)init NS_UNAVAILABLE;
++ (instancetype)makeWithLockFocus:(NSNumber *)lockFocus
+    setExposurePoint:(NSNumber *)setExposurePoint
+    autoFocusRangeRestriction:(NSNumber *)autoFocusRangeRestriction;
+/// If YES, uses AVCaptureFocusModeAutoFocus (one-shot lock like native Camera app).
+/// If NO, uses AVCaptureFocusModeContinuousAutoFocus (current default).
+@property(nonatomic, strong) NSNumber * lockFocus;
+/// If YES, also sets the exposure point of interest to the tap location
+/// and adjusts exposure mode to auto-expose.
+@property(nonatomic, strong) NSNumber * setExposurePoint;
+/// Focus range restriction hint: 0 = none (default), 1 = near (better for close-up), 2 = far
+@property(nonatomic, strong) NSNumber * autoFocusRangeRestriction;
+@end
+
 @interface PlaneWrapper : NSObject
 /// `init` unavailable to enforce nonnull fields, see the `make` class method.
 - (instancetype)init NS_UNAVAILABLE;
@@ -296,7 +314,7 @@ NSObject<FlutterMessageCodec> *CameraInterfaceGetCodec(void);
 ///
 /// On Android, you can control after how much time you want to switch back
 /// to passive focus mode with [androidFocusSettings].
-- (void)focusOnPointPreviewSize:(PreviewSize *)previewSize x:(NSNumber *)x y:(NSNumber *)y androidFocusSettings:(nullable AndroidFocusSettings *)androidFocusSettings error:(FlutterError *_Nullable *_Nonnull)error;
+- (void)focusOnPointPreviewSize:(PreviewSize *)previewSize x:(NSNumber *)x y:(NSNumber *)y androidFocusSettings:(nullable AndroidFocusSettings *)androidFocusSettings iosFocusSettings:(nullable IOSFocusSettings *)iosFocusSettings error:(FlutterError *_Nullable *_Nonnull)error;
 - (void)setZoomZoom:(NSNumber *)zoom error:(FlutterError *_Nullable *_Nonnull)error;
 - (void)setMirrorFrontCameraMirror:(NSNumber *)mirror error:(FlutterError *_Nullable *_Nonnull)error;
 - (void)setSensorSensors:(NSArray<PigeonSensor *> *)sensors error:(FlutterError *_Nullable *_Nonnull)error;

@@ -421,6 +421,36 @@ data class AndroidFocusSettings (
 }
 
 /** Generated class from Pigeon that represents data sent in messages. */
+data class IOSFocusSettings (
+  /** If true, uses AVCaptureFocusModeAutoFocus (one-shot lock like native Camera app).
+   * If false, uses AVCaptureFocusModeContinuousAutoFocus (current default). */
+  val lockFocus: Boolean,
+  /** If true, also sets the exposure point of interest to the tap location
+   * and adjusts exposure mode to auto-expose. */
+  val setExposurePoint: Boolean,
+  /** Focus range restriction hint: 0 = none (default), 1 = near (better for close-up), 2 = far */
+  val autoFocusRangeRestriction: Long
+
+) {
+  companion object {
+    @Suppress("UNCHECKED_CAST")
+    fun fromList(list: List<Any?>): IOSFocusSettings {
+      val lockFocus = list[0] as Boolean
+      val setExposurePoint = list[1] as Boolean
+      val autoFocusRangeRestriction = list[2].let { if (it is Int) it.toLong() else it as Long }
+      return IOSFocusSettings(lockFocus, setExposurePoint, autoFocusRangeRestriction)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf<Any?>(
+      lockFocus,
+      setExposurePoint,
+      autoFocusRangeRestriction,
+    )
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
 data class PlaneWrapper (
   val bytes: ByteArray,
   val bytesPerRow: Long,
@@ -711,6 +741,11 @@ private object CameraInterfaceCodec : StandardMessageCodec() {
           VideoOptions.fromList(it)
         }
       }
+      137.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          IOSFocusSettings.fromList(it)
+        }
+      }
       else -> super.readValueOfType(type, buffer)
     }
   }
@@ -752,6 +787,10 @@ private object CameraInterfaceCodec : StandardMessageCodec() {
         stream.write(136)
         writeValue(stream, value.toList())
       }
+      is IOSFocusSettings -> {
+        stream.write(137)
+        writeValue(stream, value.toList())
+      }
       else -> super.writeValue(stream, value)
     }
   }
@@ -785,7 +824,7 @@ interface CameraInterface {
    * On Android, you can control after how much time you want to switch back
    * to passive focus mode with [androidFocusSettings].
    */
-  fun focusOnPoint(previewSize: PreviewSize, x: Double, y: Double, androidFocusSettings: AndroidFocusSettings?)
+  fun focusOnPoint(previewSize: PreviewSize, x: Double, y: Double, androidFocusSettings: AndroidFocusSettings?, iosFocusSettings: IOSFocusSettings?)
   fun setZoom(zoom: Double)
   fun setMirrorFrontCamera(mirror: Boolean)
   fun setSensor(sensors: List<PigeonSensor>)
@@ -1120,9 +1159,10 @@ interface CameraInterface {
             val xArg = args[1] as Double
             val yArg = args[2] as Double
             val androidFocusSettingsArg = args[3] as AndroidFocusSettings?
+            val iosFocusSettingsArg = args[4] as IOSFocusSettings?
             var wrapped: List<Any?>
             try {
-              api.focusOnPoint(previewSizeArg, xArg, yArg, androidFocusSettingsArg)
+              api.focusOnPoint(previewSizeArg, xArg, yArg, androidFocusSettingsArg, iosFocusSettingsArg)
               wrapped = listOf<Any?>(null)
             } catch (exception: Throwable) {
               wrapped = wrapError(exception)

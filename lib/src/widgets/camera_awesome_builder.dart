@@ -84,7 +84,12 @@ class CameraAwesomeBuilder extends StatefulWidget {
   final CameraLayoutBuilder? previewDecoratorBuilder;
 
   final OnPreviewTap Function(CameraState)? onPreviewTapBuilder;
-  final OnPreviewScale Function(CameraState)? onPreviewScaleBuilder;
+
+  /// Builder for the pinch-to-zoom handler. If the builder is omitted, a default
+  /// handler that maps pinch scale to linear zoom is installed. If the builder
+  /// is provided and returns null, the ScaleGestureRecognizer is not installed
+  /// at all — i.e. pinch-to-zoom is fully disabled.
+  final OnPreviewScale? Function(CameraState)? onPreviewScaleBuilder;
 
   /// Theme of the camera UI, used in the built-in interface.
   ///
@@ -171,7 +176,7 @@ class CameraAwesomeBuilder extends StatefulWidget {
       OnImageForAnalysis? onImageForAnalysis,
       AnalysisConfig? imageAnalysisConfig,
       OnPreviewTap Function(CameraState)? onPreviewTapBuilder,
-      OnPreviewScale Function(CameraState)? onPreviewScaleBuilder,
+      OnPreviewScale? Function(CameraState)? onPreviewScaleBuilder,
       CameraPreviewFit? previewFit,
       CameraLayoutBuilder? previewDecoratorBuilder,
       AwesomeTheme? theme,
@@ -231,7 +236,7 @@ class CameraAwesomeBuilder extends StatefulWidget {
     OnImageForAnalysis? onImageForAnalysis,
     AnalysisConfig? imageAnalysisConfig,
     OnPreviewTap Function(CameraState)? onPreviewTapBuilder,
-    OnPreviewScale Function(CameraState)? onPreviewScaleBuilder,
+    OnPreviewScale? Function(CameraState)? onPreviewScaleBuilder,
     CameraPreviewFit? previewFit,
     AwesomeTheme? theme,
     EdgeInsets previewPadding = EdgeInsets.zero,
@@ -274,7 +279,7 @@ class CameraAwesomeBuilder extends StatefulWidget {
     OnImageForAnalysis? onImageForAnalysis,
     AnalysisConfig? imageAnalysisConfig,
     OnPreviewTap Function(CameraState)? onPreviewTapBuilder,
-    OnPreviewScale Function(CameraState)? onPreviewScaleBuilder,
+    OnPreviewScale? Function(CameraState)? onPreviewScaleBuilder,
     CameraPreviewFit? previewFit,
     EdgeInsets previewPadding = EdgeInsets.zero,
     Alignment previewAlignment = Alignment.center,
@@ -468,12 +473,16 @@ class _CameraWidgetBuilder extends State<CameraAwesomeBuilder> with WidgetsBindi
                                 );
                               },
                             ),
-                        onPreviewScale: widget.onPreviewScaleBuilder?.call(snapshot.requireData) ??
-                            OnPreviewScale(
-                              onScale: (scale) {
-                                snapshot.requireData.sensorConfig.setZoom(scale);
-                              },
-                            ),
+                        // `null` builder → install default pinch handler. Builder
+                        // that returns null → no pinch gesture at all. Builder
+                        // that returns a value → use it.
+                        onPreviewScale: widget.onPreviewScaleBuilder == null
+                            ? OnPreviewScale(
+                                onScale: (scale) {
+                                  snapshot.requireData.sensorConfig.setZoom(scale);
+                                },
+                              )
+                            : widget.onPreviewScaleBuilder!(snapshot.requireData),
                         interfaceBuilder: widget.builder,
                         previewDecoratorBuilder: widget.previewDecoratorBuilder,
                         pictureInPictureConfigBuilder: widget.pictureInPictureConfigBuilder,

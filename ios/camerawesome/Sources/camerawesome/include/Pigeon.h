@@ -181,7 +181,8 @@ typedef NS_ENUM(NSUInteger, AnalysisRotation) {
     name:(NSString *)name
     iso:(NSNumber *)iso
     flashAvailable:(NSNumber *)flashAvailable
-    uid:(NSString *)uid;
+    uid:(NSString *)uid
+    nativeZoomFactor:(nullable NSNumber *)nativeZoomFactor;
 @property(nonatomic, assign) PigeonSensorType sensorType;
 /// A localized device name for display in the user interface.
 @property(nonatomic, copy) NSString * name;
@@ -191,6 +192,8 @@ typedef NS_ENUM(NSUInteger, AnalysisRotation) {
 @property(nonatomic, strong) NSNumber * flashAvailable;
 /// An identifier that uniquely identifies the device.
 @property(nonatomic, copy) NSString * uid;
+/// Native zoom factor of this sensor relative to the wide-angle lens.
+@property(nonatomic, strong, nullable) NSNumber * nativeZoomFactor;
 @end
 
 @interface AndroidFocusSettings : NSObject

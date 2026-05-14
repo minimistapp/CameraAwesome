@@ -35,12 +35,17 @@ class SensorTypeDevice {
   /// An identifier that uniquely identifies the device.
   final String uid;
 
+  /// Native zoom factor of this sensor relative to the wide-angle lens. Null
+  /// when the platform can't report it (currently Android).
+  final double? nativeZoomFactor;
+
   SensorTypeDevice({
     required this.sensorType,
     required this.name,
     required this.iso,
     required this.flashAvailable,
     required this.uid,
+    this.nativeZoomFactor,
   });
 }
 

@@ -3,6 +3,7 @@ package com.apparence.camerawesome.cameraX
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.hardware.camera2.CameraCharacteristics
+import android.os.Build
 import android.util.Log
 import android.util.Rational
 import android.util.Size
@@ -92,6 +93,50 @@ data class CameraXState(
         return ContextCompat.getMainExecutor(activity)
     }
 
+    /**
+     * Returns a CameraSelector for the back-facing camera, preferring one whose
+     * Camera2 CONTROL_ZOOM_RATIO_RANGE goes below 1.0 — i.e. a logical
+     * multi-camera that includes the ultra-wide. This is what unlocks 0.5x
+     * via `setLinearZoom(0)` on phones (e.g. many Samsung Galaxy models)
+     * whose `DEFAULT_BACK_CAMERA` otherwise resolves to the standalone wide.
+     *
+     * Falls back to `DEFAULT_BACK_CAMERA` on API < 30 (where CONTROL_ZOOM_RATIO_RANGE
+     * isn't reported) or when no sub-1.0 camera is available.
+     */
+    @SuppressLint("UnsafeOptInUsageError", "RestrictedApi")
+    private fun backCameraSelector(): CameraSelector {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return CameraSelector.DEFAULT_BACK_CAMERA
+        }
+        return try {
+            val backInfos = cameraProvider.availableCameraInfos.filter {
+                it.lensFacing == CameraSelector.LENS_FACING_BACK
+            }
+            // Among the back cameras, find any that exposes a min zoom < 1.0.
+            // If multiple, pick the one with the widest total range (so we
+            // keep telephoto reach too).
+            val sub1 = backInfos.mapNotNull { info ->
+                val range = runCatching {
+                    Camera2CameraInfo.from(info)
+                        .getCameraCharacteristic(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+                }.getOrNull() ?: return@mapNotNull null
+                if (range.lower >= 1f) null else info to range
+            }
+            if (sub1.isEmpty()) return CameraSelector.DEFAULT_BACK_CAMERA
+            val best = sub1.maxByOrNull { it.second.upper - it.second.lower } ?: sub1.first()
+            val bestId = Camera2CameraInfo.from(best.first).cameraId
+            CameraSelector.Builder()
+                .requireLensFacing(CameraSelector.LENS_FACING_BACK)
+                .addCameraFilter { infos ->
+                    infos.filter { Camera2CameraInfo.from(it).cameraId == bestId }
+                }
+                .build()
+        } catch (e: Exception) {
+            Log.w(CamerawesomePlugin.TAG, "Falling back to DEFAULT_BACK_CAMERA: ${e.message}")
+            CameraSelector.DEFAULT_BACK_CAMERA
+        }
+    }
+
     @SuppressLint("RestrictedApi", "UnsafeOptInUsageError")
     fun updateLifecycle(activity: Activity) {
         previews = mutableListOf()
@@ -105,7 +150,7 @@ data class CameraXState(
                 val useCaseGroupBuilder = UseCaseGroup.Builder()
 
                 val cameraSelector =
-                    if (isFirst) CameraSelector.DEFAULT_BACK_CAMERA else CameraSelector.DEFAULT_FRONT_CAMERA
+                    if (isFirst) backCameraSelector() else CameraSelector.DEFAULT_FRONT_CAMERA
                 // TODO Find cameraSelectors based on the sensor and the cameraProvider.availableConcurrentCameraInfos
 //                val cameraSelector = CameraSelector.Builder()
 //                    .requireLensFacing(if (sensor.position == PigeonSensorPosition.FRONT) CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK)
@@ -197,7 +242,7 @@ data class CameraXState(
             val useCaseGroupBuilder = UseCaseGroup.Builder()
             // Handle single camera
             val cameraSelector =
-                if (sensors.first().position == PigeonSensorPosition.FRONT) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
+                if (sensors.first().position == PigeonSensorPosition.FRONT) CameraSelector.DEFAULT_FRONT_CAMERA else backCameraSelector()
             // Preview
             if (currentCaptureMode != CaptureModes.ANALYSIS_ONLY) {
                 previews!!.add(

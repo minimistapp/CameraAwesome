@@ -74,12 +74,15 @@ data class CameraXState(
                 ?: concurrentCamera?.cameras?.first()?.cameraControl!!
         }
 
+    // CameraX's ZoomState is a LiveData that's null until the camera connects
+    // after bindToLifecycle. Return a sentinel of 1.0 in that case and let the
+    // caller retry rather than crash with NPE.
     val maxZoomRatio: Double
-        @SuppressLint("RestrictedApi") get() = mainCameraInfos.zoomState.value!!.maxZoomRatio.toDouble()
+        @SuppressLint("RestrictedApi") get() = mainCameraInfos.zoomState.value?.maxZoomRatio?.toDouble() ?: 1.0
 
 
     val minZoomRatio: Double
-        get() = mainCameraInfos.zoomState.value!!.minZoomRatio.toDouble()
+        get() = mainCameraInfos.zoomState.value?.minZoomRatio?.toDouble() ?: 1.0
 
 
     val portrait: Boolean

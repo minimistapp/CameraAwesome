@@ -629,21 +629,19 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware {
     }
 
     /**
-     * This method must be called after bindToLifecycle has been called
-     *
-     * @return the max zoom ratio
+     * @return the max zoom ratio, or 1.0 if cameraState/zoomState isn't ready
+     *         yet (camera mid-bind or not started). Never throws across Pigeon.
      */
     override fun getMaxZoom(): Double {
-        return cameraState.maxZoomRatio
+        return runCatching { cameraState.maxZoomRatio }.getOrDefault(1.0)
     }
 
     /**
-     * This method must be called after bindToLifecycle has been called
-     *
-     * @return the min zoom ratio
+     * @return the min zoom ratio, or 1.0 if cameraState/zoomState isn't ready
+     *         yet (camera mid-bind or not started). Never throws across Pigeon.
      */
     override fun getMinZoom(): Double {
-        return cameraState.minZoomRatio
+        return runCatching { cameraState.minZoomRatio }.getOrDefault(1.0)
     }
 
     fun convertLinearToRatio(linear: Double): Double {

@@ -424,6 +424,7 @@ class CamerawesomePlugin {
               iso: data.iso,
               name: data.name,
               uid: data.uid,
+              nativeZoomFactor: data.nativeZoomFactor,
               sensorType: SensorType.values.firstWhere(
                 (element) => element.name == data.sensorType.name,
               ),
@@ -437,6 +438,7 @@ class CamerawesomePlugin {
               iso: data.iso,
               name: data.name,
               uid: data.uid,
+              nativeZoomFactor: data.nativeZoomFactor,
               sensorType: SensorType.values.firstWhere(
                 (element) => element.name == data.sensorType.name,
               ),

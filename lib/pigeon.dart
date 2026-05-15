@@ -304,6 +304,7 @@ class PigeonSensorTypeDevice {
     required this.iso,
     required this.flashAvailable,
     required this.uid,
+    this.nativeZoomFactor,
   });
 
   PigeonSensorType sensorType;
@@ -320,6 +321,12 @@ class PigeonSensorTypeDevice {
   /// An identifier that uniquely identifies the device.
   String uid;
 
+  /// This sensor's native zoom factor expressed as a multiple of the wide-angle
+  /// lens — e.g. 1.0 for wide, ~0.5 for ultra-wide, 2.0/3.0/5.0 for telephoto
+  /// depending on the device. Used to decide which UI ratio button can be
+  /// served by a sensor swap (optical) vs. linear zoom on wide (digital).
+  double? nativeZoomFactor;
+
   Object encode() {
     return <Object?>[
       sensorType.index,
@@ -327,6 +334,7 @@ class PigeonSensorTypeDevice {
       iso,
       flashAvailable,
       uid,
+      nativeZoomFactor,
     ];
   }
 
@@ -338,6 +346,7 @@ class PigeonSensorTypeDevice {
       iso: result[2]! as double,
       flashAvailable: result[3]! as bool,
       uid: result[4]! as String,
+      nativeZoomFactor: result.length > 5 ? result[5] as double? : null,
     );
   }
 }

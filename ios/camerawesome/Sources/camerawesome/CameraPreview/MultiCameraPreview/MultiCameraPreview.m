@@ -416,13 +416,20 @@
 }
 
 - (void)takePhotoSensors:(nonnull NSArray<PigeonSensor *> *)sensors paths:(nonnull NSArray<NSString *> *)paths completion:(nonnull void (^)(NSNumber * _Nullable, FlutterError * _Nullable))completion {
+  // Use the override if the caller set one via setCaptureOrientationOverride;
+  // otherwise fall back to the device's physical orientation as reported by
+  // the motion sensor.
+  UIDeviceOrientation captureOrientation = _captureOrientationOverride != nil
+      ? (UIDeviceOrientation)[_captureOrientationOverride integerValue]
+      : _motionController.deviceOrientation;
+
   for (int i = 0; i < [sensors count]; i++) {
     PigeonSensor *sensor = [sensors objectAtIndex:i];
     NSString *path = [paths objectAtIndex:i];
-    
+
     // TODO: take pictures for each sensors
     CameraPictureController *cameraPicture = [[CameraPictureController alloc] initWithPath:path
-                                                                               orientation:_motionController.deviceOrientation
+                                                                               orientation:captureOrientation
                                                                             sensorPosition:sensor.position
                                                                            saveGPSLocation:_saveGPSLocation
                                                                          mirrorFrontCamera:_mirrorFrontCamera

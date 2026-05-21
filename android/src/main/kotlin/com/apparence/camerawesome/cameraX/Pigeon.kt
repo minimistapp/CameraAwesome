@@ -846,6 +846,7 @@ interface CameraInterface {
   fun setFilter(matrix: List<Double>)
   fun isVideoRecordingAndImageAnalysisSupported(sensor: PigeonSensorPosition, callback: (Result<Boolean>) -> Unit)
   fun isMultiCamSupported(): Boolean
+  fun setCaptureOrientationOverride(orientation: String?)
 
   companion object {
     /** The codec used by CameraInterface. */
@@ -1550,6 +1551,25 @@ interface CameraInterface {
             var wrapped: List<Any?>
             try {
               wrapped = listOf<Any?>(api.isMultiCamSupported())
+            } catch (exception: Throwable) {
+              wrapped = wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.CameraInterface.setCaptureOrientationOverride", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            var wrapped: List<Any?>
+            try {
+              val args = message as List<Any?>
+              val orientationArg = args[0] as String?
+              api.setCaptureOrientationOverride(orientationArg)
+              wrapped = listOf<Any?>(null)
             } catch (exception: Throwable) {
               wrapped = wrapError(exception)
             }

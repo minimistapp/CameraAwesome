@@ -66,6 +66,13 @@ AVCaptureAudioDataOutputSampleBufferDelegate>
 @property(readonly, copy) void (^completion)(NSNumber * _Nullable, FlutterError * _Nullable);
 @property(nonatomic, copy) void (^onPreviewFrameAvailable)(void);
 
+/// When non-nil, overrides [motionController.deviceOrientation] at picture-
+/// capture time so the JPEG's EXIF Orientation is tagged for the requested
+/// orientation regardless of how the user is physically holding the device.
+/// Wraps a UIDeviceOrientation value; set to nil to resume sensor-driven
+/// behavior. See [CamerawesomePlugin setCaptureOrientationOverrideOrientation:].
+@property(nonatomic, strong, nullable) NSNumber *captureOrientationOverride;
+
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
                         videoOptions:(nullable CupertinoVideoOptions *)videoOptions
                     recordingQuality:(VideoRecordingQuality)recordingQuality

@@ -276,12 +276,7 @@ class PlaneWrapper {
 
 enum AnalysisImageFormat { yuv_420, bgra8888, jpeg, nv21, unknown }
 
-enum AnalysisRotation {
-  rotation0deg,
-  rotation90deg,
-  rotation180deg,
-  rotation270deg
-}
+enum AnalysisRotation { rotation0deg, rotation90deg, rotation180deg, rotation270deg }
 
 class CropRectWrapper {
   final int left;
@@ -456,4 +451,6 @@ abstract class CameraInterface {
   bool isVideoRecordingAndImageAnalysisSupported(PigeonSensorPosition sensor);
 
   bool isMultiCamSupported();
+
+  void setCaptureOrientationOverride(String? orientation);
 }

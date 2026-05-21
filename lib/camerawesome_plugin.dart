@@ -29,6 +29,24 @@ export 'src/widgets/widgets.dart';
 // ignore: public_member_api_docs
 enum CameraRunningState { starting, started, stopping, stopped }
 
+/// Forces the EXIF Orientation written into captured JPEGs to a fixed value
+/// instead of the one the device orientation sensor reports at capture time.
+///
+/// Use this when your app locks its UI to a single orientation and wants
+/// every capture tagged accordingly, even if the user briefly tilts the phone
+/// off-axis at the moment of capture. Pass `null` to clear the override and
+/// resume sensor-driven behavior (the default).
+///
+/// Mapping:
+///   • [portrait]  → captures are tagged as if the device were `portrait_up`.
+///   • [landscape] → captures are tagged as if the device were `landscape_right`.
+///
+/// See [CamerawesomePlugin.setCaptureOrientationOverride].
+enum CaptureOrientationOverride {
+  portrait,
+  landscape,
+}
+
 /// Don't use this class directly. Instead, use [CameraAwesomeBuilder].
 class CamerawesomePlugin {
   static const EventChannel _orientationChannel =
@@ -373,6 +391,19 @@ class CamerawesomePlugin {
   /// - Permission ACCESS_FINE_LOCATION has not been granted
   static Future<bool> setExifPreferences(ExifPreferences savedExifData) {
     return CameraInterface().setExifPreferences(savedExifData);
+  }
+
+  /// Force the EXIF Orientation of captured photos to a fixed value, ignoring
+  /// the device orientation sensor. Pass `null` to clear and resume the
+  /// sensor-driven path. See [CaptureOrientationOverride].
+  ///
+  /// The override survives subsequent captures but is cleared when the camera
+  /// is fully re-initialised via [setupCamera] — call this again after
+  /// re-setting up the camera if you need the override to persist.
+  static Future<void> setCaptureOrientationOverride(
+    CaptureOrientationOverride? override,
+  ) {
+    return CameraInterface().setCaptureOrientationOverride(override?.name);
   }
 
   /// set brightness manually with range [0,1]

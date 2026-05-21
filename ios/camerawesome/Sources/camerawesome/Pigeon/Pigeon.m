@@ -1426,4 +1426,23 @@ void CameraInterfaceSetup(id<FlutterBinaryMessenger> binaryMessenger, NSObject<C
       [channel setMessageHandler:nil];
     }
   }
+  {
+    FlutterBasicMessageChannel *channel =
+      [[FlutterBasicMessageChannel alloc]
+        initWithName:@"dev.flutter.pigeon.CameraInterface.setCaptureOrientationOverride"
+        binaryMessenger:binaryMessenger
+        codec:CameraInterfaceGetCodec()];
+    if (api) {
+      NSCAssert([api respondsToSelector:@selector(setCaptureOrientationOverrideOrientation:error:)], @"CameraInterface api (%@) doesn't respond to @selector(setCaptureOrientationOverrideOrientation:error:)", api);
+      [channel setMessageHandler:^(id _Nullable message, FlutterReply callback) {
+        NSArray *args = message;
+        NSString *arg_orientation = GetNullableObjectAtIndex(args, 0);
+        FlutterError *error;
+        [api setCaptureOrientationOverrideOrientation:arg_orientation error:&error];
+        callback(wrapResult(nil, error));
+      }];
+    } else {
+      [channel setMessageHandler:nil];
+    }
+  }
 }

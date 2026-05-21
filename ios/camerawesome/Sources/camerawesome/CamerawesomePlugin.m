@@ -19,6 +19,11 @@ FlutterEventSink physicalButtonEventSink;
 @property NSMutableArray<NSNumber *> *texturesIds;
 @property SingleCameraPreview *camera;
 @property MultiCameraPreview *multiCamera;
+/// Survives camera (re)setup: storing the override here means a fresh
+/// SingleCameraPreview / MultiCameraPreview created by setupCamera can be
+/// initialised with the most recently requested value rather than starting
+/// at nil and silently dropping the Dart-side request.
+@property(nonatomic, strong, nullable) NSNumber *captureOrientationOverride;
 - (instancetype)init:(NSObject<FlutterPluginRegistrar>*)registrar;
 @end
 
@@ -141,10 +146,31 @@ FlutterEventSink physicalButtonEventSink;
     };
     
     [self->_textureRegistry textureFrameAvailable:textureId];
-    
+
     [self.texturesIds addObject:[NSNumber numberWithLongLong:textureId]];
   }
-  
+
+  // Re-apply any previously requested capture orientation override onto the
+  // freshly-built camera(s). Without this the override would be lost across
+  // every setupCamera call (e.g. when the user reopens the camera screen)
+  // since the property lives on the per-instance preview, not the plugin.
+  self.camera.captureOrientationOverride = self.captureOrientationOverride;
+  self.multiCamera.captureOrientationOverride = self.captureOrientationOverride;
+
+  // Same race for the EventChannel sinks: onListenWithArguments stores the
+  // sink in a file-level global and only forwards it onto the camera if one
+  // already exists. On the FIRST camera-screen open, Dart subscribes before
+  // setupCamera completes, so the sink dangles in the global and the new
+  // camera's MotionController / ImageStreamController / PhysicalButton
+  // controller never get it. Seed them from the saved globals here so the
+  // first-open subscription receives events too. (ObjC `nil` messaging is a
+  // no-op, so this is safe when no listener is active.)
+  [self.camera setOrientationEventSink:orientationEventSink];
+  [self.camera setImageStreamEvent:imageStreamEventSink];
+  [self.camera setPhysicalButtonEventSink:physicalButtonEventSink];
+  [self.multiCamera setOrientationEventSink:orientationEventSink];
+  [self.multiCamera setPhysicalButtonEventSink:physicalButtonEventSink];
+
   completion(@(YES), nil);
 }
 
@@ -489,12 +515,40 @@ FlutterEventSink physicalButtonEventSink;
     completion(nil, [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil]);
     return;
   }
-  
+
   if (self.multiCamera != nil) {
     [self.multiCamera setExifPreferencesGPSLocation: exifPreferences.saveGPSLocation completion:completion];
   } else {
     [self.camera setExifPreferencesGPSLocation: exifPreferences.saveGPSLocation completion:completion];
   }
+}
+
+/// Mirror of CameraAwesomeX.setCaptureOrientationOverride on Android. Maps
+/// "portrait" → UIDeviceOrientationPortrait (top-up), "landscape" →
+/// UIDeviceOrientationLandscapeRight (home button on the left), anything
+/// else (including nil/empty) → clear the override.
+///
+/// The parsed value is stashed on the plugin itself so it survives any
+/// future setupCamera call (which constructs a brand-new
+/// SingleCameraPreview / MultiCameraPreview). The value is also applied to
+/// whichever camera is already up so callers can flip the override at any
+/// time, not only before camera setup.
+- (void)setCaptureOrientationOverrideOrientation:(nullable NSString *)orientation error:(FlutterError *_Nullable *_Nonnull)error {
+  NSNumber *boxed = nil;
+  if ([orientation isKindOfClass:[NSString class]]) {
+    NSString *lowered = [orientation lowercaseString];
+    if ([lowered isEqualToString:@"portrait"]) {
+      boxed = @(UIDeviceOrientationPortrait);
+    } else if ([lowered isEqualToString:@"landscape"]) {
+      boxed = @(UIDeviceOrientationLandscapeRight);
+    }
+  }
+  self.captureOrientationOverride = boxed;
+  // Apply to whichever camera is currently set up; harmless when both are nil
+  // (the override is requested ahead of setupCamera — setupCamera will then
+  // pick it up from self.captureOrientationOverride).
+  self.camera.captureOrientationOverride = boxed;
+  self.multiCamera.captureOrientationOverride = boxed;
 }
 
 - (void)setFlashModeMode:(nonnull NSString *)mode error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {

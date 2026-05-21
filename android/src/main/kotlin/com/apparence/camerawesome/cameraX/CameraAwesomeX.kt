@@ -12,6 +12,7 @@ import android.os.*
 import android.util.Log
 import android.util.Rational
 import android.util.Size
+import android.view.Surface
 import androidx.camera.camera2.Camera2Config
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.*
@@ -63,6 +64,12 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware {
     private lateinit var orientationStreamChannel: EventChannel
     private var orientationStreamListener: OrientationStreamListener? = null
     private val sensorOrientationListener: SensorOrientationListener = SensorOrientationListener()
+
+    /// When set, the EXIF Orientation of captured photos is forced to this
+    /// `Surface.ROTATION_*` value instead of the sensor-driven one read from
+    /// [OrientationStreamListener]. Set via [setCaptureOrientationOverride]
+    /// from Dart; null means "use the sensor."
+    private var captureOrientationOverride: Int? = null
 
     private lateinit var cameraState: CameraXState
     private val cameraPermissions = CameraPermissions()
@@ -381,7 +388,8 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware {
         val outputFileOptions =
             ImageCapture.OutputFileOptions.Builder(imageFile).setMetadata(metadata).build()
 //        for (imageCapture in cameraState.imageCaptures) {
-        imageCapture.targetRotation = orientationStreamListener!!.surfaceOrientation
+        imageCapture.targetRotation = captureOrientationOverride
+            ?: orientationStreamListener!!.surfaceOrientation
         imageCapture.takePicture(outputFileOptions,
             ContextCompat.getMainExecutor(activity!!),
             object : ImageCapture.OnImageSavedCallback {
@@ -711,6 +719,20 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware {
     @ExperimentalCamera2Interop
     override fun isMultiCamSupported(): Boolean {
         return getCameraProvider().isMultiCamSupported()
+    }
+
+    /// Forces the EXIF Orientation tag of subsequently captured photos to a
+    /// fixed value, bypassing the device orientation sensor. Mapping:
+    ///   "portrait"  → Surface.ROTATION_0  (portrait_up)
+    ///   "landscape" → Surface.ROTATION_90 (landscape_right)
+    ///   anything else (including null/empty) → clear the override and resume
+    ///   the sensor-driven path.
+    override fun setCaptureOrientationOverride(orientation: String?) {
+        captureOrientationOverride = when (orientation?.lowercase()) {
+            "portrait" -> Surface.ROTATION_0
+            "landscape" -> Surface.ROTATION_90
+            else -> null
+        }
     }
 
     /// Changing the recording audio mode can't be changed once a recording has starded

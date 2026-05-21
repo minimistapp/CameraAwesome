@@ -581,9 +581,16 @@
 
 /// Take the picture into the given path
 - (void)takePictureAtPath:(NSString *)path completion:(nonnull void (^)(NSNumber * _Nullable, FlutterError * _Nullable))completion {
+  // Use the override if the caller set one via setCaptureOrientationOverride;
+  // otherwise fall back to the device's physical orientation as reported by
+  // the motion sensor.
+  UIDeviceOrientation captureOrientation = _captureOrientationOverride != nil
+      ? (UIDeviceOrientation)[_captureOrientationOverride integerValue]
+      : _motionController.deviceOrientation;
+
   // Instanciate camera picture obj
   CameraPictureController *cameraPicture = [[CameraPictureController alloc] initWithPath:path
-                                                                             orientation:_motionController.deviceOrientation
+                                                                             orientation:captureOrientation
                                                                           sensorPosition:_cameraSensorPosition
                                                                          saveGPSLocation:_saveGPSLocation
                                                                        mirrorFrontCamera:_mirrorFrontCamera

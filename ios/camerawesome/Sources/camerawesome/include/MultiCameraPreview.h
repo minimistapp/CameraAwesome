@@ -43,6 +43,11 @@ AVCaptureAudioDataOutputSampleBufferDelegate>
 @property(nonatomic, nonatomic) NSMutableArray<CameraPreviewTexture *> *textures;
 @property(nonatomic, copy) void (^onPreviewFrameAvailable)(NSNumber * _Nullable);
 
+/// When non-nil, overrides [motionController.deviceOrientation] at picture-
+/// capture time. Wraps a UIDeviceOrientation; set to nil to resume the
+/// sensor-driven behavior. See SingleCameraPreview for full semantics.
+@property(nonatomic, strong, nullable) NSNumber *captureOrientationOverride;
+
 - (instancetype)initWithSensors:(NSArray<PigeonSensor *> *)sensors mirrorFrontCamera:(BOOL)mirrorFrontCamera
            enablePhysicalButton:(BOOL)enablePhysicalButton
                 aspectRatioMode:(AspectRatio)aspectRatioMode

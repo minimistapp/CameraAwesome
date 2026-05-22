@@ -4,7 +4,6 @@ import 'package:camerawesome/camerawesome_plugin.dart';
 import 'package:camerawesome/pigeon.dart';
 import 'package:camerawesome/src/orchestrator/camera_context.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 /// This is the builder for your camera interface
 /// Using the [state] you can do anything you need without having to think about the camera flow
@@ -361,12 +360,6 @@ class _CameraWidgetBuilder extends State<CameraAwesomeBuilder> with WidgetsBindi
   @override
   void didUpdateWidget(covariant CameraAwesomeBuilder oldWidget) {
     super.didUpdateWidget(oldWidget);
-  }
-
-  @override
-  void didChangeDependencies() {
-    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-    super.didChangeDependencies();
   }
 
   @override

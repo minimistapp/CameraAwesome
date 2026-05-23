@@ -172,7 +172,13 @@ previewPhotoSampleBuffer:(CMSampleBufferRef)previewPhotoSampleBuffer
         double localX = imageHeightDivided - (imageHeightDivided / _aspectRatio);
         cropRect = CGRectMake(localX, 0, image.size.height / _aspectRatio, image.size.width);
       } else {
-        cropRect = CGRectMake(y, x, newCropWidth, newCropHeight);
+        // Work in CGImage-native pixel space: UIImage.size is display-oriented
+        // (rotated by the orientation tag) while CGImageCreateWithImageInRect
+        // operates on the sensor-native pixel grid.
+        size_t cgWidth = CGImageGetWidth(image.CGImage);
+        size_t cgHeight = CGImageGetHeight(image.CGImage);
+        double side = MIN(cgWidth, cgHeight);
+        cropRect = CGRectMake((cgWidth - side) / 2.0, (cgHeight - side) / 2.0, side, side);
       }
     }
   }

@@ -71,6 +71,10 @@ class _AwesomeCameraGestureDetector
   double? _lastScale;
 
   Offset? _tapPosition;
+  // Increments on every tap so the focus painter is rebuilt from scratch each
+  // time — otherwise re-tapping the same spot reuses the existing animation
+  // element and the indicator never replays.
+  int _tapCount = 0;
   Timer? _timer;
 
   @override
@@ -126,6 +130,7 @@ class _AwesomeCameraGestureDetector
                 }
                 setState(() {
                   _tapPosition = details.localPosition;
+                  _tapCount++;
                 });
                 widget.onPreviewTapBuilder!.onPreviewTap.onTap(
                   _tapPosition!,
@@ -140,7 +145,13 @@ class _AwesomeCameraGestureDetector
         Positioned.fill(child: widget.child),
         if (_tapPosition != null &&
             widget.onPreviewTapBuilder?.onPreviewTap.onTapPainter != null)
-          widget.onPreviewTapBuilder!.onPreviewTap.onTapPainter!(_tapPosition!),
+          KeyedSubtree(
+            // A fresh key per tap forces the painter (and its one-shot
+            // animation) to rebuild even when the tap lands on the same spot.
+            key: ValueKey(_tapCount),
+            child:
+                widget.onPreviewTapBuilder!.onPreviewTap.onTapPainter!(_tapPosition!),
+          ),
       ]),
     );
   }

@@ -7,8 +7,16 @@
 
 #import "SingleCameraPreview.h"
 
+// KVO context for observing the capture device's adjustingFocus/adjustingExposure
+// flags (used to know when AF/AE have settled).
+static void * const FocusStableContext = (void *)&FocusStableContext;
+
 @implementation SingleCameraPreview {
   dispatch_queue_t _dispatchQueue;
+  // Blocks waiting for focus/exposure to settle, plus whether we currently hold
+  // KVO registrations on _captureDevice. Mutated only on _dispatchQueue.
+  NSMutableArray<void (^)(void)> *_focusStableCompletions;
+  BOOL _observingFocusStable;
 }
 
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
@@ -140,6 +148,12 @@
   // Here we set a preset which wont crash the device before switching to front or back
   [_captureSession setSessionPreset:AVCaptureSessionPresetPhoto];
   
+  // Drop any focus-stable KVO registration on the outgoing device before we
+  // reassign _captureDevice, and abandon pending waiters (a capture/lock in
+  // flight is no longer valid across a sensor switch).
+  [self teardownFocusStableObservation];
+  [_focusStableCompletions removeAllObjects];
+
   NSError *error;
   _captureDevice = [AVCaptureDevice deviceWithUniqueID:[self selectAvailableCamera:sensor]];
   _captureVideoInput = [AVCaptureDeviceInput deviceInputWithDevice:_captureDevice error:&error];
@@ -169,6 +183,12 @@
   // Creating photo output
   _capturePhotoOutput = [AVCapturePhotoOutput new];
   [_capturePhotoOutput setHighResolutionCaptureEnabled:YES];
+  // Allow the modern processing pipeline up to "balanced" (Smart HDR / Deep
+  // Fusion). Must be set before the session starts running. Per-shot requests
+  // in takePictureAtPath must not exceed this ceiling.
+  if (@available(iOS 13.0, *)) {
+    _capturePhotoOutput.maxPhotoQualityPrioritization = AVCapturePhotoQualityPrioritizationBalanced;
+  }
   [_captureSession addOutput:_capturePhotoOutput];
   
   // Mirror the preview only on portrait mode
@@ -186,9 +206,22 @@
       selector:@selector(subjectAreaDidChange:)
           name:AVCaptureDeviceSubjectAreaDidChangeNotification
         object:_captureDevice];
+
+  // Default the live preview to smooth continuous autofocus so it converges
+  // gently and doesn't visibly "pump" while hunting before the first tap.
+  if ([_captureDevice lockForConfiguration:nil]) {
+    if ([_captureDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
+      [_captureDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
+    }
+    if ([_captureDevice isSmoothAutoFocusSupported]) {
+      [_captureDevice setSmoothAutoFocusEnabled:YES];
+    }
+    [_captureDevice unlockForConfiguration];
+  }
 }
 
 - (void)dealloc {
+  [self teardownFocusStableObservation];
   [self.motionController startMotionDetection];
 }
 
@@ -272,6 +305,7 @@
 - (void)dispose {
   [self stop];
   [self.physicalButtonController stopListening];
+  [self teardownFocusStableObservation];
   [[NSNotificationCenter defaultCenter] removeObserver:self
       name:AVCaptureDeviceSubjectAreaDidChangeNotification
     object:nil];
@@ -452,13 +486,129 @@
   [_captureDevice unlockForConfiguration];
 }
 
+/// Map a tap on the preview to AVFoundation's focus/exposure point-of-interest
+/// space.
+///
+/// The incoming [point] is normalised (0..1, origin top-left) over the
+/// portrait-oriented preview the user sees. AVFoundation, however, defines
+/// `focusPointOfInterest` relative to the sensor's native landscape readout —
+/// {0,0} top-left, {1,1} bottom-right with the home button on the right
+/// (UIDeviceOrientationLandscapeLeft) — and that space does NOT rotate with the
+/// device or the connection's videoOrientation.
+///
+/// Because we lock the capture connection to portrait (see
+/// initWithCameraSensor:), the preview is always the landscape-reference image
+/// rotated 90°, so the inverse is the fixed mapping (px, py) -> (py, 1 - px).
+/// This matches the portrait case of AVFoundation's own
+/// `captureDevicePointOfInterestForPoint:`. The front camera preview is
+/// additionally mirrored horizontally, which we undo first so the point lands
+/// in the un-mirrored sensor space.
+- (CGPoint)focusPointOfInterestForPreviewPoint:(CGPoint)point {
+  CGFloat px = point.x;
+  CGFloat py = point.y;
+
+  if (_captureConnection != nil && _captureConnection.isVideoMirrored) {
+    px = 1.0 - px;
+  }
+
+  CGPoint poi = CGPointMake(py, 1.0 - px);
+  poi.x = MAX(0.0, MIN(1.0, poi.x));
+  poi.y = MAX(0.0, MIN(1.0, poi.y));
+  return poi;
+}
+
+/// Run `completion` once focus AND exposure have stopped adjusting, or after
+/// `timeout` seconds — whichever comes first. If the device is already steady it
+/// runs immediately. All bookkeeping happens on _dispatchQueue so the KVO
+/// callback and the timeout fallback can't race each other.
+- (void)whenFocusStableWithTimeout:(NSTimeInterval)timeout completion:(void (^)(void))completion {
+  dispatch_async(_dispatchQueue, ^{
+    if (self->_captureDevice == nil ||
+        (!self->_captureDevice.isAdjustingFocus && !self->_captureDevice.isAdjustingExposure)) {
+      completion();
+      return;
+    }
+
+    if (self->_focusStableCompletions == nil) {
+      self->_focusStableCompletions = [NSMutableArray array];
+    }
+    [self->_focusStableCompletions addObject:[completion copy]];
+
+    if (!self->_observingFocusStable) {
+      self->_observingFocusStable = YES;
+      [self->_captureDevice addObserver:self forKeyPath:@"adjustingFocus" options:0 context:FocusStableContext];
+      [self->_captureDevice addObserver:self forKeyPath:@"adjustingExposure" options:0 context:FocusStableContext];
+
+      // Safety net: a low-contrast scene may never fully converge, so never
+      // block the shutter (or a focus lock) indefinitely.
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC)),
+                     self->_dispatchQueue, ^{
+        [self drainFocusStableCompletions];
+      });
+    }
+  });
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary<NSKeyValueChangeKey,id> *)change
+                       context:(void *)context {
+  if (context != FocusStableContext) {
+    [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+    return;
+  }
+  // KVO fires on AVFoundation's internal thread — hop onto our serial queue so
+  // teardown and the timeout fallback are serialized.
+  dispatch_async(_dispatchQueue, ^{
+    if (self->_captureDevice == nil ||
+        (!self->_captureDevice.isAdjustingFocus && !self->_captureDevice.isAdjustingExposure)) {
+      [self drainFocusStableCompletions];
+    }
+  });
+}
+
+/// Remove the KVO registrations from the current _captureDevice, if any. Must be
+/// called before _captureDevice is reassigned (sensor switch / dispose) so we
+/// never removeObserver: from the wrong device.
+- (void)teardownFocusStableObservation {
+  if (!_observingFocusStable) return;
+  _observingFocusStable = NO;
+  @try {
+    [_captureDevice removeObserver:self forKeyPath:@"adjustingFocus" context:FocusStableContext];
+    [_captureDevice removeObserver:self forKeyPath:@"adjustingExposure" context:FocusStableContext];
+  } @catch (NSException *exception) { /* already removed */ }
+}
+
+/// Tear down observation and fire every pending completion exactly once.
+/// Idempotent: the KVO callback and the timeout fallback may both call it.
+- (void)drainFocusStableCompletions {
+  if (!_observingFocusStable && _focusStableCompletions.count == 0) {
+    return;
+  }
+  [self teardownFocusStableObservation];
+
+  NSArray<void (^)(void)> *pending = [_focusStableCompletions copy];
+  [_focusStableCompletions removeAllObjects];
+  for (void (^completion)(void) in pending) {
+    completion();
+  }
+}
+
 /// Trigger focus on device at the specific point of the preview
 - (void)focusOnPoint:(CGPoint)position preview:(CGSize)preview iosFocusSettings:(nullable IOSFocusSettings *)settings error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
+  CGPoint poi = [self focusPointOfInterestForPreviewPoint:position];
   NSError *lockError;
   if ([_captureDevice lockForConfiguration:&lockError]) {
     // Focus point
     if ([_captureDevice isFocusPointOfInterestSupported]) {
-      [_captureDevice setFocusPointOfInterest:position];
+      [_captureDevice setFocusPointOfInterest:poi];
+    }
+
+    // Smooth (gradual) autofocus so continuous AF makes small corrections
+    // instead of full lens racks — stops the visible "pumping" on re-taps and
+    // matches the native Camera app. Only affects continuous AF.
+    if ([_captureDevice isSmoothAutoFocusSupported]) {
+      [_captureDevice setSmoothAutoFocusEnabled:YES];
     }
 
     // Focus mode: one-shot lock vs continuous (default)
@@ -473,7 +623,7 @@
     BOOL setExposure = settings != nil && [settings.setExposurePoint boolValue];
     if (setExposure) {
       if ([_captureDevice isExposurePointOfInterestSupported]) {
-        [_captureDevice setExposurePointOfInterest:position];
+        [_captureDevice setExposurePointOfInterest:poi];
       }
       if ([_captureDevice isExposureModeSupported:AVCaptureExposureModeAutoExpose]) {
         [_captureDevice setExposureMode:AVCaptureExposureModeAutoExpose];
@@ -499,6 +649,25 @@
     }
 
     [_captureDevice unlockForConfiguration];
+
+    // Once the one-shot scan converges, pin the lens (and exposure) exactly
+    // where AF/AE landed so continuous AF can't drift off the subject
+    // afterwards. The subject-area observer set above flips us back to centered
+    // continuous AF when the scene changes — matching native tap-to-focus.
+    if (lockFocus) {
+      [self whenFocusStableWithTimeout:1.0 completion:^{
+        NSError *pinError;
+        if ([self->_captureDevice lockForConfiguration:&pinError]) {
+          if ([self->_captureDevice isFocusModeSupported:AVCaptureFocusModeLocked]) {
+            [self->_captureDevice setFocusMode:AVCaptureFocusModeLocked];
+          }
+          if (setExposure && [self->_captureDevice isExposureModeSupported:AVCaptureExposureModeLocked]) {
+            [self->_captureDevice setExposureMode:AVCaptureExposureModeLocked];
+          }
+          [self->_captureDevice unlockForConfiguration];
+        }
+      }];
+    }
   } else {
     *error = [FlutterError errorWithCode:@"FOCUS_ERROR" message:@"impossible to set focus point" details:[lockError localizedDescription]];
   }
@@ -581,6 +750,16 @@
 
 /// Take the picture into the given path
 - (void)takePictureAtPath:(NSString *)path completion:(nonnull void (^)(NSNumber * _Nullable, FlutterError * _Nullable))completion {
+  // Don't fire the shutter mid-hunt. If AF/AE are still converging (common right
+  // after a tap, or after the scene changes under continuous AF), wait for them
+  // to settle — bounded by a short timeout so the shutter stays responsive. This
+  // is what prevents the "looked focused a moment later, soft in the shot".
+  [self whenFocusStableWithTimeout:0.6 completion:^{
+    [self capturePictureAtPath:path completion:completion];
+  }];
+}
+
+- (void)capturePictureAtPath:(NSString *)path completion:(nonnull void (^)(NSNumber * _Nullable, FlutterError * _Nullable))completion {
   // Use the override if the caller set one via setCaptureOrientationOverride;
   // otherwise fall back to the device's physical orientation as reported by
   // the motion sensor.
@@ -611,7 +790,14 @@
   AVCapturePhotoSettings *settings = [AVCapturePhotoSettings photoSettings];
   [settings setFlashMode:_flashMode];
   [settings setHighResolutionPhotoEnabled:YES];
-  
+
+  // Opt into the modern processing pipeline (Smart HDR / Deep Fusion). Balanced
+  // keeps shutter latency low while still gaining most of the quality — see
+  // maxPhotoQualityPrioritization set on the output in initCameraPreview.
+  if (@available(iOS 13.0, *)) {
+    settings.photoQualityPrioritization = AVCapturePhotoQualityPrioritizationBalanced;
+  }
+
   [_capturePhotoOutput capturePhotoWithSettings:settings
                                        delegate:cameraPicture];
   

@@ -69,40 +69,35 @@
   return dest_data;
 }
 
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-implementations"
 - (void)captureOutput:(AVCapturePhotoOutput *)output
-didFinishProcessingPhotoSampleBuffer:(CMSampleBufferRef)photoSampleBuffer
-previewPhotoSampleBuffer:(CMSampleBufferRef)previewPhotoSampleBuffer
-     resolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings
-      bracketSettings:(AVCaptureBracketedStillImageSettings *)bracketSettings
+didFinishProcessingPhoto:(AVCapturePhoto *)photo
                 error:(NSError *)error {
-#pragma clang diagnostic pop
-  
   selfReference = nil;
   if (error) {
     _completion(nil, [FlutterError errorWithCode:@"CAPTURE ERROR" message:error.description details:@""]);
     return;
   }
-  
+
   // Add exif data
   ExifContainer *container = [[ExifContainer alloc] init];
   [container addCreationDate:[NSDate date]];
-  
+
   // Save GPS location only if provided
   if (_saveGPSLocation) {
     CLLocationManager *locationManager = [CLLocationManager new];
     CLLocation *location = [locationManager location];
     [container addLocation:location];
   }
-  
-  // we ignore this error because plugin can only be installed on iOS 11+
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-  NSData *data = [AVCapturePhotoOutput JPEGPhotoDataRepresentationForJPEGSampleBuffer:photoSampleBuffer
-                                                             previewPhotoSampleBuffer:previewPhotoSampleBuffer];
-#pragma clang diagnostic pop
-  
+
+  // Finalized bytes from the modern photo pipeline — this is the image after
+  // Smart HDR / Deep Fusion processing. Replaces the deprecated JPEG
+  // sample-buffer path, which delivered an unprocessed frame.
+  NSData *data = [photo fileDataRepresentation];
+  if (data == nil) {
+    _completion(nil, [FlutterError errorWithCode:@"CAPTURE ERROR" message:@"no photo data" details:@""]);
+    return;
+  }
+
   UIImage *image = [UIImage imageWithCGImage:[UIImage imageWithData:data].CGImage
                                        scale:1.0
                                  orientation:[self getJpegOrientation]];

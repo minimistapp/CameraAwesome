@@ -98,7 +98,15 @@ didFinishProcessingPhoto:(AVCapturePhoto *)photo
     return;
   }
 
-  UIImage *image = [UIImage imageWithCGImage:[UIImage imageWithData:data].CGImage
+  // Non-nil data doesn't guarantee a successful decode; a nil CGImage would
+  // later crash in imageByCroppingImage: (CGImageGetWidth / CGImageCreateWithImageInRect).
+  UIImage *decodedImage = [UIImage imageWithData:data];
+  if (decodedImage == nil || decodedImage.CGImage == nil) {
+    _completion(nil, [FlutterError errorWithCode:@"CAPTURE ERROR" message:@"invalid photo data" details:@""]);
+    return;
+  }
+
+  UIImage *image = [UIImage imageWithCGImage:decodedImage.CGImage
                                        scale:1.0
                                  orientation:[self getJpegOrientation]];
   float originalWidth = image.size.width;

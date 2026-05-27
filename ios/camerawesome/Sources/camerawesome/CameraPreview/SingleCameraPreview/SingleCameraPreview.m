@@ -150,9 +150,14 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   
   // Drop any focus-stable KVO registration on the outgoing device before we
   // reassign _captureDevice, and abandon pending waiters (a capture/lock in
-  // flight is no longer valid across a sensor switch).
-  [self teardownFocusStableObservation];
-  [_focusStableCompletions removeAllObjects];
+  // flight is no longer valid across a sensor switch). Run synchronously on
+  // _dispatchQueue so it can't race the KVO/timeout blocks that also mutate
+  // this state. initCameraPreview is never itself called from _dispatchQueue,
+  // so dispatch_sync cannot deadlock here.
+  dispatch_sync(_dispatchQueue, ^{
+    [self teardownFocusStableObservation];
+    [self->_focusStableCompletions removeAllObjects];
+  });
 
   NSError *error;
   _captureDevice = [AVCaptureDevice deviceWithUniqueID:[self selectAvailableCamera:sensor]];
@@ -221,6 +226,10 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
 }
 
 - (void)dealloc {
+  // Direct (not dispatched): every block queued on _dispatchQueue retains self,
+  // so if we're in dealloc none can be in-flight touching this state — and a
+  // dispatch_sync here could deadlock if the final release happened on
+  // _dispatchQueue. So tearing down inline is both race-free and safe.
   [self teardownFocusStableObservation];
   [self.motionController startMotionDetection];
 }
@@ -305,7 +314,12 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
 - (void)dispose {
   [self stop];
   [self.physicalButtonController stopListening];
-  [self teardownFocusStableObservation];
+  // Synchronously on _dispatchQueue so teardown can't race in-flight KVO/timeout
+  // blocks. dispose runs on the platform thread, never on _dispatchQueue.
+  dispatch_sync(_dispatchQueue, ^{
+    [self teardownFocusStableObservation];
+    [self->_focusStableCompletions removeAllObjects];
+  });
   [[NSNotificationCenter defaultCenter] removeObserver:self
       name:AVCaptureDeviceSubjectAreaDidChangeNotification
     object:nil];

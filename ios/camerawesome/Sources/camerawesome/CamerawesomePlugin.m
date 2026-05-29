@@ -672,7 +672,20 @@ FlutterEventSink physicalButtonEventSink;
 }
 
 - (nullable NSNumber *)getMinZoomWithError:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
-  return @(0);
+  if (self.camera == nil && self.multiCamera == nil) {
+    *error = [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil];
+    return nil;
+  }
+
+  // multiCamera doesn't expose a structural min; its first device is treated
+  // as the main one (matching getMaxZoom) so fall back to the live floor on
+  // that device. The single-camera path below is the one that matters for
+  // virtual-device sub-1× zoom.
+  if (self.multiCamera != nil) {
+    AVCaptureDevice *mainDevice = self.multiCamera.devices.firstObject.device;
+    return @(mainDevice.minAvailableVideoZoomFactor);
+  }
+  return @([self.camera getMinZoom]);
 }
 
 - (void)setZoomZoom:(nonnull NSNumber *)zoom error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {

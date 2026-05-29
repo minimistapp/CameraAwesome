@@ -17,6 +17,14 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // KVO registrations on _captureDevice. Mutated only on _dispatchQueue.
   NSMutableArray<void (^)(void)> *_focusStableCompletions;
   BOOL _observingFocusStable;
+  // Zoom bounds latched at device-bind time. minAvailableVideoZoomFactor on a
+  // virtual multi-camera device can read 1.0 for several frames right after the
+  // input is added, before AVFoundation settles its lower bound, so reading it
+  // live would race the Dart-side capability query and silently commit min=1.0
+  // — suppressing the 0.5× chip. Both ends now agree on the same numbers for
+  // the lifetime of this device binding.
+  CGFloat _cachedMinZoom;
+  CGFloat _cachedMaxZoom;
 }
 
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
@@ -223,6 +231,39 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
     }
     [_captureDevice unlockForConfiguration];
   }
+
+  [self cacheDeviceZoomBounds];
+}
+
+/// Latch the zoom bounds we'll report to Dart and clamp against inside
+/// setZoom:. The floor comes from the device's *constituent* physical cameras
+/// — 0.5 when an ultra-wide is present (Apple's documented convention for the
+/// lower bound of videoZoomFactor on dual-wide / triple), 1.0 otherwise. We
+/// don't read minAvailableVideoZoomFactor: that property is dynamic and can
+/// report 1.0 momentarily after a virtual multi-camera input is bound, which
+/// would race Dart's capability poll and suppress the 0.5× chip.
+- (void)cacheDeviceZoomBounds {
+  if (_captureDevice == nil) {
+    _cachedMinZoom = 1.0;
+    _cachedMaxZoom = 1.0;
+    return;
+  }
+
+  CGFloat maxZoom = _captureDevice.activeFormat.videoMaxZoomFactor;
+  // Historical cap — past ~50× the device either refuses (e.g. iPhone 14 Pro
+  // at 90×) or the image is unusable.
+  _cachedMaxZoom = maxZoom > 50.0 ? 50.0 : maxZoom;
+
+  BOOL hasUltraWide = NO;
+  if (@available(iOS 13.0, *)) {
+    for (AVCaptureDevice *constituent in _captureDevice.constituentDevices) {
+      if ([constituent.deviceType isEqualToString:AVCaptureDeviceTypeBuiltInUltraWideCamera]) {
+        hasUltraWide = YES;
+        break;
+      }
+    }
+  }
+  _cachedMinZoom = hasUltraWide ? 0.5 : 1.0;
 }
 
 - (void)dealloc {
@@ -303,11 +344,17 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   return _currentPreviewSize;
 }
 
-// Get max zoom level
+// Get max zoom level — returns the value latched at device-bind time so the
+// Dart-side capability query and native setZoom: clamp use the same number.
 - (CGFloat)getMaxZoom {
-  CGFloat maxZoom = _captureDevice.activeFormat.videoMaxZoomFactor;
-  // Not sure why on iPhone 14 Pro, zoom at 90 not working, so let's block to 50 which is very high
-  return maxZoom > 50.0 ? 50.0 : maxZoom;
+  return _cachedMaxZoom > 0 ? _cachedMaxZoom : 1.0;
+}
+
+// Get min zoom level — 0.5 on a virtual device whose constituents include the
+// ultra-wide, 1.0 on a single-sensor (or wide+tele) device. See
+// -cacheDeviceZoomBounds for why this is structural rather than live.
+- (CGFloat)getMinZoom {
+  return _cachedMinZoom > 0 ? _cachedMinZoom : 1.0;
 }
 
 /// Dispose camera inputs & outputs
@@ -412,14 +459,27 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   }
 }
 
-/// Set zoom level
+/// Set zoom level. `value` is the **absolute** `videoZoomFactor` the caller
+/// wants, clamped to the device's latched range. The previous
+/// linear-in-[0,1] contract required Dart and native to agree exactly on
+/// (min, max) at every call, and any UI cap on Dart's view of max — Minimist
+/// caps at 10× for chip presets — then rescaled the resulting factor off the
+/// real device range. Treating the value as absolute makes the math symmetric:
+/// Dart computes what it wants, native clamps to what's reachable.
 - (void)setZoom:(float)value error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
-  CGFloat maxZoom = [self getMaxZoom];
-  CGFloat scaledZoom = value * (maxZoom - 1.0f) + 1.0f;
-  
+  CGFloat clamped = MAX([self getMinZoom], MIN((CGFloat)value, [self getMaxZoom]));
+
   NSError *zoomError;
   if ([_captureDevice lockForConfiguration:&zoomError]) {
-    _captureDevice.videoZoomFactor = scaledZoom;
+    @try {
+      _captureDevice.videoZoomFactor = clamped;
+    } @catch (NSException *exception) {
+      // AVFoundation raises NSInvalidArgumentException if a runtime constraint
+      // (e.g. distortion correction toggling) momentarily tightens the floor
+      // past our cached value. Swallow — the next setZoom: will retry against
+      // a value the device accepts, and crashing the camera here would be
+      // strictly worse than a single frame at the previous zoom.
+    }
     [_captureDevice unlockForConfiguration];
   } else {
     *error = [FlutterError errorWithCode:@"ZOOM_NOT_SET" message:@"can't set the zoom value" details:[zoomError localizedDescription]];
@@ -714,24 +774,46 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   [self.imageStreamController receivedImageFromStream];
 }
 
-/// Get the first available camera on device (front or rear)
+/// Get the first available camera on device (front or rear).
+///
+/// For the back position we prefer the broadest virtual multi-camera device
+/// available — triple → dual-wide → dual — so the AVCaptureSession can cross
+/// 1× (wide ↔ ultra-wide) and any optical step internally via
+/// `setVideoZoomFactor` without rebinding inputs. Rebinds produce a ~150–300 ms
+/// black frame plus an auto-exposure re-settle on every crossing; staying on a
+/// single virtual device removes both. Falls back to the individual wide-angle
+/// for older single-sensor phones, and unconditionally for `.front` (no
+/// virtual front-facing equivalents exist).
 - (NSString *)selectAvailableCamera:(PigeonSensorPosition)sensor {
   if (_captureDeviceId != nil) {
     return _captureDeviceId;
   }
-  
-  // TODO: add dual & triple camera
-  NSArray<AVCaptureDevice *> *devices = [[NSArray alloc] init];
+
+  AVCaptureDevicePosition cameraPosition = (sensor == PigeonSensorPositionFront)
+      ? AVCaptureDevicePositionFront
+      : AVCaptureDevicePositionBack;
+
+  NSMutableArray<AVCaptureDeviceType> *types = [NSMutableArray array];
+  if (cameraPosition == AVCaptureDevicePositionBack) {
+    [types addObject:AVCaptureDeviceTypeBuiltInTripleCamera];
+    [types addObject:AVCaptureDeviceTypeBuiltInDualWideCamera];
+    [types addObject:AVCaptureDeviceTypeBuiltInDualCamera];
+  }
+  [types addObject:AVCaptureDeviceTypeBuiltInWideAngleCamera];
+
   AVCaptureDeviceDiscoverySession *discoverySession = [AVCaptureDeviceDiscoverySession
-                                                       discoverySessionWithDeviceTypes:@[ AVCaptureDeviceTypeBuiltInWideAngleCamera, ]
+                                                       discoverySessionWithDeviceTypes:types
                                                        mediaType:AVMediaTypeVideo
-                                                       position:AVCaptureDevicePositionUnspecified];
-  devices = discoverySession.devices;
-  
-  NSInteger cameraType = (sensor == PigeonSensorPositionFront) ? AVCaptureDevicePositionFront : AVCaptureDevicePositionBack;
-  for (AVCaptureDevice *device in devices) {
-    if ([device position] == cameraType) {
-      return [device uniqueID];
+                                                       position:cameraPosition];
+
+  // Iterate `types` explicitly rather than relying on the discovery session's
+  // ordering so the preference is unambiguous regardless of how AVFoundation
+  // chooses to sort its devices array.
+  for (AVCaptureDeviceType preferredType in types) {
+    for (AVCaptureDevice *device in discoverySession.devices) {
+      if ([device.deviceType isEqualToString:preferredType]) {
+        return [device uniqueID];
+      }
     }
   }
   return nil;

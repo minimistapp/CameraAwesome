@@ -466,8 +466,17 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
 /// caps at 10× for chip presets — then rescaled the resulting factor off the
 /// real device range. Treating the value as absolute makes the math symmetric:
 /// Dart computes what it wants, native clamps to what's reachable.
+///
+/// A non-positive `value` is treated as "no zoom requested" and snaps to
+/// 1.0×. This preserves the legacy Dart-side default (camerawesome seeds
+/// `SensorConfig.currentZoom = 0.0` and pushes it down on every state
+/// transition); under the old linear contract 0.0 meant "no zoom", and
+/// without this snap our absolute clamp would land it on getMinZoom (0.5×
+/// on a dual-wide / triple), opening the camera at ultra-wide instead of
+/// the normal wide view.
 - (void)setZoom:(float)value error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
-  CGFloat clamped = MAX([self getMinZoom], MIN((CGFloat)value, [self getMaxZoom]));
+  CGFloat requested = value > 0 ? (CGFloat)value : 1.0;
+  CGFloat clamped = MAX([self getMinZoom], MIN(requested, [self getMaxZoom]));
 
   NSError *zoomError;
   if ([_captureDevice lockForConfiguration:&zoomError]) {

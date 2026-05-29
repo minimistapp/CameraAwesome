@@ -17,14 +17,20 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // KVO registrations on _captureDevice. Mutated only on _dispatchQueue.
   NSMutableArray<void (^)(void)> *_focusStableCompletions;
   BOOL _observingFocusStable;
-  // Zoom bounds latched at device-bind time. minAvailableVideoZoomFactor on a
-  // virtual multi-camera device can read 1.0 for several frames right after the
-  // input is added, before AVFoundation settles its lower bound, so reading it
-  // live would race the Dart-side capability query and silently commit min=1.0
-  // — suppressing the 0.5× chip. Both ends now agree on the same numbers for
-  // the lifetime of this device binding.
+  // Zoom bounds latched at device-bind time. Reported to Dart in *Apple-style
+  // display ratios* (wide lens = 1.0×, ultra-wide = 0.5×) — the same numbers
+  // the native Camera app shows. See -cacheDeviceZoomBounds for the
+  // videoZoomFactor → display-ratio conversion: on a virtual dual-wide /
+  // triple device videoZoomFactor=1.0 is the ultra-wide constituent (Apple
+  // UI "0.5×"), so we multiply by ~0.5 (the FOV ratio of wide-to-ultrawide)
+  // before exposing the range.
   CGFloat _cachedMinZoom;
   CGFloat _cachedMaxZoom;
+  // Multiplier applied to native videoZoomFactor to get the display ratio.
+  // 1.0 for a single-sensor device or a virtual device whose widest
+  // constituent is the wide-angle; ~0.5 when the ultra-wide is the widest
+  // constituent (dual-wide / triple).
+  CGFloat _displayRatioConversion;
 }
 
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
@@ -235,35 +241,81 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   [self cacheDeviceZoomBounds];
 }
 
-/// Latch the zoom bounds we'll report to Dart and clamp against inside
-/// setZoom:. The floor comes from the device's *constituent* physical cameras
-/// — 0.5 when an ultra-wide is present (Apple's documented convention for the
-/// lower bound of videoZoomFactor on dual-wide / triple), 1.0 otherwise. We
-/// don't read minAvailableVideoZoomFactor: that property is dynamic and can
-/// report 1.0 momentarily after a virtual multi-camera input is bound, which
-/// would race Dart's capability poll and suppress the 0.5× chip.
+/// Latch the zoom range and the videoZoomFactor → display-ratio conversion
+/// we'll report to Dart and clamp against inside setZoom:. Dart works
+/// entirely in Apple-style display ratios (wide lens = 1.0×, ultra-wide =
+/// 0.5×), matching what the native Camera app shows; the conversion lives
+/// here so the rest of the codebase doesn't have to know which lens is the
+/// virtual device's widest constituent.
 - (void)cacheDeviceZoomBounds {
   if (_captureDevice == nil) {
+    _displayRatioConversion = 1.0;
     _cachedMinZoom = 1.0;
     _cachedMaxZoom = 1.0;
     return;
   }
 
-  CGFloat maxZoom = _captureDevice.activeFormat.videoMaxZoomFactor;
-  // Historical cap — past ~50× the device either refuses (e.g. iPhone 14 Pro
-  // at 90×) or the image is unusable.
-  _cachedMaxZoom = maxZoom > 50.0 ? 50.0 : maxZoom;
+  _displayRatioConversion = [self computeDisplayRatioConversion];
+  if (_displayRatioConversion <= 0) {
+    _displayRatioConversion = 1.0;
+  }
 
-  BOOL hasUltraWide = NO;
+  CGFloat nativeMin = _captureDevice.minAvailableVideoZoomFactor;
+  CGFloat nativeMax = _captureDevice.activeFormat.videoMaxZoomFactor;
+  _cachedMinZoom = nativeMin * _displayRatioConversion;
+  _cachedMaxZoom = nativeMax * _displayRatioConversion;
+}
+
+/// FOV-based ratio between Apple's UI labels and the device's
+/// videoZoomFactor. On a single-sensor device — or a virtual device whose
+/// widest constituent is the wide-angle (BuiltInDualCamera = wide + tele) —
+/// 1.0× is the wide lens and there's no remap, so this returns 1.0. On
+/// BuiltInDualWideCamera / BuiltInTripleCamera the widest constituent is
+/// the ultra-wide, so videoZoomFactor=1.0 corresponds to Apple's "0.5×"
+/// and this returns ~0.5 (the FOV ratio tan(wide_fov/2) / tan(uw_fov/2)).
+/// Multiplying a videoZoomFactor by this gives the Apple-style ratio;
+/// dividing an Apple-style ratio by this gives the videoZoomFactor.
+- (CGFloat)computeDisplayRatioConversion {
   if (@available(iOS 13.0, *)) {
-    for (AVCaptureDevice *constituent in _captureDevice.constituentDevices) {
-      if ([constituent.deviceType isEqualToString:AVCaptureDeviceTypeBuiltInUltraWideCamera]) {
-        hasUltraWide = YES;
-        break;
+    NSArray<AVCaptureDevice *> *constituents = _captureDevice.constituentDevices;
+    if (constituents.count == 0) {
+      return 1.0;
+    }
+
+    AVCaptureDevice *wideConstituent = nil;
+    AVCaptureDevice *widestConstituent = nil;
+    CGFloat widestFov = 0;
+    for (AVCaptureDevice *c in constituents) {
+      if ([c.deviceType isEqualToString:AVCaptureDeviceTypeBuiltInWideAngleCamera]) {
+        wideConstituent = c;
+      }
+      CGFloat fov = c.activeFormat.videoFieldOfView;
+      if (fov > widestFov) {
+        widestFov = fov;
+        widestConstituent = c;
       }
     }
+    if (wideConstituent == nil || widestConstituent == nil) {
+      return 1.0;
+    }
+    if (widestConstituent == wideConstituent) {
+      // Wide IS the widest (e.g. dual = wide + tele). Apple-UI and
+      // videoZoomFactor coincide.
+      return 1.0;
+    }
+
+    CGFloat wideFov = wideConstituent.activeFormat.videoFieldOfView;
+    if (wideFov <= 0 || widestFov <= 0) {
+      return 1.0;
+    }
+    CGFloat wideTan = tanf(wideFov * 0.5f * (float)M_PI / 180.0f);
+    CGFloat widestTan = tanf(widestFov * 0.5f * (float)M_PI / 180.0f);
+    if (wideTan <= 0 || widestTan <= 0) {
+      return 1.0;
+    }
+    return (CGFloat)(wideTan / widestTan);
   }
-  _cachedMinZoom = hasUltraWide ? 0.5 : 1.0;
+  return 1.0;
 }
 
 - (void)dealloc {
@@ -344,15 +396,15 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   return _currentPreviewSize;
 }
 
-// Get max zoom level — returns the value latched at device-bind time so the
-// Dart-side capability query and native setZoom: clamp use the same number.
+// Max zoom in **Apple-style display ratios** (wide = 1×, ultra-wide = 0.5×).
+// On iPhone 12 dual-wide this returns ~5.0, matching the native Camera app's
+// top end; on a Pro triple it returns ~15.0 (further capped by Dart's UI).
 - (CGFloat)getMaxZoom {
   return _cachedMaxZoom > 0 ? _cachedMaxZoom : 1.0;
 }
 
-// Get min zoom level — 0.5 on a virtual device whose constituents include the
-// ultra-wide, 1.0 on a single-sensor (or wide+tele) device. See
-// -cacheDeviceZoomBounds for why this is structural rather than live.
+// Min zoom in display ratios. 0.5 on dual-wide / triple (ultra-wide present),
+// 1.0 on single-sensor or wide+tele devices. See -cacheDeviceZoomBounds.
 - (CGFloat)getMinZoom {
   return _cachedMinZoom > 0 ? _cachedMinZoom : 1.0;
 }
@@ -459,24 +511,25 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   }
 }
 
-/// Set zoom level. `value` is the **absolute** `videoZoomFactor` the caller
-/// wants, clamped to the device's latched range. The previous
-/// linear-in-[0,1] contract required Dart and native to agree exactly on
-/// (min, max) at every call, and any UI cap on Dart's view of max — Minimist
-/// caps at 10× for chip presets — then rescaled the resulting factor off the
-/// real device range. Treating the value as absolute makes the math symmetric:
-/// Dart computes what it wants, native clamps to what's reachable.
+/// Set zoom level. `value` is the **Apple-style display ratio** the caller
+/// wants (wide lens = 1.0×, ultra-wide = 0.5×, etc.) — the same numbers
+/// the native Camera app shows. We translate to the device's native
+/// `videoZoomFactor` via the latched conversion (see -cacheDeviceZoomBounds)
+/// and clamp to the device's actual reachable range.
 ///
 /// A non-positive `value` is treated as "no zoom requested" and snaps to
-/// 1.0×. This preserves the legacy Dart-side default (camerawesome seeds
-/// `SensorConfig.currentZoom = 0.0` and pushes it down on every state
-/// transition); under the old linear contract 0.0 meant "no zoom", and
-/// without this snap our absolute clamp would land it on getMinZoom (0.5×
-/// on a dual-wide / triple), opening the camera at ultra-wide instead of
-/// the normal wide view.
+/// 1.0× (the wide lens). This preserves the legacy Dart-side default
+/// (camerawesome seeds `SensorConfig.currentZoom = 0.0` and pushes it down
+/// on every state transition); without the snap the absolute clamp would
+/// land it on getMinZoom (0.5× on a dual-wide / triple), opening the
+/// camera at ultra-wide instead of the normal wide view.
 - (void)setZoom:(float)value error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
-  CGFloat requested = value > 0 ? (CGFloat)value : 1.0;
-  CGFloat clamped = MAX([self getMinZoom], MIN(requested, [self getMaxZoom]));
+  CGFloat displayRatio = value > 0 ? (CGFloat)value : 1.0;
+  CGFloat conversion = _displayRatioConversion > 0 ? _displayRatioConversion : 1.0;
+  CGFloat nativeRequest = displayRatio / conversion;
+  CGFloat nativeMin = _captureDevice.minAvailableVideoZoomFactor;
+  CGFloat nativeMax = _captureDevice.activeFormat.videoMaxZoomFactor;
+  CGFloat clamped = MAX(nativeMin, MIN(nativeRequest, nativeMax));
 
   NSError *zoomError;
   if ([_captureDevice lockForConfiguration:&zoomError]) {
@@ -485,8 +538,8 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
     } @catch (NSException *exception) {
       // AVFoundation raises NSInvalidArgumentException if a runtime constraint
       // (e.g. distortion correction toggling) momentarily tightens the floor
-      // past our cached value. Swallow — the next setZoom: will retry against
-      // a value the device accepts, and crashing the camera here would be
+      // past our clamp. Swallow — the next setZoom: will retry against a
+      // value the device accepts, and crashing the camera here would be
       // strictly worse than a single frame at the previous zoom.
     }
     [_captureDevice unlockForConfiguration];

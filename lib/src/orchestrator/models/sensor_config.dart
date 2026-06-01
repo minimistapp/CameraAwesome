@@ -88,10 +88,20 @@ class SensorConfig {
         .listen((value) => CamerawesomePlugin.setBrightness(value));
   }
 
+  /// Push a zoom value to the camera.
+  ///
+  /// The interpretation is platform-specific:
+  ///   • Android (CameraX): a linear value in `[0, 1]` — `setLinearZoom`.
+  ///   • iOS (AVFoundation): the absolute `videoZoomFactor`, e.g. 0.5 for
+  ///     ultra-wide on a dual-/triple-camera virtual device, 2.5 for 2.5×
+  ///     etc. The native plugin clamps to the device's reachable range.
+  ///
+  /// Callers should use the platform-aware selector in the app layer
+  /// (`_AndroidZoomSelectorState` / `_IOSZoomSelectorState`) which knows
+  /// which mapping to apply. The value range is not asserted here because
+  /// neither platform shares a single sensible domain after iOS switched
+  /// to absolute factors.
   Future<void> setZoom(double zoom) async {
-    if (zoom < 0 || zoom > 1) {
-      throw "Zoom value must be between 0 and 1";
-    }
     await CamerawesomePlugin.setZoom(zoom);
     if (!_zoomController.isClosed) {
       _zoomController.sink.add(zoom);

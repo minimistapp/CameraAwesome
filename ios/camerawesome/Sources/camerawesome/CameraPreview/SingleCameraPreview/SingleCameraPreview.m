@@ -17,6 +17,20 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // KVO registrations on _captureDevice. Mutated only on _dispatchQueue.
   NSMutableArray<void (^)(void)> *_focusStableCompletions;
   BOOL _observingFocusStable;
+  // Zoom bounds latched at device-bind time. Reported to Dart in *Apple-style
+  // display ratios* (wide lens = 1.0×, ultra-wide = 0.5×) — the same numbers
+  // the native Camera app shows. See -cacheDeviceZoomBounds for the
+  // videoZoomFactor → display-ratio conversion: on a virtual dual-wide /
+  // triple device videoZoomFactor=1.0 is the ultra-wide constituent (Apple
+  // UI "0.5×"), so we multiply by ~0.5 (the FOV ratio of wide-to-ultrawide)
+  // before exposing the range.
+  CGFloat _cachedMinZoom;
+  CGFloat _cachedMaxZoom;
+  // Multiplier applied to native videoZoomFactor to get the display ratio.
+  // 1.0 for a single-sensor device or a virtual device whose widest
+  // constituent is the wide-angle; ~0.5 when the ultra-wide is the widest
+  // constituent (dual-wide / triple).
+  CGFloat _displayRatioConversion;
 }
 
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
@@ -223,6 +237,83 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
     }
     [_captureDevice unlockForConfiguration];
   }
+
+  [self cacheDeviceZoomBounds];
+}
+
+/// Latch the zoom range and the videoZoomFactor → display-ratio conversion
+/// we'll report to Dart and clamp against inside setZoom:. Dart works
+/// entirely in Apple-style display ratios (wide lens = 1.0×, ultra-wide =
+/// 0.5×), matching what the native Camera app shows; the conversion lives
+/// here so the rest of the codebase doesn't have to know which lens is the
+/// virtual device's widest constituent.
+- (void)cacheDeviceZoomBounds {
+  if (_captureDevice == nil) {
+    _displayRatioConversion = 1.0;
+    _cachedMinZoom = 1.0;
+    _cachedMaxZoom = 1.0;
+    return;
+  }
+
+  _displayRatioConversion = [self computeDisplayRatioConversion];
+  if (_displayRatioConversion <= 0) {
+    _displayRatioConversion = 1.0;
+  }
+
+  CGFloat nativeMin = _captureDevice.minAvailableVideoZoomFactor;
+  CGFloat nativeMax = _captureDevice.activeFormat.videoMaxZoomFactor;
+  _cachedMinZoom = nativeMin * _displayRatioConversion;
+  _cachedMaxZoom = nativeMax * _displayRatioConversion;
+}
+
+/// Conversion factor between Apple's UI labels and the device's
+/// videoZoomFactor, derived from `virtualDeviceSwitchOverVideoZoomFactors`
+/// — the same numbers Apple's Camera app uses for its chip labels. The
+/// alternative of computing it from raw FOV is *physically* more accurate
+/// (a wider ultra-wide should map to a smaller "0.5×"), but Apple
+/// standardises the labeling to 0.5×/1×/etc. via the switchovers, so we
+/// match that to keep the chip values consistent with native Camera.
+///
+/// On a single-sensor device — or a virtual device whose widest
+/// constituent is already the wide-angle (BuiltInDualCamera = wide + tele)
+/// — videoZoomFactor=1.0 IS the "1×" view and the conversion is 1.0. On
+/// BuiltInDualWideCamera / BuiltInTripleCamera the widest constituent is
+/// the ultra-wide, so videoZoomFactor=1.0 corresponds to Apple's "0.5×".
+/// The vzf at which the device transitions INTO the wide constituent is
+/// the first switchover value (2.0 on every iPhone we ship to), and the
+/// conversion is therefore `1.0 / switchover`.
+- (CGFloat)computeDisplayRatioConversion {
+  if (@available(iOS 13.0, *)) {
+    NSArray<AVCaptureDevice *> *constituents = _captureDevice.constituentDevices;
+    if (constituents.count == 0) {
+      return 1.0;
+    }
+
+    // `constituentDevices` is documented as ordered widest-to-narrowest FOV.
+    // The wide-angle's index in that array tells us whether anything wider
+    // (i.e. the ultra-wide) sits below videoZoomFactor=1.0.
+    NSUInteger wideIndex = NSNotFound;
+    for (NSUInteger i = 0; i < constituents.count; i++) {
+      if ([constituents[i].deviceType isEqualToString:AVCaptureDeviceTypeBuiltInWideAngleCamera]) {
+        wideIndex = i;
+        break;
+      }
+    }
+    if (wideIndex == NSNotFound || wideIndex == 0) {
+      return 1.0;
+    }
+
+    NSArray<NSNumber *> *switchovers = _captureDevice.virtualDeviceSwitchOverVideoZoomFactors;
+    if (wideIndex - 1 >= switchovers.count) {
+      return 1.0;
+    }
+    CGFloat wideStartVzf = (CGFloat)[switchovers[wideIndex - 1] doubleValue];
+    if (wideStartVzf <= 0) {
+      return 1.0;
+    }
+    return (CGFloat)(1.0 / wideStartVzf);
+  }
+  return 1.0;
 }
 
 - (void)dealloc {
@@ -303,11 +394,17 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   return _currentPreviewSize;
 }
 
-// Get max zoom level
+// Max zoom in **Apple-style display ratios** (wide = 1×, ultra-wide = 0.5×).
+// On iPhone 12 dual-wide this returns ~5.0, matching the native Camera app's
+// top end; on a Pro triple it returns ~15.0 (further capped by Dart's UI).
 - (CGFloat)getMaxZoom {
-  CGFloat maxZoom = _captureDevice.activeFormat.videoMaxZoomFactor;
-  // Not sure why on iPhone 14 Pro, zoom at 90 not working, so let's block to 50 which is very high
-  return maxZoom > 50.0 ? 50.0 : maxZoom;
+  return _cachedMaxZoom > 0 ? _cachedMaxZoom : 1.0;
+}
+
+// Min zoom in display ratios. 0.5 on dual-wide / triple (ultra-wide present),
+// 1.0 on single-sensor or wide+tele devices. See -cacheDeviceZoomBounds.
+- (CGFloat)getMinZoom {
+  return _cachedMinZoom > 0 ? _cachedMinZoom : 1.0;
 }
 
 /// Dispose camera inputs & outputs
@@ -412,14 +509,37 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   }
 }
 
-/// Set zoom level
+/// Set zoom level. `value` is the **Apple-style display ratio** the caller
+/// wants (wide lens = 1.0×, ultra-wide = 0.5×, etc.) — the same numbers
+/// the native Camera app shows. We translate to the device's native
+/// `videoZoomFactor` via the latched conversion (see -cacheDeviceZoomBounds)
+/// and clamp to the device's actual reachable range.
+///
+/// A non-positive `value` is treated as "no zoom requested" and snaps to
+/// 1.0× (the wide lens). This preserves the legacy Dart-side default
+/// (camerawesome seeds `SensorConfig.currentZoom = 0.0` and pushes it down
+/// on every state transition); without the snap the absolute clamp would
+/// land it on getMinZoom (0.5× on a dual-wide / triple), opening the
+/// camera at ultra-wide instead of the normal wide view.
 - (void)setZoom:(float)value error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
-  CGFloat maxZoom = [self getMaxZoom];
-  CGFloat scaledZoom = value * (maxZoom - 1.0f) + 1.0f;
-  
+  CGFloat displayRatio = value > 0 ? (CGFloat)value : 1.0;
+  CGFloat conversion = _displayRatioConversion > 0 ? _displayRatioConversion : 1.0;
+  CGFloat nativeRequest = displayRatio / conversion;
+  CGFloat nativeMin = _captureDevice.minAvailableVideoZoomFactor;
+  CGFloat nativeMax = _captureDevice.activeFormat.videoMaxZoomFactor;
+  CGFloat clamped = MAX(nativeMin, MIN(nativeRequest, nativeMax));
+
   NSError *zoomError;
   if ([_captureDevice lockForConfiguration:&zoomError]) {
-    _captureDevice.videoZoomFactor = scaledZoom;
+    @try {
+      _captureDevice.videoZoomFactor = clamped;
+    } @catch (NSException *exception) {
+      // AVFoundation raises NSInvalidArgumentException if a runtime constraint
+      // (e.g. distortion correction toggling) momentarily tightens the floor
+      // past our clamp. Swallow — the next setZoom: will retry against a
+      // value the device accepts, and crashing the camera here would be
+      // strictly worse than a single frame at the previous zoom.
+    }
     [_captureDevice unlockForConfiguration];
   } else {
     *error = [FlutterError errorWithCode:@"ZOOM_NOT_SET" message:@"can't set the zoom value" details:[zoomError localizedDescription]];
@@ -714,24 +834,46 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   [self.imageStreamController receivedImageFromStream];
 }
 
-/// Get the first available camera on device (front or rear)
+/// Get the first available camera on device (front or rear).
+///
+/// For the back position we prefer the broadest virtual multi-camera device
+/// available — triple → dual-wide → dual — so the AVCaptureSession can cross
+/// 1× (wide ↔ ultra-wide) and any optical step internally via
+/// `setVideoZoomFactor` without rebinding inputs. Rebinds produce a ~150–300 ms
+/// black frame plus an auto-exposure re-settle on every crossing; staying on a
+/// single virtual device removes both. Falls back to the individual wide-angle
+/// for older single-sensor phones, and unconditionally for `.front` (no
+/// virtual front-facing equivalents exist).
 - (NSString *)selectAvailableCamera:(PigeonSensorPosition)sensor {
   if (_captureDeviceId != nil) {
     return _captureDeviceId;
   }
-  
-  // TODO: add dual & triple camera
-  NSArray<AVCaptureDevice *> *devices = [[NSArray alloc] init];
+
+  AVCaptureDevicePosition cameraPosition = (sensor == PigeonSensorPositionFront)
+      ? AVCaptureDevicePositionFront
+      : AVCaptureDevicePositionBack;
+
+  NSMutableArray<AVCaptureDeviceType> *types = [NSMutableArray array];
+  if (cameraPosition == AVCaptureDevicePositionBack) {
+    [types addObject:AVCaptureDeviceTypeBuiltInTripleCamera];
+    [types addObject:AVCaptureDeviceTypeBuiltInDualWideCamera];
+    [types addObject:AVCaptureDeviceTypeBuiltInDualCamera];
+  }
+  [types addObject:AVCaptureDeviceTypeBuiltInWideAngleCamera];
+
   AVCaptureDeviceDiscoverySession *discoverySession = [AVCaptureDeviceDiscoverySession
-                                                       discoverySessionWithDeviceTypes:@[ AVCaptureDeviceTypeBuiltInWideAngleCamera, ]
+                                                       discoverySessionWithDeviceTypes:types
                                                        mediaType:AVMediaTypeVideo
-                                                       position:AVCaptureDevicePositionUnspecified];
-  devices = discoverySession.devices;
-  
-  NSInteger cameraType = (sensor == PigeonSensorPositionFront) ? AVCaptureDevicePositionFront : AVCaptureDevicePositionBack;
-  for (AVCaptureDevice *device in devices) {
-    if ([device position] == cameraType) {
-      return [device uniqueID];
+                                                       position:cameraPosition];
+
+  // Iterate `types` explicitly rather than relying on the discovery session's
+  // ordering so the preference is unambiguous regardless of how AVFoundation
+  // chooses to sort its devices array.
+  for (AVCaptureDeviceType preferredType in types) {
+    for (AVCaptureDevice *device in discoverySession.devices) {
+      if ([device.deviceType isEqualToString:preferredType]) {
+        return [device uniqueID];
+      }
     }
   }
   return nil;

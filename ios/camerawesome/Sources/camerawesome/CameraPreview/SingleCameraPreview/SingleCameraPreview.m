@@ -266,15 +266,22 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   _cachedMaxZoom = nativeMax * _displayRatioConversion;
 }
 
-/// FOV-based ratio between Apple's UI labels and the device's
-/// videoZoomFactor. On a single-sensor device — or a virtual device whose
-/// widest constituent is the wide-angle (BuiltInDualCamera = wide + tele) —
-/// 1.0× is the wide lens and there's no remap, so this returns 1.0. On
+/// Conversion factor between Apple's UI labels and the device's
+/// videoZoomFactor, derived from `virtualDeviceSwitchOverVideoZoomFactors`
+/// — the same numbers Apple's Camera app uses for its chip labels. The
+/// alternative of computing it from raw FOV is *physically* more accurate
+/// (a wider ultra-wide should map to a smaller "0.5×"), but Apple
+/// standardises the labeling to 0.5×/1×/etc. via the switchovers, so we
+/// match that to keep the chip values consistent with native Camera.
+///
+/// On a single-sensor device — or a virtual device whose widest
+/// constituent is already the wide-angle (BuiltInDualCamera = wide + tele)
+/// — videoZoomFactor=1.0 IS the "1×" view and the conversion is 1.0. On
 /// BuiltInDualWideCamera / BuiltInTripleCamera the widest constituent is
-/// the ultra-wide, so videoZoomFactor=1.0 corresponds to Apple's "0.5×"
-/// and this returns ~0.5 (the FOV ratio tan(wide_fov/2) / tan(uw_fov/2)).
-/// Multiplying a videoZoomFactor by this gives the Apple-style ratio;
-/// dividing an Apple-style ratio by this gives the videoZoomFactor.
+/// the ultra-wide, so videoZoomFactor=1.0 corresponds to Apple's "0.5×".
+/// The vzf at which the device transitions INTO the wide constituent is
+/// the first switchover value (2.0 on every iPhone we ship to), and the
+/// conversion is therefore `1.0 / switchover`.
 - (CGFloat)computeDisplayRatioConversion {
   if (@available(iOS 13.0, *)) {
     NSArray<AVCaptureDevice *> *constituents = _captureDevice.constituentDevices;
@@ -282,38 +289,29 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
       return 1.0;
     }
 
-    AVCaptureDevice *wideConstituent = nil;
-    AVCaptureDevice *widestConstituent = nil;
-    CGFloat widestFov = 0;
-    for (AVCaptureDevice *c in constituents) {
-      if ([c.deviceType isEqualToString:AVCaptureDeviceTypeBuiltInWideAngleCamera]) {
-        wideConstituent = c;
-      }
-      CGFloat fov = c.activeFormat.videoFieldOfView;
-      if (fov > widestFov) {
-        widestFov = fov;
-        widestConstituent = c;
+    // `constituentDevices` is documented as ordered widest-to-narrowest FOV.
+    // The wide-angle's index in that array tells us whether anything wider
+    // (i.e. the ultra-wide) sits below videoZoomFactor=1.0.
+    NSUInteger wideIndex = NSNotFound;
+    for (NSUInteger i = 0; i < constituents.count; i++) {
+      if ([constituents[i].deviceType isEqualToString:AVCaptureDeviceTypeBuiltInWideAngleCamera]) {
+        wideIndex = i;
+        break;
       }
     }
-    if (wideConstituent == nil || widestConstituent == nil) {
-      return 1.0;
-    }
-    if (widestConstituent == wideConstituent) {
-      // Wide IS the widest (e.g. dual = wide + tele). Apple-UI and
-      // videoZoomFactor coincide.
+    if (wideIndex == NSNotFound || wideIndex == 0) {
       return 1.0;
     }
 
-    CGFloat wideFov = wideConstituent.activeFormat.videoFieldOfView;
-    if (wideFov <= 0 || widestFov <= 0) {
+    NSArray<NSNumber *> *switchovers = _captureDevice.virtualDeviceSwitchOverVideoZoomFactors;
+    if (wideIndex - 1 >= switchovers.count) {
       return 1.0;
     }
-    CGFloat wideTan = tanf(wideFov * 0.5f * (float)M_PI / 180.0f);
-    CGFloat widestTan = tanf(widestFov * 0.5f * (float)M_PI / 180.0f);
-    if (wideTan <= 0 || widestTan <= 0) {
+    CGFloat wideStartVzf = (CGFloat)[switchovers[wideIndex - 1] doubleValue];
+    if (wideStartVzf <= 0) {
       return 1.0;
     }
-    return (CGFloat)(wideTan / widestTan);
+    return (CGFloat)(1.0 / wideStartVzf);
   }
   return 1.0;
 }

@@ -683,6 +683,14 @@ FlutterEventSink physicalButtonEventSink;
   // virtual-device sub-1× zoom.
   if (self.multiCamera != nil) {
     AVCaptureDevice *mainDevice = self.multiCamera.devices.firstObject.device;
+    // setSensors: ignores addSensor:'s BOOL result, which can be NO when
+    // selectAvailableCamera: returns nil — leaving devices empty. Reading
+    // minAvailableVideoZoomFactor off a nil device yields 0.0, which would
+    // be reported to Dart as the minimum zoom. Fall back to 1.0× (no
+    // sub-1× zoom) when there's no device to query.
+    if (mainDevice == nil) {
+      return @(1.0);
+    }
     return @(mainDevice.minAvailableVideoZoomFactor);
   }
   return @([self.camera getMinZoom]);

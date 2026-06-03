@@ -814,7 +814,13 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   dispatch_async(_dispatchQueue, ^{
     NSError *lockError;
     if ([self->_captureDevice lockForConfiguration:&lockError]) {
-      [self->_captureDevice setFocusPointOfInterest:CGPointMake(0.5, 0.5)];
+      // The device can report focus POI unsupported here (e.g. while the
+      // session is re-establishing after an interruption such as a screen
+      // lock); setting it unguarded throws NSInvalidArgumentException and
+      // kills the app (MIN-2213). Guard like focusOnPoint: does.
+      if ([self->_captureDevice isFocusPointOfInterestSupported]) {
+        [self->_captureDevice setFocusPointOfInterest:CGPointMake(0.5, 0.5)];
+      }
       if ([self->_captureDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
         [self->_captureDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
       }

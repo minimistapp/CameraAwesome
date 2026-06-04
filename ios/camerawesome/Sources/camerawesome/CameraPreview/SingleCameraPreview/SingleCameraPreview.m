@@ -745,26 +745,21 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
       [_captureDevice setSmoothAutoFocusEnabled:YES];
     }
 
-    // Focus mode: one-shot lock vs continuous (default)
+    // Native tap-to-focus has two flavours, selected by IOSFocusSettings:
+    //   lockFocus == YES  → one-shot AF + AE that we pin once it settles
+    //                       (matches the native Camera app's long-press AE/AF lock).
+    //   lockFocus == NO   → focus + meter at the point but stay continuous so
+    //                       the lens keeps re-converging as the subject moves
+    //                       closer, and the virtual (triple/dual) back camera
+    //                       can switch to its ultra-wide/macro constituent. This
+    //                       is the native single-tap behaviour and the only one
+    //                       that focuses reliably on close-up / macro subjects —
+    //                       a hard lock can freeze a still-soft frame (MIN-1556).
     BOOL lockFocus = settings != nil && [settings.lockFocus boolValue];
-    if (lockFocus && [_captureDevice isFocusModeSupported:AVCaptureFocusModeAutoFocus]) {
-      [_captureDevice setFocusMode:AVCaptureFocusModeAutoFocus];
-    } else if ([_captureDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
-      [_captureDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
-    }
-
-    // Exposure adjustment (only when requested)
     BOOL setExposure = settings != nil && [settings.setExposurePoint boolValue];
-    if (setExposure) {
-      if ([_captureDevice isExposurePointOfInterestSupported]) {
-        [_captureDevice setExposurePointOfInterest:poi];
-      }
-      if ([_captureDevice isExposureModeSupported:AVCaptureExposureModeAutoExpose]) {
-        [_captureDevice setExposureMode:AVCaptureExposureModeAutoExpose];
-      }
-    }
 
-    // Focus range restriction hint
+    // Focus range restriction — apply BEFORE the focus mode so the AF scan
+    // honours it from its first frame (matters most for the near/macro range).
     int rangeRestriction = settings != nil ? [settings.autoFocusRangeRestriction intValue] : 0;
     if ([_captureDevice isAutoFocusRangeRestrictionSupported]) {
       if (rangeRestriction == 1) {
@@ -776,18 +771,42 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
       }
     }
 
-    // Enable subject-area change monitoring when locking focus so AVFoundation
-    // can notify us when the scene changes and we need to reset to continuous AF.
-    if (lockFocus) {
-      [_captureDevice setSubjectAreaChangeMonitoringEnabled:YES];
+    // Focus mode: one-shot lock vs continuous (native single tap)
+    if (lockFocus && [_captureDevice isFocusModeSupported:AVCaptureFocusModeAutoFocus]) {
+      [_captureDevice setFocusMode:AVCaptureFocusModeAutoFocus];
+    } else if ([_captureDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
+      [_captureDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
     }
+
+    // Exposure adjustment (only when requested). In the continuous case keep
+    // metering at the point (ContinuousAutoExposure) instead of a one-shot
+    // AutoExpose-then-lock, so brightness tracks the subject as focus changes.
+    if (setExposure) {
+      if ([_captureDevice isExposurePointOfInterestSupported]) {
+        [_captureDevice setExposurePointOfInterest:poi];
+      }
+      if (lockFocus) {
+        if ([_captureDevice isExposureModeSupported:AVCaptureExposureModeAutoExpose]) {
+          [_captureDevice setExposureMode:AVCaptureExposureModeAutoExpose];
+        }
+      } else if ([_captureDevice isExposureModeSupported:AVCaptureExposureModeContinuousAutoExposure]) {
+        [_captureDevice setExposureMode:AVCaptureExposureModeContinuousAutoExposure];
+      }
+    }
+
+    // Subject-area change monitoring in BOTH modes: when the scene at the
+    // tapped point changes significantly, subjectAreaDidChange: resets us to
+    // centered continuous AF/AE — matching the native Camera app, which drops
+    // the focus square and returns to full-scene auto.
+    [_captureDevice setSubjectAreaChangeMonitoringEnabled:YES];
 
     [_captureDevice unlockForConfiguration];
 
-    // Once the one-shot scan converges, pin the lens (and exposure) exactly
-    // where AF/AE landed so continuous AF can't drift off the subject
-    // afterwards. The subject-area observer set above flips us back to centered
-    // continuous AF when the scene changes — matching native tap-to-focus.
+    // Only the lock flavour pins the lens/exposure once the one-shot scan
+    // settles. Continuous mode never pins, so it can never freeze a still-soft
+    // (e.g. too-close macro) frame the way the old tap-to-lock did. The
+    // subject-area observer flips a lock back to centered continuous AF when
+    // the scene changes — matching native tap-to-focus.
     if (lockFocus) {
       [self whenFocusStableWithTimeout:1.0 completion:^{
         NSError *pinError;
@@ -807,7 +826,8 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   }
 }
 
-/// Called by AVFoundation when the scene changes significantly after a focus lock.
+/// Called by AVFoundation when the scene changes significantly after a tap-to-focus
+/// (enabled for both the continuous and the locked flavours).
 /// Resets focus and exposure back to continuous auto at the center so the next
 /// tap-to-focus starts from a clean state (matching native Camera app behaviour).
 - (void)subjectAreaDidChange:(NSNotification *)notification {

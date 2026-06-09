@@ -627,12 +627,23 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware {
 
     @SuppressLint("RestrictedApi")
     override fun setCorrection(brightness: Double) {
-        // TODO brightness calculation might not be the same as before CameraX
-        val range = (cameraState.concurrentCamera?.cameras?.firstOrNull()
-            ?: cameraState.previewCamera!!).cameraInfo.exposureState.exposureCompensationRange
-        val actualBrightnessValue = brightness * (range.upper - range.lower) + range.lower
+        // Map the normalised [0,1] slider value onto a fixed, bounded EV window
+        // centred on neutral (0.5 -> 0 EV) instead of spreading it across the
+        // device's full exposureCompensationRange (which is steep and whose span
+        // varies per device). This keeps fine adjustment comfortable and gives
+        // iOS/Android parity: the same normalised value yields the same EV
+        // compensation on both platforms. Keep this EV window in sync with the
+        // iOS SingleCameraPreview.setBrightness kBrightnessEvWindow. See MIN-2312.
+        val brightnessEvWindow = 2.0 // +/- EV around neutral
+        val exposureState = (cameraState.concurrentCamera?.cameras?.firstOrNull()
+            ?: cameraState.previewCamera!!).cameraInfo.exposureState
+        val range = exposureState.exposureCompensationRange
+        val step = exposureState.exposureCompensationStep.toDouble() // EV per index step
+        val targetEv = (brightness - 0.5) * 2.0 * brightnessEvWindow
+        // Convert EV -> exposure-compensation index, then clamp to the device range.
+        val index = if (step > 0.0) (targetEv / step).roundToInt() else 0
         cameraState.previewCamera?.cameraControl?.setExposureCompensationIndex(
-            actualBrightnessValue.roundToInt()
+            index.coerceIn(range.lower, range.upper)
         )
     }
 

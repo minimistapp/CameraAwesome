@@ -211,11 +211,16 @@
       [mainDevice setExposureMode:exposureMode];
     }
     
-    CGFloat minExposureTargetBias = mainDevice.minExposureTargetBias;
-    CGFloat maxExposureTargetBias = mainDevice.maxExposureTargetBias;
-    
-    CGFloat exposureTargetBias = minExposureTargetBias + (maxExposureTargetBias - minExposureTargetBias) * [brightness floatValue];
-    exposureTargetBias = MAX(minExposureTargetBias, MIN(maxExposureTargetBias, exposureTargetBias));
+    // Map the normalised [0,1] slider value onto a fixed, bounded EV window
+    // centred on neutral (0.5 -> 0 EV) instead of the device's full ~+/-8 EV
+    // range, for finer control and iOS/Android parity. Keep kBrightnessEvWindow
+    // in sync with SingleCameraPreview.setBrightness and Android
+    // CameraAwesomeX.setCorrection. See MIN-2312.
+    const CGFloat kBrightnessEvWindow = 2.0f; // +/- EV around neutral
+    CGFloat targetEv = ([brightness floatValue] - 0.5f) * 2.0f * kBrightnessEvWindow;
+    // Clamp to what the device actually supports.
+    CGFloat exposureTargetBias = MAX(mainDevice.minExposureTargetBias,
+                                     MIN(mainDevice.maxExposureTargetBias, targetEv));
     
     [mainDevice setExposureTargetBias:exposureTargetBias completionHandler:nil];
     [mainDevice unlockForConfiguration];

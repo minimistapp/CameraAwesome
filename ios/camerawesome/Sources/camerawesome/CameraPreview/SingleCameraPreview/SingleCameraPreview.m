@@ -554,11 +554,19 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
       [_captureDevice setExposureMode:exposureMode];
     }
     
-    CGFloat minExposureTargetBias = _captureDevice.minExposureTargetBias;
-    CGFloat maxExposureTargetBias = _captureDevice.maxExposureTargetBias;
-    
-    CGFloat exposureTargetBias = minExposureTargetBias + (maxExposureTargetBias - minExposureTargetBias) * [brightness floatValue];
-    exposureTargetBias = MAX(minExposureTargetBias, MIN(maxExposureTargetBias, exposureTargetBias));
+    // Map the normalised [0,1] slider value onto a fixed, bounded EV window
+    // centred on neutral (0.5 -> 0 EV) instead of spreading it across the
+    // device's full [minExposureTargetBias, maxExposureTargetBias] (~+/-8 EV),
+    // which is far too steep over the short slider track. This keeps fine
+    // adjustment comfortable and gives iOS/Android parity: the same normalised
+    // value yields the same EV compensation on both platforms. Keep
+    // kBrightnessEvWindow in sync with the Android CameraAwesomeX.setCorrection
+    // EV window. See MIN-2312.
+    const CGFloat kBrightnessEvWindow = 2.0f; // +/- EV around neutral
+    CGFloat targetEv = ([brightness floatValue] - 0.5f) * 2.0f * kBrightnessEvWindow;
+    // Clamp to what the device actually supports.
+    CGFloat exposureTargetBias = MAX(_captureDevice.minExposureTargetBias,
+                                     MIN(_captureDevice.maxExposureTargetBias, targetEv));
     
     [_captureDevice setExposureTargetBias:exposureTargetBias completionHandler:nil];
     [_captureDevice unlockForConfiguration];

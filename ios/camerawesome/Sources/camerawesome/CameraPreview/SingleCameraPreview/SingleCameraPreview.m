@@ -325,9 +325,35 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   [self.motionController startMotionDetection];
 }
 
+/// Largest 4:3 device format up to 1280 wide — drives a sharper 4:3 streaming
+/// preview than the 640x480 preset while staying memory-light (~1.2MP, ≈ the
+/// old 720p, ~10x lighter than the full-sensor Photo preset that OOM-crashes).
+/// Returns nil if the device exposes no 4:3 format in that range, in which case
+/// the caller falls back to the 640x480 preset.
+- (AVCaptureDeviceFormat *)bestStreamingFourThreeFormat {
+  AVCaptureDeviceFormat *best = nil;
+  int32_t bestWidth = 0;
+  for (AVCaptureDeviceFormat *format in _captureDevice.formats) {
+    CMVideoDimensions dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
+    if (dims.width * 3 != dims.height * 4) continue;       // 4:3 only
+    if (dims.width <= 640 || dims.width > 1280) continue;  // sharper than 640x480, capped for memory
+    if (dims.width > bestWidth) {
+      bestWidth = dims.width;
+      best = format;
+    }
+  }
+  return best;
+}
+
 /// Set camera preview size
 - (void)setCameraPreset:(CGSize)currentPreviewSize {
   CGSize targetSize = currentPreviewSize;
+  // Overrides for the streaming preview shape (see the streaming branch).
+  // [forcedFormat] wins when set: it drives the session from a chosen 4:3
+  // AVCaptureDeviceFormat — the only way to a 4:3 stream sharper than 640x480,
+  // since iOS has no 4:3 HD preset. [forcedPreset] is the 640x480 fallback.
+  NSString *forcedPreset = nil;
+  AVCaptureDeviceFormat *forcedFormat = nil;
 
   // Determine the target size based on the current mode and settings
   if (_captureMode == Video || _videoController.isRecording) {
@@ -353,38 +379,76 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
          targetSize = CGSizeZero;
       }
   } else if (_imageStreamController.streamImages) {
-      // If only streaming (not recording), force 720p for potential stability (based on commit history)
-      targetSize = CGSizeMake(720, 1280);
+      // Live image-analysis streaming. This used to force 16:9 720p, which
+      // pinned the *preview* to 16:9 even when the user picked 4:3 — so on a
+      // 4:3 iPad the preview was a letterboxed strip and didn't match the 4:3
+      // still capture. Match the streaming preview's aspect ratio to the
+      // selected capture ratio so the preview fills a 4:3 screen and is WYSIWYG.
+      //
+      // NOTE: this only sizes the *preview + analysis* stream. Stills are taken
+      // by AVCapturePhotoOutput at full sensor resolution regardless, so photo
+      // quality is unaffected. Memory matters: the full-sensor Photo preset
+      // OOM-crashes on open (~12MP frames to the preview + MLKit). iOS has no
+      // 4:3 HD *preset* (only 640x480 / 352x288 / Photo), so for 4:3 we pick a
+      // ~1280x960 4:3 device *format* (≈ the old 720p's memory, ~10x lighter
+      // than Photo) and fall back to the 640x480 preset if none is exposed.
+      if (_aspectRatio == Ratio4_3) {
+        forcedFormat = [self bestStreamingFourThreeFormat];
+        if (forcedFormat == nil) {
+          forcedPreset = AVCaptureSessionPreset640x480;
+        }
+      } else {
+        targetSize = CGSizeMake(720, 1280);
+      }
   } else if (CGSizeEqualToSize(currentPreviewSize, CGSizeZero)) {
       // If neither recording nor streaming, and no size provided, use best quality
       targetSize = CGSizeZero;
   } 
   // else: Use the non-zero currentPreviewSize passed in.
 
-  NSString *presetSelected;
-  if (!CGSizeEqualToSize(CGSizeZero, targetSize)) {
-    // Try to get the quality requested based on the determined target size
-    presetSelected = [CameraQualities selectVideoCapturePreset:targetSize session:_captureSession device:_captureDevice];
-  } else {
-    // Compute the best quality supported by the camera device if targetSize is Zero
-    presetSelected = [CameraQualities selectVideoCapturePreset:_captureSession device:_captureDevice];
-  }
-
-  // Check if the preset needs to be changed
-  if (![_captureSession.sessionPreset isEqualToString:presetSelected]) {
-    // It is safe to set the preset on a running session, and since this method
-    // can be called inside a begin/commit configuration block, we must not stop
-    // the session here.
-    if ([_captureSession canSetSessionPreset:presetSelected]) {
-      [_captureSession setSessionPreset:presetSelected];
-      _currentPreset = presetSelected;
+  if (forcedFormat != nil) {
+    // Drive the stream from a chosen 4:3 device format. InputPriority tells the
+    // session to honour [activeFormat] rather than override it with a preset.
+    if ([_captureSession canSetSessionPreset:AVCaptureSessionPresetInputPriority]) {
+      [_captureSession setSessionPreset:AVCaptureSessionPresetInputPriority];
     }
+    NSError *formatError = nil;
+    if ([_captureDevice lockForConfiguration:&formatError]) {
+      _captureDevice.activeFormat = forcedFormat;
+      [_captureDevice unlockForConfiguration];
+    }
+    _currentPreset = _captureSession.sessionPreset;
+    CMVideoDimensions dims = CMVideoFormatDescriptionGetDimensions(forcedFormat.formatDescription);
+    _currentPreviewSize = CGSizeMake(dims.width, dims.height);
   } else {
-      _currentPreset = _captureSession.sessionPreset;
-  }
+    NSString *presetSelected;
+    if (forcedPreset != nil && [_captureSession canSetSessionPreset:forcedPreset]) {
+      // A specific preset was requested (e.g. the 4:3 640x480 streaming fallback).
+      presetSelected = forcedPreset;
+    } else if (!CGSizeEqualToSize(CGSizeZero, targetSize)) {
+      // Try to get the quality requested based on the determined target size
+      presetSelected = [CameraQualities selectVideoCapturePreset:targetSize session:_captureSession device:_captureDevice];
+    } else {
+      // Compute the best quality supported by the camera device if targetSize is Zero
+      presetSelected = [CameraQualities selectVideoCapturePreset:_captureSession device:_captureDevice];
+    }
 
-  // Use the corrected method name
-  _currentPreviewSize = [CameraQualities getSizeForPreset:_currentPreset];
+    // Check if the preset needs to be changed
+    if (![_captureSession.sessionPreset isEqualToString:presetSelected]) {
+      // It is safe to set the preset on a running session, and since this method
+      // can be called inside a begin/commit configuration block, we must not stop
+      // the session here.
+      if ([_captureSession canSetSessionPreset:presetSelected]) {
+        [_captureSession setSessionPreset:presetSelected];
+        _currentPreset = presetSelected;
+      }
+    } else {
+        _currentPreset = _captureSession.sessionPreset;
+    }
+
+    // Use the corrected method name
+    _currentPreviewSize = [CameraQualities getSizeForPreset:_currentPreset];
+  }
 
   [_videoController setPreviewSize:_currentPreviewSize];
 }

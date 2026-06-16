@@ -140,57 +140,39 @@ didFinishProcessingPhoto:(AVCapturePhoto *)photo
 }
 
 - (UIImage *)imageByCroppingImage:(UIImage *)image toSize:(CGSize)size {
-  double newCropWidth, newCropHeight;
+  // Crop to [_aspectRatio] in CGImage (sensor-native) pixel space, centered and
+  // independent of device orientation; the caller re-applies the EXIF
+  // orientation. The previous orientation-branched logic cropped a portrait 4:3
+  // capture down to a square (cutting top & bottom) and never actually cropped
+  // 16:9 — so the saved photo didn't match the viewfinder. A centered crop in
+  // sensor space is identical in portrait and landscape and equals the
+  // preview's centered crop, so the photo matches what you framed. [size] is
+  // ignored (it came from the display-oriented math that caused the bug).
+  // (MIN-1991)
+  //   4:3  -> equals the 4:3 sensor, no crop (full frame).
+  //   16:9 -> trims top & bottom to the centered 16:9 band.
+  //   1:1  -> centered square.
+  CGImageRef cgImage = image.CGImage;
+  double cgWidth = CGImageGetWidth(cgImage);
+  double cgHeight = CGImageGetHeight(cgImage);
+  double sensorAspect = cgWidth / cgHeight;  // sensor frame is landscape, ~1.333
 
-  if(image.size.width < image.size.height) {
-    if (image.size.width < size.width) {
-      newCropWidth = size.width;
-    } else {
-      newCropWidth = image.size.width;
-    }
-    newCropHeight = (newCropWidth * size.height)/size.width;
-  } else {
-    if (image.size.height < size.height) {
-      newCropHeight = size.height;
-    } else {
-      newCropHeight = image.size.height;
-    }
-    newCropWidth = (newCropHeight * size.width)/size.height;
+  double cropWidth = cgWidth;
+  double cropHeight = cgHeight;
+  if (_aspectRatio > sensorAspect) {
+    cropHeight = cgWidth / _aspectRatio;
+  } else if (_aspectRatio < sensorAspect) {
+    cropWidth = cgHeight * _aspectRatio;
   }
-  
-  double imageHeightDivided = image.size.height/2.0;
-  double imageWidthDivided = image.size.width/2.0;
-  
-  double x = imageWidthDivided - newCropWidth/2.0;
-  double y = imageHeightDivided - newCropHeight/2.0;
-  
-  CGRect cropRect;
-  if (UIDeviceOrientationIsLandscape(_orientation)) {
-    cropRect = CGRectMake(x, y, newCropWidth, newCropHeight);
-  } else {
-    if (_aspectRatioType == Ratio16_9) {
-      cropRect = CGRectMake(0, 0, image.size.height, image.size.width);
-    } else {
-      if (_aspectRatioType == Ratio4_3) {
-        double localX = imageHeightDivided - (imageHeightDivided / _aspectRatio);
-        cropRect = CGRectMake(localX, 0, image.size.height / _aspectRatio, image.size.width);
-      } else {
-        // Work in CGImage-native pixel space: UIImage.size is display-oriented
-        // (rotated by the orientation tag) while CGImageCreateWithImageInRect
-        // operates on the sensor-native pixel grid.
-        size_t cgWidth = CGImageGetWidth(image.CGImage);
-        size_t cgHeight = CGImageGetHeight(image.CGImage);
-        double side = MIN(cgWidth, cgHeight);
-        cropRect = CGRectMake((cgWidth - side) / 2.0, (cgHeight - side) / 2.0, side, side);
-      }
-    }
-  }
-  
-  CGImageRef imageRef = CGImageCreateWithImageInRect([image CGImage], cropRect);
-  
+
+  CGRect cropRect = CGRectMake((cgWidth - cropWidth) / 2.0,
+                               (cgHeight - cropHeight) / 2.0,
+                               cropWidth, cropHeight);
+
+  CGImageRef imageRef = CGImageCreateWithImageInRect(cgImage, cropRect);
   UIImage *cropped = [UIImage imageWithCGImage:imageRef];
   CGImageRelease(imageRef);
-  
+
   return cropped;
 }
 

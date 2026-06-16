@@ -143,6 +143,13 @@ data class CameraXState(
         imageCaptures.clear()
         videoCaptures.clear()
         val resolutionSelector = getResolutionSelector(aspectRatio ?: AspectRatio.RATIO_4_3)
+        // Keep the image-analysis use case on the same aspect ratio as the
+        // preview/capture. The analysis builder is configured once (with the
+        // initial ratio) so without this it stays pinned to e.g. 16:9 while the
+        // user switches to 4:3; the shared ViewPort then intersects the 4:3
+        // preview/capture with the 16:9 analysis FOV and crops the photo's
+        // top/bottom relative to the (full-frame) preview (MIN-1991).
+        imageAnalysisBuilder?.aspectRatio = aspectRatio ?: AspectRatio.RATIO_4_3
         if (cameraProvider.isMultiCamSupported() && sensors.size > 1) {
             val singleCameraConfigs = mutableListOf<ConcurrentCamera.SingleCameraConfig>()
             var isFirst = true

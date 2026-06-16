@@ -22,7 +22,12 @@ class ImageAnalysisBuilder private constructor(
     private val format: OutputImageFormat,
     private val width: Int,
     private val height: Int,
-    private val aspectRatio: Int,
+    // Mutable so CameraXState can keep the analysis use case on the same aspect
+    // ratio as preview/capture when the user switches ratios. If it drifts (e.g.
+    // analysis stays 16:9 while the user picks 4:3), the shared UseCaseGroup
+    // ViewPort intersects the two FOVs and crops the captured photo to the
+    // analysis FOV — cutting the photo's top/bottom vs the preview (MIN-1991).
+    var aspectRatio: Int,
     private val executor: Executor,
     var previewStreamSink: EventChannel.EventSink? = null,
     private val maxFramesPerSecond: Double?,

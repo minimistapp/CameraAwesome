@@ -416,11 +416,18 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
     if ([_captureDevice lockForConfiguration:&formatError]) {
       _captureDevice.activeFormat = forcedFormat;
       [_captureDevice unlockForConfiguration];
+      _currentPreset = _captureSession.sessionPreset;
+      CMVideoDimensions dims = CMVideoFormatDescriptionGetDimensions(forcedFormat.formatDescription);
+      _currentPreviewSize = CGSizeMake(dims.width, dims.height);
+    } else {
+      // Lock failed — don't leave the session on InputPriority with no format
+      // applied; fall back to the 640x480 preset path below.
+      forcedPreset = AVCaptureSessionPreset640x480;
+      forcedFormat = nil;
     }
-    _currentPreset = _captureSession.sessionPreset;
-    CMVideoDimensions dims = CMVideoFormatDescriptionGetDimensions(forcedFormat.formatDescription);
-    _currentPreviewSize = CGSizeMake(dims.width, dims.height);
-  } else {
+  }
+
+  if (forcedFormat == nil) {
     NSString *presetSelected;
     if (forcedPreset != nil && [_captureSession canSetSessionPreset:forcedPreset]) {
       // A specific preset was requested (e.g. the 4:3 640x480 streaming fallback).

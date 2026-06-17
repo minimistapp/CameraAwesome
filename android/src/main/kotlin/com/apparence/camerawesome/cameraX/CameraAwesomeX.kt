@@ -19,6 +19,7 @@ import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FileOutputOptions
 import androidx.camera.video.VideoRecordEvent
+import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.util.Consumer
@@ -55,7 +56,7 @@ enum class CaptureModes {
     PHOTO, VIDEO, PREVIEW, ANALYSIS_ONLY,
 }
 
-class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware {
+class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewViewProvider {
     private lateinit var physicalButtonHandler: PhysicalButtonsHandler
     private var binding: FlutterPluginBinding? = null
     private var textureRegistry: TextureRegistry? = null
@@ -167,6 +168,26 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware {
             this.updateAspectRatio(aspectRatio)
             this.flashMode = FlashMode.valueOf(flashMode)
             this.enableAudioRecording = videoOptions?.enableAudio ?: true
+        }
+        // MIN-2406 (Android parity with iOS): render the single-sensor preview
+        // through a native CameraX PreviewView — OS-composited and decoupled
+        // from Flutter's compositor — hosted by the `camerawesome/preview`
+        // platform view. Created on the main thread before updateLifecycle so
+        // the Preview use case can bind to its surfaceProvider. Multi-sensor and
+        // ANALYSIS_ONLY keep the Flutter Texture path.
+        //
+        // PERFORMANCE uses a SurfaceView (dedicated hardware-composer overlay);
+        // a plain AndroidView promotes to Hybrid Composition automatically. If
+        // the Flutter overlays drawn on top flicker/jank under HC, switching to
+        // COMPATIBLE (TextureView) is the documented one-line fallback.
+        if (mode != CaptureModes.ANALYSIS_ONLY && sensors.size <= 1) {
+            cameraState.previewView = PreviewView(activity!!).apply {
+                implementationMode = PreviewView.ImplementationMode.PERFORMANCE
+                scaleType = PreviewView.ScaleType.FIT_CENTER
+                isClickable = false
+                isFocusable = false
+                isFocusableInTouchMode = false
+            }
         }
         this.exifPreferences = exifPreferences
         orientationStreamListener =
@@ -319,6 +340,14 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware {
 
     override fun getPreviewTextureId(cameraPosition: Long): Long {
         return cameraState.textureEntries[cameraPosition.toString()]!!.id()
+    }
+
+    /// [PreviewViewProvider]: the current native preview surface for the
+    /// `camerawesome/preview` platform view. Owned by [CameraXState] and only
+    /// set for the single-sensor preview path (MIN-2406); null otherwise, in
+    /// which case the Dart side falls back to the Flutter Texture.
+    override fun currentPreviewView(): PreviewView? {
+        return if (::cameraState.isInitialized) cameraState.previewView else null
     }
 
     /***
@@ -842,6 +871,12 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware {
         physicalButtonHandler = PhysicalButtonsHandler()
         EventChannel(binding.binaryMessenger, "camerawesome/physical_button").setStreamHandler(
             physicalButtonHandler
+        )
+        // Native preview platform view (MIN-2406, Android parity with iOS). The
+        // factory reads the current PreviewView from this plugin on demand.
+        binding.platformViewRegistry.registerViewFactory(
+            "camerawesome/preview",
+            CameraPreviewPlatformViewFactory(this)
         )
     }
 

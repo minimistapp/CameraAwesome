@@ -48,9 +48,13 @@ class CameraPreviewPlatformView(
 
     private fun attachPreviewViewIfNeeded() {
         val previewView = provider.currentPreviewView() ?: return
-        if (previewView.parent === container) {
+        // Already showing exactly this PreviewView — nothing to do.
+        if (container.childCount == 1 && container.getChildAt(0) === previewView) {
             return
         }
+        // A new PreviewView instance (e.g. after a fresh setupCamera) — drop any
+        // stale child so we don't leave old views/surfaces parented here.
+        container.removeAllViews()
         // An Android View has exactly one parent — detach from any prior
         // (remounted) host before re-parenting. Defensive, like iOS's
         // removeFromSuperlayer.

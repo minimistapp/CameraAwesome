@@ -266,7 +266,12 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> {
     // no native surface to show. Single-sensor is the common case (and the only
     // one this app uses).
     final isSingleSensor = widget.state.sensorConfig.sensors.length <= 1;
-    if (isSingleSensor && (Platform.isIOS || Platform.isAndroid)) {
+    // Analysis-only sessions bind no Preview use case, so there's no native
+    // preview surface (Android creates no PreviewView for ANALYSIS_ONLY — see
+    // CameraAwesomeX.setupCamera). Fall back to the Texture there, mirroring the
+    // Kotlin `mode != ANALYSIS_ONLY` guard, so the PlatformView is never empty.
+    final isAnalysisOnly = widget.state.captureMode == CaptureMode.analysis_only;
+    if (isSingleSensor && !isAnalysisOnly && (Platform.isIOS || Platform.isAndroid)) {
       // Stable key — keeps this platform view alive across ancestor rebuilds
       // (see _nativePreviewKey) so the preview doesn't flash black.
       //

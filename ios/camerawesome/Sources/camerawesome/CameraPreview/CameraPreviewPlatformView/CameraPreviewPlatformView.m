@@ -39,11 +39,18 @@
 /// session is wired up (the Dart side mounts only after preview-size load, so
 /// this is a defensive retry rather than the common path).
 - (void)attachPreviewLayerIfNeeded {
-  if (self.attachedLayer != nil) {
+  AVCaptureVideoPreviewLayer *layer = [self.provider currentPreviewLayer];
+  if (layer == self.attachedLayer) {
     return;
   }
-  AVCaptureVideoPreviewLayer *layer = [self.provider currentPreviewLayer];
+  // The camera (and its preview layer) can be rebuilt across a re-setup while
+  // this view persists — the Dart UiKitView is kept alive by a GlobalKey — so
+  // swap to the new layer instead of staying stuck on a stale/black one.
+  if (self.attachedLayer != nil && self.attachedLayer.superlayer == self.layer) {
+    [self.attachedLayer removeFromSuperlayer];
+  }
   if (layer == nil) {
+    self.attachedLayer = nil;
     return;
   }
   // previewFit: contain on the Dart side → letterbox the full frame so the

@@ -299,10 +299,11 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
     if (connection.isVideoOrientationSupported) {
       connection.videoOrientation = AVCaptureVideoOrientationPortrait;
     }
-    // Mirror the front-camera preview to match the data-output connection.
+    // Mirror the front-camera preview only when mirroring is enabled, and keep
+    // it in sync with setMirrorFrontCamera: (which also updates this connection).
     if (connection.isVideoMirroringSupported) {
       connection.automaticallyAdjustsVideoMirroring = NO;
-      connection.videoMirrored = (_cameraSensorPosition == PigeonSensorPositionFront);
+      connection.videoMirrored = (_cameraSensorPosition == PigeonSensorPositionFront) && _mirrorFrontCamera;
     }
   }
 }
@@ -824,9 +825,16 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
 
 - (void)setMirrorFrontCamera:(bool)value error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
   _mirrorFrontCamera = value;
-  
+
   if ([_captureConnection isVideoMirroringSupported]) {
       [_captureConnection setVideoMirrored:value];
+  }
+
+  // Keep the native preview layer's mirroring in sync (MIN-2406): the preview is
+  // its own connection, so a toggle here must update it too, gated on the front
+  // sensor so the back-camera preview is never mirrored.
+  if (_previewConnection != nil && [_previewConnection isVideoMirroringSupported]) {
+    [_previewConnection setVideoMirrored:(_cameraSensorPosition == PigeonSensorPositionFront) && value];
   }
 }
 

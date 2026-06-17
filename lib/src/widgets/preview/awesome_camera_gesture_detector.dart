@@ -86,6 +86,15 @@ class _AwesomeCameraGestureDetector
   @override
   Widget build(BuildContext context) {
     return RawGestureDetector(
+      // Stay in the hit-test path on our own area rather than deferring to the
+      // child. The iOS preview is a non-hittable PlatformView
+      // (hitTestBehavior: transparent, MIN-2406); with the default
+      // deferToChild this detector would fall out of the hit path and
+      // tap-to-focus would never fire. Opaque also keeps the platform view out
+      // of the gesture arena, so taps resolve reliably (as they did with the
+      // old Texture) instead of intermittently. No effect on the Android /
+      // Texture path, where the child was already hittable.
+      behavior: HitTestBehavior.opaque,
       gestures: <Type, GestureRecognizerFactory>{
         if (widget.onPreviewScale != null)
           ScaleGestureRecognizer:

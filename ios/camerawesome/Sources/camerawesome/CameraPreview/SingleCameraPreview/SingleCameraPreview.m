@@ -31,6 +31,11 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // constituent is the wide-angle; ~0.5 when the ultra-wide is the widest
   // constituent (dual-wide / triple).
   CGFloat _displayRatioConversion;
+  // Connection feeding the native AVCaptureVideoPreviewLayer (MIN-2406). The
+  // session adds inputs/outputs with -addOutputWithNoConnections, so the
+  // preview layer never auto-connects — we wire it explicitly and rebuild it
+  // on every sensor switch (initCameraPreview:), parallel to _captureConnection.
+  AVCaptureConnection *_previewConnection;
 }
 
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
@@ -77,8 +82,14 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   _flashMode = AVCaptureFlashModeOff;
   _torchMode = AVCaptureTorchModeOff;
   
-  _previewLayer = [AVCaptureVideoPreviewLayer layerWithSession:_captureSession];
-  _previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
+  // Native preview layer (MIN-2406). Created WITHOUT an automatic connection —
+  // the session uses -addInputWithNoConnections, so we form the preview
+  // connection explicitly in -attachPreviewLayerConnection. videoGravity is
+  // ResizeAspect to match the app's `previewFit: contain` (WYSIWYG, letterboxed)
+  // so the Flutter overlays line up with getEffectivPreviewSize.
+  _previewLayer = [[AVCaptureVideoPreviewLayer alloc] initWithSessionWithNoConnection:_captureSession];
+  _previewLayer.videoGravity = AVLayerVideoGravityResizeAspect;
+  [self attachPreviewLayerConnection];
   
   // Controllers init
   _videoController = [[VideoController alloc] init];
@@ -239,6 +250,61 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   }
 
   [self cacheDeviceZoomBounds];
+
+  // Rebuild the native preview-layer connection for the (possibly new) input.
+  // On the very first call _previewLayer doesn't exist yet (it's created right
+  // after, in initWithCameraSensor:) so this is a no-op then; on a sensor
+  // switch it reconnects the layer to the new device's video port.
+  [self attachPreviewLayerConnection];
+}
+
+/// Wire (or rewire) the native AVCaptureVideoPreviewLayer to the current video
+/// input port (MIN-2406). The session is built with -addInputWithNoConnections
+/// / -addOutputWithNoConnections, so no preview connection is formed
+/// automatically; we create one explicitly. Idempotent and safe to call on
+/// every sensor switch — any stale connection is removed first (and is in any
+/// case auto-removed by the session when its input is removed).
+- (void)attachPreviewLayerConnection {
+  if (_previewLayer == nil || _captureVideoInput == nil) {
+    return;
+  }
+
+  if (_previewConnection != nil) {
+    if ([_captureSession.connections containsObject:_previewConnection]) {
+      [_captureSession removeConnection:_previewConnection];
+    }
+    _previewConnection = nil;
+  }
+
+  AVCaptureInputPort *videoPort = nil;
+  for (AVCaptureInputPort *port in _captureVideoInput.ports) {
+    if ([port.mediaType isEqual:AVMediaTypeVideo]) {
+      videoPort = port;
+      break;
+    }
+  }
+  if (videoPort == nil) {
+    return;
+  }
+
+  AVCaptureConnection *connection = [AVCaptureConnection connectionWithInputPort:videoPort
+                                                              videoPreviewLayer:_previewLayer];
+  if ([_captureSession canAddConnection:connection]) {
+    [_captureSession addConnection:connection];
+    _previewConnection = connection;
+
+    // Lock the preview to portrait like the data-output connection so it never
+    // reorients with the device — the overlay UI rotates in place instead
+    // (MIN-2409 "rotate only the UI, not the view").
+    if (connection.isVideoOrientationSupported) {
+      connection.videoOrientation = AVCaptureVideoOrientationPortrait;
+    }
+    // Mirror the front-camera preview to match the data-output connection.
+    if (connection.isVideoMirroringSupported) {
+      connection.automaticallyAdjustsVideoMirroring = NO;
+      connection.videoMirrored = (_cameraSensorPosition == PigeonSensorPositionFront);
+    }
+  }
 }
 
 /// Latch the zoom range and the videoZoomFactor → display-ratio conversion
@@ -325,24 +391,117 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   [self.motionController startMotionDetection];
 }
 
-/// Largest 4:3 device format up to 1280 wide — drives a sharper 4:3 streaming
-/// preview than the 640x480 preset while staying memory-light (~1.2MP, ≈ the
-/// old 720p, ~10x lighter than the full-sensor Photo preset that OOM-crashes).
-/// Returns nil if the device exposes no 4:3 format in that range, in which case
-/// the caller falls back to the 640x480 preset.
+/// Ceiling (sensor-native width, px) for the 4:3 preview device format.
+///
+/// MIN-2406 decouples the streams: the on-screen preview is the GPU-composited
+/// AVCaptureVideoPreviewLayer (no CPU pixel buffers, and the iOS preview Texture
+/// is no longer fed — see captureOutput:), while the analysis data output is
+/// capped independently via -applyAnalysisOutputDownscale. The GPU layer renders
+/// the session's active format, so a higher format = a sharper preview at no CPU
+/// cost.
+///
+/// 1920 (~2.7MP, ≈1080p) is well above the old 1280 stopgap for a noticeably
+/// sharper 4:3 preview, while staying bounded: even if a device ignores the
+/// data-output downscale, the analysis stream tops out at this format size
+/// rather than the full ~12MP sensor. Raise further (toward full sensor /
+/// AVCaptureSessionPresetPhoto) only after confirming with Instruments that the
+/// downscale holds the analysis buffers small on the target device.
+static const int32_t kPreviewFourThreeMaxWidth = 1920;
+
+/// Largest 4:3 device format up to [kPreviewFourThreeMaxWidth] — drives a sharp
+/// 4:3 preview layer. Returns nil if the device exposes no 4:3 format in that
+/// range, in which case the caller falls back to the 640x480 preset.
 - (AVCaptureDeviceFormat *)bestStreamingFourThreeFormat {
   AVCaptureDeviceFormat *best = nil;
   int32_t bestWidth = 0;
   for (AVCaptureDeviceFormat *format in _captureDevice.formats) {
     CMVideoDimensions dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
-    if (dims.width * 3 != dims.height * 4) continue;       // 4:3 only
-    if (dims.width <= 640 || dims.width > 1280) continue;  // sharper than 640x480, capped for memory
+    if (dims.width * 3 != dims.height * 4) continue;                       // 4:3 only
+    if (dims.width <= 640 || dims.width > kPreviewFourThreeMaxWidth) continue;
     if (dims.width > bestWidth) {
       bestWidth = dims.width;
       best = format;
     }
   }
   return best;
+}
+
+static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
+  a = (a < 0) ? -a : a;
+  b = (b < 0) ? -b : b;
+  while (b != 0) {
+    int32_t t = b;
+    b = a % b;
+    a = t;
+  }
+  return a == 0 ? 1 : a;
+}
+
+/// Cap the AVCaptureVideoDataOutput's delivered buffers — independent of the
+/// (now higher-res) session format that feeds the preview layer (MIN-2406).
+/// This is what keeps MLKit cheap and prevents the open/capture OOM: the GPU
+/// preview can be full-sensor sharp while analysis frames stay small.
+///
+/// CRITICAL: -setVideoSettings: throws (NSInvalidArgumentException) unless the
+/// width/height EXACTLY maintain the device's *current* activeFormat aspect
+/// ratio. The requested capture ratio (_aspectRatio) is NOT a safe proxy — a
+/// preset/format set can fail or lag, leaving the device on a different-aspect
+/// format. So we read the real activeFormat, reduce its dimensions to lowest
+/// terms, and emit an integer multiple of that ratio: the aspect then matches
+/// by construction, whatever format is actually active. Sensor-native
+/// (landscape) dims; the portrait capture connection rotates them on delivery,
+/// as before. We only downscale (never upscale), so a format already smaller
+/// than the target long edge (e.g. the 640x480 fallback) is left untouched.
+- (void)applyAnalysisOutputDownscale {
+  if (_captureVideoOutput == nil || _captureDevice == nil) {
+    return;
+  }
+  AVCaptureDeviceFormat *format = _captureDevice.activeFormat;
+  if (format == nil) {
+    return;
+  }
+  CMVideoDimensions dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
+  if (dims.width <= 0 || dims.height <= 0) {
+    return;
+  }
+
+  NSMutableDictionary *settings =
+      [NSMutableDictionary dictionaryWithDictionary:_captureVideoOutput.videoSettings ?: @{}];
+  settings[(NSString *)kCVPixelBufferPixelFormatTypeKey] = @(kCVPixelFormatType_32BGRA);
+
+  // Long-edge cap for the analysis buffers (≈ the prior streaming resolution,
+  // so barcode/AprilTag behaviour is unchanged — only the preview gets sharper).
+  const int32_t kTargetLongEdge = 1280;
+  int32_t g = SCPGreatestCommonDivisor(dims.width, dims.height);
+  int32_t ratioW = dims.width / g;   // aspect in lowest terms
+  int32_t ratioH = dims.height / g;
+  int32_t longRatio = MAX(ratioW, ratioH);
+  int32_t multiple = (longRatio > 0) ? (kTargetLongEdge / longRatio) : 0;
+  int32_t scaledW = ratioW * multiple;
+  int32_t scaledH = ratioH * multiple;
+
+  if (multiple >= 1 && scaledW < dims.width && scaledH < dims.height) {
+    // Exact-aspect downscale (scaledW:scaledH == dims.width:dims.height).
+    settings[(NSString *)kCVPixelBufferWidthKey] = @(scaledW);
+    settings[(NSString *)kCVPixelBufferHeightKey] = @(scaledH);
+  } else {
+    // Already small enough (or no clean multiple) — don't scale; the format
+    // ceiling keeps memory bounded on its own.
+    [settings removeObjectForKey:(NSString *)kCVPixelBufferWidthKey];
+    [settings removeObjectForKey:(NSString *)kCVPixelBufferHeightKey];
+  }
+
+  @try {
+    _captureVideoOutput.videoSettings = settings;
+  } @catch (NSException *exception) {
+    // Defensive: should not happen now that dims preserve the active format's
+    // exact aspect, but never let a videoSettings rejection crash the camera.
+    // Falling back to pixel-format-only leaves the data output at the format
+    // size, which the format ceiling (kPreviewFourThreeMaxWidth / 1080p) keeps
+    // memory-bounded.
+    _captureVideoOutput.videoSettings =
+        @{(NSString *)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA)};
+  }
 }
 
 /// Set camera preview size
@@ -398,7 +557,11 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
           forcedPreset = AVCaptureSessionPreset640x480;
         }
       } else {
-        targetSize = CGSizeMake(720, 1280);
+        // 16:9: iOS has HD 16:9 presets, so drive the GPU preview layer at 1080p
+        // for a sharp preview (the data output is capped back down in
+        // -applyAnalysisOutputDownscale). Same memory caveat as
+        // kPreviewFourThreeMaxWidth above.
+        targetSize = CGSizeMake(1080, 1920);
       }
   } else if (CGSizeEqualToSize(currentPreviewSize, CGSizeZero)) {
       // If neither recording nor streaming, and no size provided, use best quality
@@ -458,6 +621,11 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   }
 
   [_videoController setPreviewSize:_currentPreviewSize];
+
+  // Decouple analysis resolution from the (now higher-res) preview format:
+  // cap the data output's buffers so MLKit + the offscreen texture stay light
+  // and the session can't OOM on open/capture (MIN-2406).
+  [self applyAnalysisOutputDownscale];
 }
 
 /// Get current video prewiew size
@@ -559,7 +727,15 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
 
   [_captureSession removeOutput:_capturePhotoOutput];
   [_captureSession removeConnection:_captureConnection];
-  
+  // Drop the preview-layer connection too (it's tied to the outgoing input);
+  // initCameraPreview: → attachPreviewLayerConnection rebuilds it for the new
+  // device. Removing the video input above may already have auto-removed it, so
+  // guard before removing.
+  if (_previewConnection != nil && [_captureSession.connections containsObject:_previewConnection]) {
+    [_captureSession removeConnection:_previewConnection];
+  }
+  _previewConnection = nil;
+
   _cameraSensorPosition = sensor.position;
   _captureDeviceId = sensor.deviceId;
   
@@ -1170,10 +1346,13 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
 
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
   if (output == _captureVideoOutput) {
-    [self.previewTexture updateBuffer:sampleBuffer];
-    if (_onPreviewFrameAvailable) {
-      _onPreviewFrameAvailable();
-    }
+    // MIN-2406: the on-screen preview is the native AVCaptureVideoPreviewLayer
+    // (hosted in a PlatformView), so we no longer pump frames into the Flutter
+    // preview Texture. Doing so would run a second, redundant preview pipeline
+    // — extra memory plus a per-frame CFRetain of the pixel buffer on the
+    // capture queue — which on iPad contributes to memory-pressure crashes.
+    // The texture stays *registered* (readiness gate / filter thumbnail) but
+    // unfed; the GPU preview layer is the display path.
 
     // Send to image stream controller if enabled
     if (_imageStreamController.streamImages) {

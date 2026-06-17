@@ -17,6 +17,7 @@ import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.*
+import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import com.apparence.camerawesome.CamerawesomePlugin
@@ -57,6 +58,13 @@ data class CameraXState(
 
     var imageAnalysisBuilder: ImageAnalysisBuilder? = null
     private var imageAnalysis: ImageAnalysis? = null
+
+    /// Native preview surface (Android port of iOS SingleCameraPreview's
+    /// AVCaptureVideoPreviewLayer, MIN-2406). Owned here; set by
+    /// [CameraAwesomeX.setupCamera] for the single-sensor preview path and read
+    /// by the `camerawesome/preview` platform view via [PreviewViewProvider].
+    /// Null → the Preview use case keeps rendering into the Flutter Texture.
+    var previewView: PreviewView? = null
 
     private val mainCameraInfos: CameraInfo
         @SuppressLint("RestrictedApi") get() {
@@ -262,9 +270,18 @@ data class CameraXState(
                     }
                 )
 
-                previews!!.first().setSurfaceProvider(
-                    surfaceProvider(executor(activity), sensors.first().deviceId ?: "0")
-                )
+                // Single-sensor preview renders into the native PreviewView when
+                // available (MIN-2406); otherwise fall back to the Flutter
+                // Texture-backed SurfaceTexture. PreviewView.getSurfaceProvider()
+                // is itself a Preview.SurfaceProvider, so it's a drop-in.
+                val nativePreview = previewView
+                if (sensors.size <= 1 && nativePreview != null) {
+                    previews!!.first().setSurfaceProvider(nativePreview.surfaceProvider)
+                } else {
+                    previews!!.first().setSurfaceProvider(
+                        surfaceProvider(executor(activity), sensors.first().deviceId ?: "0")
+                    )
+                }
                 useCaseGroupBuilder.addUseCase(previews!!.first())
             }
 

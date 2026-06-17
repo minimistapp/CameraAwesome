@@ -63,12 +63,13 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> {
   double? _aspectRatioValue;
   AnalysisPreview? _preview;
 
-  // Stable key for the iOS preview PlatformView so Flutter *reparents* it
-  // (no native teardown) instead of recreating it when ancestors rebuild —
-  // notably PreviewFitWidget's `InteractiveViewer(key: UniqueKey())`, which
-  // otherwise remounts the UiKitView on every preview rebuild, flashing the
-  // native preview black and churning native surfaces (MIN-2406).
-  final GlobalKey _iosPreviewKey = GlobalKey(debugLabel: 'camerawesome_ios_preview');
+  // Stable key for the native preview PlatformView (iOS UiKitView / Android
+  // AndroidView) so Flutter *reparents* it (no native teardown) instead of
+  // recreating it when ancestors rebuild — notably PreviewFitWidget's
+  // `InteractiveViewer(key: UniqueKey())`, which otherwise remounts the platform
+  // view on every preview rebuild, flashing the native preview black and
+  // churning native surfaces (MIN-2406).
+  final GlobalKey _nativePreviewKey = GlobalKey(debugLabel: 'camerawesome_native_preview');
 
   // TODO: fetch this value from the native side
   final int kMaximumSupportedFloatingPreview = 3;
@@ -248,33 +249,51 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> {
   ///
   /// iOS (MIN-2406): a native `AVCaptureVideoPreviewLayer` hosted in a
   /// PlatformView — GPU-composited and full-sensor sharp, decoupled from the
-  /// small `AVCaptureVideoDataOutput` that feeds MLKit. The Flutter Texture is
-  /// still registered (used for the filter thumbnail, floating/multicam
-  /// previews and as a readiness gate) but no longer drives the on-screen
-  /// preview. Other platforms keep the Texture: Android already decouples
-  /// preview and analysis via independent CameraX use cases.
+  /// small `AVCaptureVideoDataOutput` that feeds MLKit.
+  ///
+  /// Android: a native CameraX `PreviewView` hosted in an `AndroidView` — also
+  /// OS-composited (its own SurfaceView in PERFORMANCE mode) and decoupled from
+  /// the `ImageAnalysis` use case that feeds MLKit, so the preview no longer
+  /// rides Flutter's compositor/frame-pacing like the Texture path did.
+  ///
+  /// On both, the Flutter Texture is still registered (used for the filter
+  /// thumbnail, floating/multicam previews and as a readiness gate) but no
+  /// longer drives the on-screen preview.
   Widget _buildMainPreview() {
-    // The native preview layer is wired only for the single-camera path
-    // (SingleCameraPreview). Multi-camera sessions (MultiCameraPreview, e.g.
-    // simultaneous front+back PiP) still render through Flutter textures, so
-    // fall back to the Texture there — the platform view would have no layer to
-    // show. Single-sensor is the common case (and the only one this app uses).
+    // The native preview is wired only for the single-camera path. Multi-camera
+    // sessions (e.g. simultaneous front+back PiP) still render through Flutter
+    // textures, so fall back to the Texture there — the platform view would have
+    // no native surface to show. Single-sensor is the common case (and the only
+    // one this app uses).
     final isSingleSensor = widget.state.sensorConfig.sensors.length <= 1;
-    if (Platform.isIOS && isSingleSensor) {
-      return UiKitView(
-        // Stable key — keeps this platform view alive across ancestor rebuilds
-        // (see _iosPreviewKey) so the preview doesn't flash black.
-        key: _iosPreviewKey,
-        viewType: 'camerawesome/preview',
-        // Keep the platform view OUT of the gesture arena: its forwarding
-        // recognizer otherwise contends with the ancestor tap recognizer and
-        // taps land only intermittently (MIN-2406). The ancestor
-        // AwesomeCameraGestureDetector instead stays in the hit-path on its own
-        // via `behavior: HitTestBehavior.opaque`, so tap-to-focus no longer
-        // depends on this view being hit-testable. The native view is
-        // non-interactive (userInteractionEnabled = NO) regardless.
-        hitTestBehavior: PlatformViewHitTestBehavior.transparent,
-      );
+    // Analysis-only sessions bind no Preview use case, so there's no native
+    // preview surface (Android creates no PreviewView for ANALYSIS_ONLY — see
+    // CameraAwesomeX.setupCamera). Fall back to the Texture there, mirroring the
+    // Kotlin `mode != ANALYSIS_ONLY` guard, so the PlatformView is never empty.
+    final isAnalysisOnly = widget.state.captureMode == CaptureMode.analysis_only;
+    if (isSingleSensor && !isAnalysisOnly && (Platform.isIOS || Platform.isAndroid)) {
+      // Stable key — keeps this platform view alive across ancestor rebuilds
+      // (see _nativePreviewKey) so the preview doesn't flash black.
+      //
+      // hitTestBehavior.transparent keeps the platform view OUT of the gesture
+      // arena: on iOS its forwarding recognizer otherwise contends with the
+      // ancestor tap recognizer and taps land only intermittently (MIN-2406).
+      // The ancestor AwesomeCameraGestureDetector instead stays in the hit-path
+      // on its own via `behavior: HitTestBehavior.opaque`, so tap-to-focus no
+      // longer depends on this view being hit-testable. The native view is
+      // non-interactive (iOS userInteractionEnabled = NO / Android non-clickable)
+      // regardless.
+      return Platform.isIOS
+          ? UiKitView(
+              key: _nativePreviewKey,
+              viewType: 'camerawesome/preview',
+              hitTestBehavior: PlatformViewHitTestBehavior.transparent,
+            )
+          : AndroidView(
+              key: _nativePreviewKey,
+              viewType: 'camerawesome/preview',
+              hitTestBehavior: PlatformViewHitTestBehavior.transparent,
+            );
     }
     // The preview is kept fixed (not rotated with the device), like the native
     // iOS Camera app — so no RotatedBox here.

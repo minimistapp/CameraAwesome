@@ -7,6 +7,7 @@ import 'package:camerawesome/src/widgets/preview/awesome_preview_fit.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show PlatformViewHitTestBehavior;
 
 enum CameraPreviewFit {
   fitWidth,
@@ -61,6 +62,13 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> {
   CameraAspectRatios? _aspectRatio;
   double? _aspectRatioValue;
   AnalysisPreview? _preview;
+
+  // Stable key for the iOS preview PlatformView so Flutter *reparents* it
+  // (no native teardown) instead of recreating it when ancestors rebuild —
+  // notably PreviewFitWidget's `InteractiveViewer(key: UniqueKey())`, which
+  // otherwise remounts the UiKitView on every preview rebuild, flashing the
+  // native preview black and churning native surfaces (MIN-2406).
+  final GlobalKey _iosPreviewKey = GlobalKey(debugLabel: 'camerawesome_ios_preview');
 
   // TODO: fetch this value from the native side
   final int kMaximumSupportedFloatingPreview = 3;
@@ -153,9 +161,8 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> {
           );
     }
 
-    // Don't rotate the camera preview texture when the device rotates —
-    // keep it stable like the native iOS Camera app.
-    const quarterTurns = 0;
+    // Don't rotate the camera preview when the device rotates — keep it stable
+    // like the native iOS Camera app (see _buildMainPreview).
     final effectivePreviewSize = _previewSize!;
 
     return Container(
@@ -197,16 +204,17 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> {
                       //FIX performances
                       stream: widget.state.filter$,
                       builder: (context, snapshot) {
-                        final texture = quarterTurns != 0
-                            ? RotatedBox(quarterTurns: quarterTurns, child: _textures.first)
-                            : _textures.first;
+                        final preview = _buildMainPreview();
+                        // ColorFiltered can't apply to an iOS PlatformView, but
+                        // the main camera doesn't use filters (filter$ defaults
+                        // to None), so this only ever wraps the Texture path.
                         return snapshot.hasData &&
                                 snapshot.data != AwesomeFilter.None
                             ? ColorFiltered(
                                 colorFilter: snapshot.data!.preview,
-                                child: texture,
+                                child: preview,
                               )
-                            : texture;
+                            : preview;
                       },
                     ),
                   ),
@@ -234,6 +242,43 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> {
         },
       ),
     );
+  }
+
+  /// The main (first-sensor) preview surface.
+  ///
+  /// iOS (MIN-2406): a native `AVCaptureVideoPreviewLayer` hosted in a
+  /// PlatformView — GPU-composited and full-sensor sharp, decoupled from the
+  /// small `AVCaptureVideoDataOutput` that feeds MLKit. The Flutter Texture is
+  /// still registered (used for the filter thumbnail, floating/multicam
+  /// previews and as a readiness gate) but no longer drives the on-screen
+  /// preview. Other platforms keep the Texture: Android already decouples
+  /// preview and analysis via independent CameraX use cases.
+  Widget _buildMainPreview() {
+    // The native preview layer is wired only for the single-camera path
+    // (SingleCameraPreview). Multi-camera sessions (MultiCameraPreview, e.g.
+    // simultaneous front+back PiP) still render through Flutter textures, so
+    // fall back to the Texture there — the platform view would have no layer to
+    // show. Single-sensor is the common case (and the only one this app uses).
+    final isSingleSensor = widget.state.sensorConfig.sensors.length <= 1;
+    if (Platform.isIOS && isSingleSensor) {
+      return UiKitView(
+        // Stable key — keeps this platform view alive across ancestor rebuilds
+        // (see _iosPreviewKey) so the preview doesn't flash black.
+        key: _iosPreviewKey,
+        viewType: 'camerawesome/preview',
+        // Keep the platform view OUT of the gesture arena: its forwarding
+        // recognizer otherwise contends with the ancestor tap recognizer and
+        // taps land only intermittently (MIN-2406). The ancestor
+        // AwesomeCameraGestureDetector instead stays in the hit-path on its own
+        // via `behavior: HitTestBehavior.opaque`, so tap-to-focus no longer
+        // depends on this view being hit-testable. The native view is
+        // non-interactive (userInteractionEnabled = NO) regardless.
+        hitTestBehavior: PlatformViewHitTestBehavior.transparent,
+      );
+    }
+    // The preview is kept fixed (not rotated with the device), like the native
+    // iOS Camera app — so no RotatedBox here.
+    return _textures.first;
   }
 
   List<Widget> _buildPreviewTextures() {

@@ -8,13 +8,14 @@
 #import "CaptureModeUtils.h"
 #import "FlashModeUtils.h"
 #import "AnalysisController.h"
+#import "CameraPreviewPlatformView.h"
 
 FlutterEventSink orientationEventSink;
 FlutterEventSink videoRecordingEventSink;
 FlutterEventSink imageStreamEventSink;
 FlutterEventSink physicalButtonEventSink;
 
-@interface CamerawesomePlugin () <CameraInterface, AnalysisImageUtils>
+@interface CamerawesomePlugin () <CameraInterface, AnalysisImageUtils, CameraPreviewLayerProvider>
 @property(readonly, nonatomic) NSObject<FlutterTextureRegistry> *textureRegistry;
 @property NSMutableArray<NSNumber *> *texturesIds;
 @property SingleCameraPreview *camera;
@@ -66,6 +67,22 @@ FlutterEventSink physicalButtonEventSink;
   
   CameraInterfaceSetup(registrar.messenger, instance);
   AnalysisImageUtilsSetup(registrar.messenger, instance);
+
+  // Native preview path (MIN-2406): host the capture session's
+  // AVCaptureVideoPreviewLayer in a PlatformView for a GPU-composited, sharp,
+  // full-sensor preview decoupled from the small analysis data output. The Dart
+  // preview widget mounts a `UiKitView(viewType: "camerawesome/preview")` on iOS.
+  CameraPreviewPlatformViewFactory *previewFactory =
+      [[CameraPreviewPlatformViewFactory alloc] initWithProvider:instance];
+  [registrar registerViewFactory:previewFactory withId:@"camerawesome/preview"];
+}
+
+#pragma mark - CameraPreviewLayerProvider
+
+/// The live preview layer for the PlatformView. Single-camera only — the
+/// multi-camera path still renders through Flutter textures (floating previews).
+- (nullable AVCaptureVideoPreviewLayer *)currentPreviewLayer {
+  return self.camera.previewLayer;
 }
 
 #pragma mark - Camera engine methods

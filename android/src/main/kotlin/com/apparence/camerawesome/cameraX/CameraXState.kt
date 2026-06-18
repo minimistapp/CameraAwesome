@@ -2,6 +2,7 @@ package com.apparence.camerawesome.cameraX
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.res.Configuration
 import android.hardware.camera2.CameraCharacteristics
 import android.os.Build
 import android.util.Log
@@ -146,7 +147,38 @@ data class CameraXState(
     }
 
     @SuppressLint("RestrictedApi", "UnsafeOptInUsageError")
+    // Window rotation the shared ViewPort was last built with, so we only rebind
+    // when it actually changes. (MIN-2437)
+    private var lastViewPortRotation: Int = Surface.ROTATION_0
+
+    /// Rotation to build the shared ViewPort with — follows the window, not the
+    /// physical device. A portrait-locked window (phones) keeps ROTATION_0 because
+    /// its Configuration never flips to landscape; an unlocked window (tablets)
+    /// reports the display rotation so the preview crop fills the screen upright in
+    /// landscape. Capture EXIF still follows the physical sensor via
+    /// onOrientationChanged, so photos stay upright regardless. (MIN-2437)
+    private fun viewPortRotation(activity: Activity): Int {
+        val isLandscape = activity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        if (!isLandscape) return Surface.ROTATION_0
+        val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            activity.display
+        } else {
+            @Suppress("DEPRECATION") activity.windowManager.defaultDisplay
+        }
+        return display?.rotation ?: Surface.ROTATION_0
+    }
+
+    /// Rebind only when the window's effective rotation changed, so rotating a
+    /// tablet updates the ViewPort/crop while a portrait-locked phone (whose
+    /// Configuration stays portrait) never rebinds. (MIN-2437)
+    fun refreshDisplayRotation(activity: Activity) {
+        if (viewPortRotation(activity) != lastViewPortRotation) {
+            updateLifecycle(activity)
+        }
+    }
+
     fun updateLifecycle(activity: Activity) {
+        lastViewPortRotation = viewPortRotation(activity)
         previews = mutableListOf()
         imageCaptures.clear()
         videoCaptures.clear()
@@ -236,7 +268,7 @@ data class CameraXState(
 
                 isFirst = false
                 useCaseGroupBuilder.setViewPort(
-                    ViewPort.Builder(rational, Surface.ROTATION_0).build()
+                    ViewPort.Builder(rational, lastViewPortRotation).build()
                 )
                 singleCameraConfigs.add(
                     ConcurrentCamera.SingleCameraConfig(
@@ -329,8 +361,10 @@ data class CameraXState(
             } else {
                 imageAnalysis = null
             }
-            // TODO Orientation might be wrong, to be verified
-            useCaseGroupBuilder.setViewPort(ViewPort.Builder(rational, Surface.ROTATION_0).build())
+            // ViewPort rotation follows the window so the preview crop fills the
+            // screen upright when a tablet rotates; stays ROTATION_0 on a
+            // portrait-locked phone. (MIN-2437)
+            useCaseGroupBuilder.setViewPort(ViewPort.Builder(rational, lastViewPortRotation).build())
                 .build()
 
             concurrentCamera = null

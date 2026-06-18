@@ -886,28 +886,30 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
 /// Map a tap on the preview to AVFoundation's focus/exposure point-of-interest
 /// space.
 ///
-/// The incoming [point] is normalised (0..1, origin top-left) over the
-/// portrait-oriented preview the user sees. AVFoundation, however, defines
-/// `focusPointOfInterest` relative to the sensor's native landscape readout —
-/// {0,0} top-left, {1,1} bottom-right with the home button on the right
-/// (UIDeviceOrientationLandscapeLeft) — and that space does NOT rotate with the
-/// device or the connection's videoOrientation.
-///
-/// Because we lock the capture connection to portrait (see
-/// initWithCameraSensor:), the preview is always the landscape-reference image
-/// rotated 90°, so the inverse is the fixed mapping (px, py) -> (py, 1 - px).
-/// This matches the portrait case of AVFoundation's own
-/// `captureDevicePointOfInterestForPoint:`. The front camera preview is
-/// additionally mirrored horizontally, which we undo first so the point lands
-/// in the un-mirrored sensor space.
+/// The incoming [point] is normalised (0..1, origin top-left) over the preview
+/// the user sees. We delegate to the preview layer's
+/// `captureDevicePointOfInterestForPoint:`, which converts a layer point to the
+/// sensor POI accounting for the connection's current `videoOrientation` (now
+/// driven by the interface orientation, MIN-2437), the videoGravity and front
+/// camera mirroring — so tap-to-focus stays correct in every orientation. Falls
+/// back to the fixed portrait mapping (px, py) -> (py, 1 - px) if the layer
+/// hasn't been laid out yet (its bounds would be zero). Must run on the main
+/// thread (focusOnPoint: is invoked from the platform channel, which it is).
 - (CGPoint)focusPointOfInterestForPreviewPoint:(CGPoint)point {
+  CGSize layerSize = _previewLayer != nil ? _previewLayer.bounds.size : CGSizeZero;
+  if (layerSize.width > 0 && layerSize.height > 0) {
+    CGPoint layerPoint = CGPointMake(point.x * layerSize.width, point.y * layerSize.height);
+    CGPoint poi = [_previewLayer captureDevicePointOfInterestForPoint:layerPoint];
+    poi.x = MAX(0.0, MIN(1.0, poi.x));
+    poi.y = MAX(0.0, MIN(1.0, poi.y));
+    return poi;
+  }
+
   CGFloat px = point.x;
   CGFloat py = point.y;
-
   if (_captureConnection != nil && _captureConnection.isVideoMirrored) {
     px = 1.0 - px;
   }
-
   CGPoint poi = CGPointMake(py, 1.0 - px);
   poi.x = MAX(0.0, MIN(1.0, poi.x));
   poi.y = MAX(0.0, MIN(1.0, poi.y));

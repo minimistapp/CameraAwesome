@@ -50,7 +50,7 @@ class AwesomeCameraPreview extends StatefulWidget {
   }
 }
 
-class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> {
+class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> with WidgetsBindingObserver {
   PreviewSize? _previewSize;
 
   final List<Texture> _textures = [];
@@ -77,6 +77,9 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> {
   @override
   void initState() {
     super.initState();
+    // Re-query the preview size on window metric changes (notably rotation) so
+    // the box tracks the orientation the native preview now follows. (MIN-2437)
+    WidgetsBinding.instance.addObserver(this);
     Future.wait([
       widget.state.previewSize(0),
       _loadTextures(),
@@ -87,6 +90,13 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> {
         });
       }
     });
+
+    // On first open the effective preview size can lag the initial query — the
+    // native camera is still binding and (Android) the PreviewView attaches
+    // only after the platform view mounts — so the box would stay mis-sized
+    // until the user rotates. Re-query a few times after open so it settles on
+    // its own. (MIN-2437)
+    _settlePreviewSizeAfterOpen();
 
     // refactor this
     _sensorConfigSubscription =
@@ -145,7 +155,36 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> {
   }
 
   @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    // The native preview follows the interface orientation (MIN-2437); on
+    // rotation the effective preview size swaps between portrait/landscape, so
+    // re-query and resize the box to keep the preview full-screen and upright.
+    _refreshPreviewSize();
+  }
+
+  /// Re-query the native preview size and resize the box if it changed. Guards
+  /// against a zero size (camera not yet bound / torn down) so a stale-but-valid
+  /// size is never clobbered.
+  Future<void> _refreshPreviewSize() async {
+    if (!mounted) return;
+    final previewSize = await widget.state.previewSize(0);
+    if (mounted && previewSize != _previewSize && previewSize.width > 0 && previewSize.height > 0) {
+      setState(() => _previewSize = previewSize);
+    }
+  }
+
+  /// Re-query the preview size a few times after open so it settles once the
+  /// camera has bound, without waiting for a manual rotation. (MIN-2437)
+  void _settlePreviewSizeAfterOpen() {
+    for (final delayMs in const [200, 600, 1200, 2000]) {
+      Future.delayed(Duration(milliseconds: delayMs), _refreshPreviewSize);
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _sensorConfigSubscription?.cancel();
     _aspectRatioSubscription?.cancel();
     super.dispose();
@@ -162,8 +201,8 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> {
           );
     }
 
-    // Don't rotate the camera preview when the device rotates — keep it stable
-    // like the native iOS Camera app (see _buildMainPreview).
+    // The native preview follows the interface orientation; _previewSize is
+    // re-queried on rotation (didChangeMetrics) so the box matches it. (MIN-2437)
     final effectivePreviewSize = _previewSize!;
 
     return Container(

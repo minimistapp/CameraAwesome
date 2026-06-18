@@ -15,6 +15,22 @@ FlutterEventSink videoRecordingEventSink;
 FlutterEventSink imageStreamEventSink;
 FlutterEventSink physicalButtonEventSink;
 
+/// Current app interface (window) orientation. Used to report the preview size
+/// in the displayed orientation so the Flutter box fills the screen when the
+/// window rotates (MIN-2437). Must be called on the main thread.
+static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
+  UIInterfaceOrientation fallback = UIInterfaceOrientationPortrait;
+  for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+    if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+    UIWindowScene *windowScene = (UIWindowScene *)scene;
+    if (scene.activationState == UISceneActivationStateForegroundActive) {
+      return windowScene.interfaceOrientation;
+    }
+    fallback = windowScene.interfaceOrientation;
+  }
+  return fallback;
+}
+
 @interface CamerawesomePlugin () <CameraInterface, AnalysisImageUtils, CameraPreviewLayerProvider>
 @property(readonly, nonatomic) NSObject<FlutterTextureRegistry> *textureRegistry;
 @property NSMutableArray<NSNumber *> *texturesIds;
@@ -670,7 +686,13 @@ FlutterEventSink physicalButtonEventSink;
     previewSize = [self.camera getEffectivPreviewSize];
   }
   
-  // height & width are inverted, this is intentionnal, because camera is always on portrait mode
+  // height & width are inverted because the sensor reads out landscape while the
+  // preview is portrait. When the interface is landscape the preview follows it
+  // (MIN-2437), so report the un-swapped landscape size — otherwise the Flutter
+  // box stays a portrait strip and letterboxes instead of filling the screen.
+  if (UIInterfaceOrientationIsLandscape(CAMCurrentInterfaceOrientation())) {
+    return [PreviewSize makeWithWidth:@(previewSize.width) height:@(previewSize.height)];
+  }
   return [PreviewSize makeWithWidth:@(previewSize.height) height:@(previewSize.width)];
 }
 

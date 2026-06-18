@@ -32,6 +32,10 @@ class CameraPreviewPlatformView(
         override fun onAttachedToWindow() {
             super.onAttachedToWindow()
             attachPreviewViewIfNeeded()
+            // Now that the PreviewView has a real display, let the camera rebind
+            // so the preview picks up the correct rotation instead of the
+            // bind-time (display-less, portrait) one. (MIN-2437)
+            provider.onPreviewViewAttached()
         }
     }
 

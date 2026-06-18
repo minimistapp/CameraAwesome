@@ -1176,10 +1176,16 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
   }
   
   _captureMode = captureMode;
-  
-  if (captureMode == Video) {
+
+  if (captureMode == Video && _videoController.isAudioEnabled) {
     [self setUpCaptureSessionForAudioError:^(NSError *audioError) {
-      *error = [FlutterError errorWithCode:@"VIDEO_ERROR" message:@"error when trying to setup audio" details:[audioError localizedDescription]];
+      // Audio is best-effort. If the microphone can't be set up (permission
+      // denied, or no usable audio device — e.g. "Cannot use iPad Microphone")
+      // we record silent video instead of failing the capture-mode switch.
+      // Disabling audio here keeps the recorder from waiting on samples that
+      // never arrive. The Flutter layer owns the microphone-permission UX.
+      [self->_videoController setIsAudioEnabled:NO];
+      NSLog(@"camerawesome: microphone unavailable, recording video without audio (%@)", audioError.localizedDescription);
     }];
   }
 }

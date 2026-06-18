@@ -91,6 +91,13 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> with Widgets
       }
     });
 
+    // On first open the effective preview size can lag the initial query — the
+    // native camera is still binding and (Android) the PreviewView attaches
+    // only after the platform view mounts — so the box would stay mis-sized
+    // until the user rotates. Re-query a few times after open so it settles on
+    // its own. (MIN-2437)
+    _settlePreviewSizeAfterOpen();
+
     // refactor this
     _sensorConfigSubscription =
         widget.state.sensorConfig$.listen((sensorConfig) {
@@ -153,12 +160,26 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> with Widgets
     // The native preview follows the interface orientation (MIN-2437); on
     // rotation the effective preview size swaps between portrait/landscape, so
     // re-query and resize the box to keep the preview full-screen and upright.
+    _refreshPreviewSize();
+  }
+
+  /// Re-query the native preview size and resize the box if it changed. Guards
+  /// against a zero size (camera not yet bound / torn down) so a stale-but-valid
+  /// size is never clobbered.
+  Future<void> _refreshPreviewSize() async {
     if (!mounted) return;
-    widget.state.previewSize(0).then((previewSize) {
-      if (mounted && previewSize != _previewSize) {
-        setState(() => _previewSize = previewSize);
-      }
-    });
+    final previewSize = await widget.state.previewSize(0);
+    if (mounted && previewSize != _previewSize && previewSize.width > 0 && previewSize.height > 0) {
+      setState(() => _previewSize = previewSize);
+    }
+  }
+
+  /// Re-query the preview size a few times after open so it settles once the
+  /// camera has bound, without waiting for a manual rotation. (MIN-2437)
+  void _settlePreviewSizeAfterOpen() {
+    for (final delayMs in const [200, 600, 1200, 2000]) {
+      Future.delayed(Duration(milliseconds: delayMs), _refreshPreviewSize);
+    }
   }
 
   @override

@@ -3,10 +3,12 @@ package com.apparence.camerawesome.cameraX
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.*
 import android.hardware.camera2.CameraCharacteristics
+import android.hardware.display.DisplayManager
 import android.location.Location
 import android.os.*
 import android.util.Log
@@ -64,6 +66,13 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
     private lateinit var imageStreamChannel: EventChannel
     private lateinit var orientationStreamChannel: EventChannel
     private var orientationStreamListener: OrientationStreamListener? = null
+
+    // Rebinds the camera when the window's display rotation changes so the preview
+    // crop tracks the orientation on tablets (no-op on portrait-locked phones —
+    // refreshDisplayRotation only rebinds when the window rotation actually
+    // changes). (MIN-2437)
+    private var displayManager: DisplayManager? = null
+    private var displayListener: DisplayManager.DisplayListener? = null
     private val sensorOrientationListener: SensorOrientationListener = SensorOrientationListener()
 
     /// When set, the EXIF Orientation of captured photos is forced to this
@@ -192,6 +201,7 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
         this.exifPreferences = exifPreferences
         orientationStreamListener =
             OrientationStreamListener(activity!!, listOf(sensorOrientationListener, cameraState))
+        registerDisplayListener()
         imageStreamChannel.setStreamHandler(cameraState)
         if (mode != CaptureModes.ANALYSIS_ONLY) {
             cameraState.updateLifecycle(activity!!)
@@ -611,9 +621,37 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
     }
 
     override fun stop(): Boolean {
+        unregisterDisplayListener()
         orientationStreamListener?.stop()
         cameraState.stop()
         return true
+    }
+
+    /// Listen for display rotation changes so the preview ViewPort/crop tracks the
+    /// window orientation on tablets. Fires on physical rotation, but
+    /// [CameraXState.refreshDisplayRotation] only rebinds when the *window*
+    /// rotation actually changed, so a portrait-locked phone never rebinds.
+    /// (MIN-2437)
+    private fun registerDisplayListener() {
+        val act = activity ?: return
+        if (displayListener != null) return
+        val listener = object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) {}
+            override fun onDisplayRemoved(displayId: Int) {}
+            override fun onDisplayChanged(displayId: Int) {
+                activity?.let { cameraState.refreshDisplayRotation(it) }
+            }
+        }
+        val manager = act.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+        manager.registerDisplayListener(listener, Handler(Looper.getMainLooper()))
+        displayManager = manager
+        displayListener = listener
+    }
+
+    private fun unregisterDisplayListener() {
+        displayListener?.let { displayManager?.unregisterDisplayListener(it) }
+        displayListener = null
+        displayManager = null
     }
 
     @SuppressLint("RestrictedApi")

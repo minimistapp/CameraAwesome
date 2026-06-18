@@ -73,6 +73,13 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
     // changes). (MIN-2437)
     private var displayManager: DisplayManager? = null
     private var displayListener: DisplayManager.DisplayListener? = null
+
+    // One-shot: rebind the camera the first time the native PreviewView attaches
+    // to the window, so the preview leaves the bind-time (display-less, portrait)
+    // rotation and fills the screen upright. Set only on tablets (phones are
+    // portrait-locked and already correct, so a startup rebind would just
+    // flicker). (MIN-2437)
+    private var rebindOnFirstAttach = false
     private val sensorOrientationListener: SensorOrientationListener = SensorOrientationListener()
 
     /// When set, the EXIF Orientation of captured photos is forced to this
@@ -197,6 +204,10 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
                 isFocusable = false
                 isFocusableInTouchMode = false
             }
+            // Tablets render the preview full-screen following the window; rebind
+            // once the PreviewView attaches so it isn't stuck at the bind-time
+            // portrait rotation. Phones stay portrait-locked, so skip. (MIN-2437)
+            rebindOnFirstAttach = activity!!.resources.configuration.smallestScreenWidthDp >= 600
         }
         this.exifPreferences = exifPreferences
         orientationStreamListener =
@@ -358,6 +369,17 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
     /// which case the Dart side falls back to the Flutter Texture.
     override fun currentPreviewView(): PreviewView? {
         return if (::cameraState.isInitialized) cameraState.previewView else null
+    }
+
+    override fun onPreviewViewAttached() {
+        // First open on a tablet: the camera bound while the PreviewView had no
+        // display (so the preview defaulted to portrait, centered). Now that it's
+        // attached, rebind once so the preview resolves the real window rotation
+        // and fills the screen. One-shot to avoid re-flickering on later attaches.
+        // (MIN-2437)
+        if (!rebindOnFirstAttach || !::cameraState.isInitialized) return
+        rebindOnFirstAttach = false
+        activity?.let { cameraState.updateLifecycle(it) }
     }
 
     /***

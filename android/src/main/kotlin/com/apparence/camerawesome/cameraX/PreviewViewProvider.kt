@@ -11,4 +11,11 @@ import androidx.camera.view.PreviewView
 /// architecture this mirrors.
 interface PreviewViewProvider {
     fun currentPreviewView(): PreviewView?
+
+    /// Called when the preview's platform view attaches to the window. By this
+    /// point the PreviewView has a real display, so CameraX can resolve the
+    /// correct preview rotation — the implementation rebinds once on first open
+    /// so the preview isn't stuck at the bind-time (display-less, portrait)
+    /// rotation. (MIN-2437)
+    fun onPreviewViewAttached() {}
 }

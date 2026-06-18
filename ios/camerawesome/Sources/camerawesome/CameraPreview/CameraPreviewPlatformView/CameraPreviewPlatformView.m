@@ -8,17 +8,19 @@
 #import "CameraPreviewPlatformView.h"
 
 /// Maps the app's interface (window) orientation to the matching capture video
-/// orientation. The landscape cases are intentionally crossed — AVFoundation's
-/// LandscapeLeft/Right are mirror images of UIKit's. Defaults to portrait for
-/// unknown/face-up. (MIN-2437)
+/// orientation. This is a DIRECT mapping — UIInterfaceOrientation and
+/// AVCaptureVideoOrientation share raw values for the landscape cases
+/// (LandscapeLeft=4, LandscapeRight=3), so they must NOT be crossed (crossing is
+/// only correct for UIDeviceOrientation, and here produced a 180°-flipped /
+/// upside-down preview). Defaults to portrait for unknown/face-up. (MIN-2437)
 static AVCaptureVideoOrientation CAMVideoOrientationFromInterface(UIInterfaceOrientation interfaceOrientation) {
   switch (interfaceOrientation) {
     case UIInterfaceOrientationPortraitUpsideDown:
       return AVCaptureVideoOrientationPortraitUpsideDown;
     case UIInterfaceOrientationLandscapeLeft:
-      return AVCaptureVideoOrientationLandscapeRight;
-    case UIInterfaceOrientationLandscapeRight:
       return AVCaptureVideoOrientationLandscapeLeft;
+    case UIInterfaceOrientationLandscapeRight:
+      return AVCaptureVideoOrientationLandscapeRight;
     case UIInterfaceOrientationPortrait:
     case UIInterfaceOrientationUnknown:
     default:

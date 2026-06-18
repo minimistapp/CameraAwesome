@@ -50,7 +50,7 @@ class AwesomeCameraPreview extends StatefulWidget {
   }
 }
 
-class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> {
+class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> with WidgetsBindingObserver {
   PreviewSize? _previewSize;
 
   final List<Texture> _textures = [];
@@ -77,6 +77,9 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> {
   @override
   void initState() {
     super.initState();
+    // Re-query the preview size on window metric changes (notably rotation) so
+    // the box tracks the orientation the native preview now follows. (MIN-2437)
+    WidgetsBinding.instance.addObserver(this);
     Future.wait([
       widget.state.previewSize(0),
       _loadTextures(),
@@ -145,7 +148,22 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> {
   }
 
   @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    // The native preview follows the interface orientation (MIN-2437); on
+    // rotation the effective preview size swaps between portrait/landscape, so
+    // re-query and resize the box to keep the preview full-screen and upright.
+    if (!mounted) return;
+    widget.state.previewSize(0).then((previewSize) {
+      if (mounted && previewSize != _previewSize) {
+        setState(() => _previewSize = previewSize);
+      }
+    });
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _sensorConfigSubscription?.cancel();
     _aspectRatioSubscription?.cancel();
     super.dispose();
@@ -162,8 +180,8 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> {
           );
     }
 
-    // Don't rotate the camera preview when the device rotates — keep it stable
-    // like the native iOS Camera app (see _buildMainPreview).
+    // The native preview follows the interface orientation; _previewSize is
+    // re-queried on rotation (didChangeMetrics) so the box matches it. (MIN-2437)
     final effectivePreviewSize = _previewSize!;
 
     return Container(

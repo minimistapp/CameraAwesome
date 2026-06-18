@@ -7,6 +7,25 @@
 
 #import "CameraPreviewPlatformView.h"
 
+/// Maps the app's interface (window) orientation to the matching capture video
+/// orientation. The landscape cases are intentionally crossed — AVFoundation's
+/// LandscapeLeft/Right are mirror images of UIKit's. Defaults to portrait for
+/// unknown/face-up. (MIN-2437)
+static AVCaptureVideoOrientation CAMVideoOrientationFromInterface(UIInterfaceOrientation interfaceOrientation) {
+  switch (interfaceOrientation) {
+    case UIInterfaceOrientationPortraitUpsideDown:
+      return AVCaptureVideoOrientationPortraitUpsideDown;
+    case UIInterfaceOrientationLandscapeLeft:
+      return AVCaptureVideoOrientationLandscapeRight;
+    case UIInterfaceOrientationLandscapeRight:
+      return AVCaptureVideoOrientationLandscapeLeft;
+    case UIInterfaceOrientationPortrait:
+    case UIInterfaceOrientationUnknown:
+    default:
+      return AVCaptureVideoOrientationPortrait;
+  }
+}
+
 #pragma mark - Container view
 
 /// UIView that hosts the camera's AVCaptureVideoPreviewLayer as a sublayer and
@@ -74,6 +93,15 @@
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     self.attachedLayer.frame = self.bounds;
+    // Follow the app's interface orientation so the preview is upright + fills
+    // the screen when the window rotates (tablets), and stays portrait when the
+    // window is portrait-locked (phones). layoutSubviews fires on every rotation
+    // and runs on the main thread, where reading interfaceOrientation is safe.
+    // (MIN-2437)
+    AVCaptureConnection *connection = self.attachedLayer.connection;
+    if (connection != nil && connection.isVideoOrientationSupported && self.window.windowScene != nil) {
+      connection.videoOrientation = CAMVideoOrientationFromInterface(self.window.windowScene.interfaceOrientation);
+    }
     [CATransaction commit];
   }
 }

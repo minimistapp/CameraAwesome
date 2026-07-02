@@ -22,6 +22,14 @@ NS_ASSUME_NONNULL_BEGIN
 /// every setupCamera).
 @protocol CameraPreviewLayerProvider <NSObject>
 - (nullable AVCaptureVideoPreviewLayer *)currentPreviewLayer;
+
+/// When non-nil (a boxed AVCaptureVideoOrientation), the preview connection is
+/// pinned to this orientation instead of following the window's interface
+/// orientation. Driven by the app's camera orientation lock: native controllers
+/// presented above the app (image cropper, pickers) rotate the scene under
+/// their own masks, and those transient interface-orientation excursions must
+/// not be able to re-orient a locked preview. (MIN-2646)
+- (nullable NSNumber *)previewOrientationOverride;
 @end
 
 /// Factory registered under the "camerawesome/preview" viewType. Flutter calls

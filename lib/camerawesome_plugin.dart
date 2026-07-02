@@ -406,6 +406,27 @@ class CamerawesomePlugin {
     return CameraInterface().setCaptureOrientationOverride(override?.name);
   }
 
+  static const MethodChannel _previewOrientationChannel =
+      MethodChannel('camerawesome/preview_orientation');
+
+  /// Pin the *preview* connection to a fixed orientation (iOS only — Android's
+  /// preview ViewPort follows the window natively). When the app locks its
+  /// window orientation, transient interface-orientation excursions from
+  /// native controllers presented above the app (image croppers, system
+  /// pickers) must not be able to re-orient the preview; pass the lock here
+  /// and `null` to resume following the window (default). `landscape` pins to
+  /// the interface-landscapeLeft pose, matching the canonical landscape value
+  /// of [setCaptureOrientationOverride].
+  static Future<void> setPreviewOrientationOverride(
+    CaptureOrientationOverride? override,
+  ) {
+    if (!Platform.isIOS) return Future.value();
+    return _previewOrientationChannel.invokeMethod(
+      'setPreviewOrientationOverride',
+      override?.name,
+    );
+  }
+
   /// set brightness manually with range [0,1]
   static Future<void> setBrightness(double brightness) {
     if (brightness < 0 || brightness > 1) {

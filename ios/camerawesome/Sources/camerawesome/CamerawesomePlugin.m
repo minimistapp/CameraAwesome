@@ -41,6 +41,12 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
 /// initialised with the most recently requested value rather than starting
 /// at nil and silently dropping the Dart-side request.
 @property(nonatomic, strong, nullable) NSNumber *captureOrientationOverride;
+/// Boxed AVCaptureVideoOrientation pinning the *preview* connection while the
+/// app's orientation lock is active; nil = follow the interface orientation
+/// (default). Read by CameraPreviewContainerView via CameraPreviewLayerProvider;
+/// lives here so it survives camera re-setup, like captureOrientationOverride.
+/// (MIN-2646)
+@property(nonatomic, strong, nullable) NSNumber *previewOrientationOverride;
 - (instancetype)init:(NSObject<FlutterPluginRegistrar>*)registrar;
 @end
 
@@ -91,6 +97,54 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
   CameraPreviewPlatformViewFactory *previewFactory =
       [[CameraPreviewPlatformViewFactory alloc] initWithProvider:instance];
   [registrar registerViewFactory:previewFactory withId:@"camerawesome/preview"];
+
+  // Preview-orientation lock (MIN-2646): a plain method channel (kept out of
+  // pigeon to avoid regenerating the interface for one iOS-only setter). The
+  // app pins the preview when its orientation lock is active and clears it for
+  // follow-the-window behaviour.
+  FlutterMethodChannel *previewOrientationChannel =
+      [FlutterMethodChannel methodChannelWithName:@"camerawesome/preview_orientation"
+                                  binaryMessenger:[registrar messenger]];
+  __weak CamerawesomePlugin *weakInstance = instance;
+  [previewOrientationChannel setMethodCallHandler:^(FlutterMethodCall *call, FlutterResult result) {
+    if ([call.method isEqualToString:@"setPreviewOrientationOverride"]) {
+      [weakInstance setPreviewOrientationOverrideFromString:call.arguments];
+      result(nil);
+    } else {
+      result(FlutterMethodNotImplemented);
+    }
+  }];
+}
+
+/// Maps "portrait"/"landscape" to the AVCaptureVideoOrientation the preview is
+/// pinned to; anything else (nil/NSNull) clears the pin. "landscape" maps to
+/// LandscapeLeft — the interface orientation the app's landscape window lock
+/// allows — so the pinned preview and the locked window agree. Applied to the
+/// live connection immediately; the platform view's layoutSubviews keeps
+/// enforcing it afterwards. (MIN-2646)
+- (void)setPreviewOrientationOverrideFromString:(nullable id)orientation {
+  NSNumber *boxed = nil;
+  if ([orientation isKindOfClass:[NSString class]]) {
+    NSString *lowered = [(NSString *)orientation lowercaseString];
+    if ([lowered isEqualToString:@"portrait"]) {
+      boxed = @(AVCaptureVideoOrientationPortrait);
+    } else if ([lowered isEqualToString:@"landscape"]) {
+      boxed = @(AVCaptureVideoOrientationLandscapeLeft);
+    }
+  }
+  self.previewOrientationOverride = boxed;
+  if (boxed == nil) {
+    // Cleared: the next layout pass (the unlock rotates the window whenever the
+    // device disagrees, which triggers one) resumes following the interface.
+    return;
+  }
+  AVCaptureConnection *connection = self.camera.previewLayer.connection;
+  if (connection != nil && connection.isVideoOrientationSupported) {
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    connection.videoOrientation = (AVCaptureVideoOrientation)boxed.integerValue;
+    [CATransaction commit];
+  }
 }
 
 #pragma mark - CameraPreviewLayerProvider
@@ -690,7 +744,20 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
   // preview is portrait. When the interface is landscape the preview follows it
   // (MIN-2437), so report the un-swapped landscape size — otherwise the Flutter
   // box stays a portrait strip and letterboxes instead of filling the screen.
-  if (UIInterfaceOrientationIsLandscape(CAMCurrentInterfaceOrientation())) {
+  //
+  // When the app pinned the preview (MIN-2646), the connection renders in the
+  // pinned orientation no matter what the interface reports — a native cropper
+  // above the app can leave the ambient read transiently (or stubbornly) wrong
+  // — so the swap decision must follow the pin, keeping the Flutter box in
+  // agreement with what the connection actually renders.
+  BOOL landscape;
+  if (self.previewOrientationOverride != nil) {
+    AVCaptureVideoOrientation pinned = (AVCaptureVideoOrientation)self.previewOrientationOverride.integerValue;
+    landscape = pinned == AVCaptureVideoOrientationLandscapeLeft || pinned == AVCaptureVideoOrientationLandscapeRight;
+  } else {
+    landscape = UIInterfaceOrientationIsLandscape(CAMCurrentInterfaceOrientation());
+  }
+  if (landscape) {
     return [PreviewSize makeWithWidth:@(previewSize.width) height:@(previewSize.height)];
   }
   return [PreviewSize makeWithWidth:@(previewSize.height) height:@(previewSize.width)];

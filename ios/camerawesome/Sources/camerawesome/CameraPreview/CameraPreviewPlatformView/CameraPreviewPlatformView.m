@@ -100,9 +100,19 @@ static AVCaptureVideoOrientation CAMVideoOrientationFromInterface(UIInterfaceOri
     // window is portrait-locked (phones). layoutSubviews fires on every rotation
     // and runs on the main thread, where reading interfaceOrientation is safe.
     // (MIN-2437)
+    //
+    // Unless the app pinned the preview: under an orientation lock, transient
+    // interface-orientation excursions (native croppers/pickers presented above
+    // the app) must not re-orient the preview, so the override always wins over
+    // the ambient read. (MIN-2646)
     AVCaptureConnection *connection = self.attachedLayer.connection;
-    if (connection != nil && connection.isVideoOrientationSupported && self.window.windowScene != nil) {
-      connection.videoOrientation = CAMVideoOrientationFromInterface(self.window.windowScene.interfaceOrientation);
+    if (connection != nil && connection.isVideoOrientationSupported) {
+      NSNumber *forced = [self.provider previewOrientationOverride];
+      if (forced != nil) {
+        connection.videoOrientation = (AVCaptureVideoOrientation)forced.integerValue;
+      } else if (self.window.windowScene != nil) {
+        connection.videoOrientation = CAMVideoOrientationFromInterface(self.window.windowScene.interfaceOrientation);
+      }
     }
     [CATransaction commit];
   }

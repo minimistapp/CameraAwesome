@@ -338,7 +338,14 @@
   [self.cameraSession addInputWithNoConnections:deviceInput];
   
   AVCaptureVideoDataOutput *videoDataOutput = [[AVCaptureVideoDataOutput alloc] init];
-  videoDataOutput.videoSettings = @{(__bridge NSString *)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA)};
+  // -setVideoSettings: throws NSInvalidArgumentException ("Unsupported pixel
+  // format type") if 32BGRA is not currently in availableVideoCVPixelFormatTypes.
+  // Guard it so camera setup can never crash (MIN-2667).
+  @try {
+    videoDataOutput.videoSettings = @{(__bridge NSString *)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA)};
+  } @catch (NSException *exception) {
+    // Leave the output on its default settings rather than crashing.
+  }
   [videoDataOutput setSampleBufferDelegate:self queue:self.dispatchQueue];
   
   if (![self.cameraSession canAddOutput:videoDataOutput]) {

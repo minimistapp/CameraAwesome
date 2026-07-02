@@ -11,6 +11,13 @@
 // flags (used to know when AF/AE have settled).
 static void * const FocusStableContext = (void *)&FocusStableContext;
 
+@interface SingleCameraPreview ()
+/// Safely applies 32BGRA (optionally at a fixed width/height) to the analysis
+/// data output — guarded so an unsupported pixel format / aspect never crashes
+/// the camera (MIN-2667). See the implementation for details.
+- (void)setAnalysisPixelFormat32BGRAWithWidth:(int32_t)width height:(int32_t)height;
+@end
+
 @implementation SingleCameraPreview {
   dispatch_queue_t _dispatchQueue;
   // Blocks waiting for focus/exposure to settle, plus whether we currently hold
@@ -64,7 +71,11 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // Creating capture session
   _captureSession = [[AVCaptureSession alloc] init];
   _captureVideoOutput = [AVCaptureVideoDataOutput new];
-  _captureVideoOutput.videoSettings = @{(NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)};
+  // Baseline analysis pixel format. -setVideoSettings: throws
+  // NSInvalidArgumentException ("Unsupported pixel format type") if 32BGRA is
+  // not currently in the output's availableVideoCVPixelFormatTypes, so guard it
+  // and never let camera setup crash (MIN-2667).
+  [self setAnalysisPixelFormat32BGRAWithWidth:0 height:0];
   [_captureVideoOutput setAlwaysDiscardsLateVideoFrames:YES];
   [_captureVideoOutput setSampleBufferDelegate:self queue:dispatch_get_main_queue()];
   [_captureSession addOutputWithNoConnections:_captureVideoOutput];
@@ -466,10 +477,6 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
     return;
   }
 
-  NSMutableDictionary *settings =
-      [NSMutableDictionary dictionaryWithDictionary:_captureVideoOutput.videoSettings ?: @{}];
-  settings[(NSString *)kCVPixelBufferPixelFormatTypeKey] = @(kCVPixelFormatType_32BGRA);
-
   // Long-edge cap for the analysis buffers (≈ the prior streaming resolution,
   // so barcode/AprilTag behaviour is unchanged — only the preview gets sharper).
   const int32_t kTargetLongEdge = 1280;
@@ -483,11 +490,55 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
 
   if (multiple >= 1 && scaledW < dims.width && scaledH < dims.height) {
     // Exact-aspect downscale (scaledW:scaledH == dims.width:dims.height).
-    settings[(NSString *)kCVPixelBufferWidthKey] = @(scaledW);
-    settings[(NSString *)kCVPixelBufferHeightKey] = @(scaledH);
+    [self setAnalysisPixelFormat32BGRAWithWidth:scaledW height:scaledH];
   } else {
     // Already small enough (or no clean multiple) — don't scale; the format
     // ceiling keeps memory bounded on its own.
+    [self setAnalysisPixelFormat32BGRAWithWidth:0 height:0];
+  }
+}
+
+/// Applies 32BGRA to the analysis data output, optionally pinned to
+/// [width]x[height] when both are > 0. Centralises the crash-safety that opening
+/// the QR scanner needs (MIN-2667):
+///
+/// -setVideoSettings: throws NSInvalidArgumentException if the pixel format is
+/// not currently in the output's availableVideoCVPixelFormatTypes, or if the
+/// width/height don't preserve the active format's exact aspect. In an
+/// analysis-only / previewOnly session (no photo output) the session is driven
+/// off an InputPriority forced activeFormat, and on some devices/iOS versions
+/// 32BGRA is momentarily absent from availableVideoCVPixelFormatTypes at this
+/// point in setup — setting it then threw and crashed the app on open.
+///
+/// So we: (a) skip entirely when 32BGRA is not offered — the analysis pipeline
+/// (ImageStreamController + the Dart MLKit path) requires 32BGRA, so we never
+/// substitute another format; the output keeps whatever 32BGRA settings it
+/// already had; and (b) guard every set, falling back from
+/// pixel-format+dimensions to pixel-format-only, so a rejection degrades to
+/// "no downscale this pass" (bounded by the format ceiling) instead of crashing.
+- (void)setAnalysisPixelFormat32BGRAWithWidth:(int32_t)width height:(int32_t)height {
+  if (_captureVideoOutput == nil) {
+    return;
+  }
+
+  BOOL bgraAvailable = NO;
+  for (NSNumber *available in _captureVideoOutput.availableVideoCVPixelFormatTypes) {
+    if (available.unsignedIntValue == kCVPixelFormatType_32BGRA) {
+      bgraAvailable = YES;
+      break;
+    }
+  }
+  if (!bgraAvailable) {
+    return;
+  }
+
+  NSMutableDictionary *settings =
+      [NSMutableDictionary dictionaryWithDictionary:_captureVideoOutput.videoSettings ?: @{}];
+  settings[(NSString *)kCVPixelBufferPixelFormatTypeKey] = @(kCVPixelFormatType_32BGRA);
+  if (width > 0 && height > 0) {
+    settings[(NSString *)kCVPixelBufferWidthKey] = @(width);
+    settings[(NSString *)kCVPixelBufferHeightKey] = @(height);
+  } else {
     [settings removeObjectForKey:(NSString *)kCVPixelBufferWidthKey];
     [settings removeObjectForKey:(NSString *)kCVPixelBufferHeightKey];
   }
@@ -495,13 +546,15 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
   @try {
     _captureVideoOutput.videoSettings = settings;
   } @catch (NSException *exception) {
-    // Defensive: should not happen now that dims preserve the active format's
-    // exact aspect, but never let a videoSettings rejection crash the camera.
-    // Falling back to pixel-format-only leaves the data output at the format
-    // size, which the format ceiling (kPreviewFourThreeMaxWidth / 1080p) keeps
-    // memory-bounded.
-    _captureVideoOutput.videoSettings =
-        @{(NSString *)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA)};
+    // A width/height that doesn't match the active format's exact aspect is
+    // rejected — retry pixel-format-only (still guarded) so we drop the
+    // downscale rather than crash; the format ceiling keeps memory bounded.
+    @try {
+      _captureVideoOutput.videoSettings =
+          @{(NSString *)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA)};
+    } @catch (NSException *inner) {
+      // Leave videoSettings untouched; analysis frames stay at the format size.
+    }
   }
 }
 

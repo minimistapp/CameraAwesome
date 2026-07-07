@@ -60,6 +60,10 @@
     object:nil];
   [self stop];
   [self cleanSession];
+  // The CMMotionManager handler retains the MotionController; without an
+  // explicit stop the 5 Hz device-motion (gyro) subscription outlives the
+  // camera (MIN-2747).
+  [_motionController stopMotionDetection];
 }
 
 - (void)stop {

@@ -77,7 +77,13 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // and never let camera setup crash (MIN-2667).
   [self setAnalysisPixelFormat32BGRAWithWidth:0 height:0];
   [_captureVideoOutput setAlwaysDiscardsLateVideoFrames:YES];
-  [_captureVideoOutput setSampleBufferDelegate:self queue:dispatch_get_main_queue()];
+  // Deliver frames on the serial capture queue, NOT the main queue (MIN-2747):
+  // with the delegate on main, the analysis stream's per-frame BGRA copy +
+  // event-channel serialization all ran on the UI thread. Every consumer is
+  // queue-agnostic — ImageStreamController hops to the main queue itself for
+  // the Flutter sink, and recording already swapped the delegate to this same
+  // queue (see recordVideoAtPath).
+  [_captureVideoOutput setSampleBufferDelegate:self queue:_dispatchQueue];
   [_captureSession addOutputWithNoConnections:_captureVideoOutput];
   
   [self initCameraPreview:sensor];
@@ -400,7 +406,11 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // dispatch_sync here could deadlock if the final release happened on
   // _dispatchQueue. So tearing down inline is both race-free and safe.
   [self teardownFocusStableObservation];
-  [self.motionController startMotionDetection];
+  // Stop, don't start (MIN-2747): the upstream code called startMotionDetection
+  // here, and the CMMotionManager handler strongly retains the MotionController
+  // — so every camera teardown leaked a permanent 5 Hz device-motion (gyro)
+  // subscription. Stopping releases the handler and breaks that retain cycle.
+  [self.motionController stopMotionDetection];
 }
 
 /// Ceiling (sensor-native width, px) for the 4:3 preview device format.
@@ -420,9 +430,24 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
 /// downscale holds the analysis buffers small on the target device.
 static const int32_t kPreviewFourThreeMaxWidth = 1920;
 
+/// Between two same-sized formats, prefer the lower-power variant: sensor-binned
+/// readout first, then the lowest max frame rate. iOS lists several formats per
+/// resolution (binned/unbinned, 30/60fps variants); picking by width alone can
+/// land on a variant whose default rate doubles the sensor/ISP work for an
+/// identical-looking stream (MIN-2747).
+static BOOL SCPFormatIsLowerPower(AVCaptureDeviceFormat *a, AVCaptureDeviceFormat *b) {
+  if (a.isVideoBinned != b.isVideoBinned) {
+    return a.isVideoBinned;
+  }
+  double aMaxFps = a.videoSupportedFrameRateRanges.firstObject.maxFrameRate;
+  double bMaxFps = b.videoSupportedFrameRateRanges.firstObject.maxFrameRate;
+  return aMaxFps < bMaxFps;
+}
+
 /// Largest 4:3 device format up to [kPreviewFourThreeMaxWidth] — drives a sharp
-/// 4:3 preview layer. Returns nil if the device exposes no 4:3 format in that
-/// range, in which case the caller falls back to the 640x480 preset.
+/// 4:3 preview layer. Same-sized variants resolve to the lower-power one (see
+/// SCPFormatIsLowerPower). Returns nil if the device exposes no 4:3 format in
+/// that range, in which case the caller falls back to the 640x480 preset.
 - (AVCaptureDeviceFormat *)bestStreamingFourThreeFormat {
   AVCaptureDeviceFormat *best = nil;
   int32_t bestWidth = 0;
@@ -430,7 +455,8 @@ static const int32_t kPreviewFourThreeMaxWidth = 1920;
     CMVideoDimensions dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
     if (dims.width * 3 != dims.height * 4) continue;                       // 4:3 only
     if (dims.width <= 640 || dims.width > kPreviewFourThreeMaxWidth) continue;
-    if (dims.width > bestWidth) {
+    if (best == nil || dims.width > bestWidth ||
+        (dims.width == bestWidth && SCPFormatIsLowerPower(format, best))) {
       bestWidth = dims.width;
       best = format;
     }
@@ -495,6 +521,58 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
     // Already small enough (or no clean multiple) — don't scale; the format
     // ceiling keeps memory bounded on its own.
     [self setAnalysisPixelFormat32BGRAWithWidth:0 height:0];
+  }
+}
+
+/// Max sustained capture rate while the analysis stream drives the session.
+/// 30fps is indistinguishable in the scanner preview but halves the sensor/ISP
+/// duty cycle vs the 60fps default of many iPad 4:3 formats — the dominant
+/// sustained thermal load on iPads (MIN-2747).
+static const int32_t kStreamingMaxFps = 30;
+
+/// Pin the capture frame rate while live image-analysis streaming drives the
+/// session (MIN-2747). Setting activeFormat (the 4:3 InputPriority path) — or a
+/// preset switch changing the format — resets activeVideoMin/MaxFrameDuration
+/// to the format's defaults, and nothing re-pinned them (VideoController only
+/// sets fps while recording), so the sensor was free to run at the format's max
+/// rate. Capping the *min* duration bounds the rate at kStreamingMaxFps while
+/// leaving the max duration free, so auto-exposure can still drop the rate in
+/// low light. No-op outside the streaming flow: video recording manages fps
+/// itself and must not be clamped here.
+- (void)applyStreamingFrameRateCap {
+  if (_captureDevice == nil || !_imageStreamController.streamImages) {
+    return;
+  }
+  if (_captureMode == Video || _videoController.isRecording) {
+    return;
+  }
+  AVFrameRateRange *range = _captureDevice.activeFormat.videoSupportedFrameRateRanges.firstObject;
+  if (range == nil) {
+    return;
+  }
+  // Clamp inside the format's supported range (a high-speed-only format can
+  // have minFrameRate above the cap). When the format can't exceed the cap
+  // anyway, reuse its own native minFrameDuration — frame durations must fall
+  // exactly inside the supported range or AVFoundation throws.
+  double cappedFps = MIN((double)kStreamingMaxFps, range.maxFrameRate);
+  cappedFps = MAX(cappedFps, range.minFrameRate);
+  CMTime minFrameDuration = (cappedFps >= range.maxFrameRate)
+      ? range.minFrameDuration
+      : CMTimeMake(1, (int32_t)cappedFps);
+  NSError *error = nil;
+  if (![_captureDevice lockForConfiguration:&error]) {
+    NSLog(@"applyStreamingFrameRateCap: lockForConfiguration failed: %@", error.localizedDescription);
+    return;
+  }
+  @try {
+    _captureDevice.activeVideoMinFrameDuration = minFrameDuration;
+  } @catch (NSException *exception) {
+    // Same defensive stance as the analysis pixel-format set (MIN-2667): a
+    // rejected duration must never crash camera setup — worst case we keep the
+    // format's default rate.
+    NSLog(@"applyStreamingFrameRateCap: rejected frame duration: %@", exception.reason);
+  } @finally {
+    [_captureDevice unlockForConfiguration];
   }
 }
 
@@ -680,6 +758,10 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
   // cap the data output's buffers so MLKit + the offscreen texture stay light
   // and the session can't OOM on open/capture (MIN-2406).
   [self applyAnalysisOutputDownscale];
+
+  // The format/preset change above reset the device's frame durations to the
+  // format defaults — re-pin the streaming rate cap (MIN-2747).
+  [self applyStreamingFrameRateCap];
 }
 
 /// Get current video prewiew size
@@ -704,6 +786,9 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
 - (void)dispose {
   [self stop];
   [self.physicalButtonController stopListening];
+  // Deterministic counterpart to the dealloc stop (MIN-2747) — dealloc timing
+  // depends on the last reference, dispose is the plugin's explicit teardown.
+  [self.motionController stopMotionDetection];
   // Synchronously on _dispatchQueue so teardown can't race in-flight KVO/timeout
   // blocks. dispose runs on the platform thread, never on _dispatchQueue.
   dispatch_sync(_dispatchQueue, ^{
@@ -803,6 +888,10 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
   [self setBestPreviewQuality];
   
   [_captureSession commitConfiguration];
+  // Re-pin the streaming fps cap after the commit: a preset set inside the
+  // begin/commit block only takes effect now, and the format switch it
+  // triggers resets the device's frame durations (MIN-2747).
+  [self applyStreamingFrameRateCap];
   if (sessionIsRunning) {
     dispatch_async(_dispatchQueue, ^{
       [self->_captureSession startRunning];

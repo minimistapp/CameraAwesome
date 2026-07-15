@@ -283,18 +283,27 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
     *error = [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil];
     return @(NO);
   }
-  
+
   for (NSNumber *textureId in self->_texturesIds) {
     [self->_textureRegistry unregisterTexture:[textureId longLongValue]];
-    dispatch_async(_dispatchQueue, ^{
-      if (self.multiCamera != nil) {
-        [self->_multiCamera stop];
-      } else {
-        [self->_camera stop];
-      }
-    });
   }
-  
+
+  // Fully tear down the camera on stop instead of leaving it resident until
+  // the next setupCameraSensors: the AVCaptureSession + photo output +
+  // preview layer and the 5 Hz CMMotionManager otherwise stay alive the
+  // whole time the camera screen is closed (MIN-3057). Safe because start()
+  // is always preceded by a fresh setup (see PreparingCameraState on the
+  // Dart side), so nothing revives a stopped camera without recreating it.
+  // dispose must run on this (platform) thread — it dispatch_syncs onto
+  // _dispatchQueue internally, same as the setupCameraSensors teardown path.
+  if (self.multiCamera != nil) {
+    [self.multiCamera dispose];
+    self.multiCamera = nil;
+  } else if (self.camera != nil) {
+    [self.camera dispose];
+    self.camera = nil;
+  }
+
   return @(YES);
 }
 

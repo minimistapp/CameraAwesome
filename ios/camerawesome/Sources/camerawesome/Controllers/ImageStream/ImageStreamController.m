@@ -89,9 +89,18 @@ NSInteger const MaxPendingProcessedImage = 4;
   };
   
   dispatch_async(dispatch_get_main_queue(), ^{
-    self->_imageStreamEventSink(imageBuffer);
+    // The sink is nilled on the main thread when Dart cancels the stream
+    // (screen close / scanner dismiss) — a frame dispatched before the cancel
+    // would invoke a nil block and crash (MIN-3074). The setter and this block
+    // both run on the main thread, so the snapshot + check is race-free.
+    FlutterEventSink sink = self->_imageStreamEventSink;
+    if (sink == nil) {
+      [self droppedFrameFromStream];
+      return;
+    }
+    sink(imageBuffer);
   });
-  
+
 }
 
 - (NSString *)getInputImageOrientation:(UIDeviceOrientation)orientation {
@@ -144,6 +153,15 @@ NSInteger const MaxPendingProcessedImage = 4;
   }
   
   return NO;
+}
+
+// A frame that never reaches Dart never gets the receivedImageFromStream ack —
+// rebalance the pending counter so dropped frames can't ratchet the stream into
+// a permanent overflowCrashingGuard skip.
+- (void)droppedFrameFromStream {
+  if (_processingImage > 0) {
+    _processingImage--;
+  }
 }
 
 // This is used to know the exact time when the image was received on the Flutter part

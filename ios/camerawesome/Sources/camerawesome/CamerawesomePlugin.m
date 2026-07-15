@@ -14,6 +14,7 @@ FlutterEventSink orientationEventSink;
 FlutterEventSink videoRecordingEventSink;
 FlutterEventSink imageStreamEventSink;
 FlutterEventSink physicalButtonEventSink;
+FlutterEventSink thermalEventSink;
 
 /// Current app interface (window) orientation. Used to report the preview size
 /// in the displayed orientation so the Flutter box fills the screen when the
@@ -83,9 +84,14 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
                                                                       binaryMessenger:[registrar messenger]];
   FlutterEventChannel *physicalButtonChannel = [FlutterEventChannel eventChannelWithName:@"camerawesome/physical_button"
                                                                          binaryMessenger:[registrar messenger]];
+  // Effective thermal level of the device while the camera runs (MIN-3056).
+  // iOS-only; the Android side never registers this channel.
+  FlutterEventChannel *thermalChannel = [FlutterEventChannel eventChannelWithName:@"camerawesome/thermal"
+                                                                  binaryMessenger:[registrar messenger]];
   [orientationChannel setStreamHandler:instance];
   [imageStreamChannel setStreamHandler:instance];
   [physicalButtonChannel setStreamHandler:instance];
+  [thermalChannel setStreamHandler:instance];
   
   CameraInterfaceSetup(registrar.messenger, instance);
   AnalysisImageUtilsSetup(registrar.messenger, instance);
@@ -255,8 +261,17 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
   [self.camera setOrientationEventSink:orientationEventSink];
   [self.camera setImageStreamEvent:imageStreamEventSink];
   [self.camera setPhysicalButtonEventSink:physicalButtonEventSink];
+  [self.camera setThermalEventSink:thermalEventSink];
   [self.multiCamera setOrientationEventSink:orientationEventSink];
   [self.multiCamera setPhysicalButtonEventSink:physicalButtonEventSink];
+
+  // State-channel semantics for the thermal level (MIN-3056): the fresh
+  // camera's ThermalController starts from its own reading, so push it to an
+  // existing subscriber — otherwise it could stay stuck on the previous
+  // camera's last-emitted level.
+  if (self.camera != nil && thermalEventSink != nil) {
+    thermalEventSink(CameraThermalLevelString(self.camera.thermalController.currentLevel));
+  }
 
   completion(@(YES), nil);
 }
@@ -339,12 +354,22 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
     }
   } else if ([arguments  isEqual: @"physicalButtonChannel"]) {
     physicalButtonEventSink = eventSink;
-    
+
     if (self.camera != nil) {
       [self.camera setPhysicalButtonEventSink:physicalButtonEventSink];
     }
+  } else if ([arguments  isEqual: @"thermalChannel"]) {
+    thermalEventSink = eventSink;
+
+    if (self.camera != nil) {
+      [self.camera setThermalEventSink:thermalEventSink];
+    }
+    // State-channel semantics (MIN-3056): a new subscriber immediately
+    // receives the current level — "nominal" when no camera exists yet.
+    CameraThermalLevel level = self.camera != nil ? self.camera.thermalController.currentLevel : CameraThermalLevelNominal;
+    eventSink(CameraThermalLevelString(level));
   }
-  
+
   return nil;
 }
 
@@ -363,9 +388,15 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
     }
   } else if ([arguments  isEqual: @"physicalButtonChannel"]) {
     physicalButtonEventSink = nil;
-    
+
     if (self.camera != nil) {
       [self.camera setPhysicalButtonEventSink:physicalButtonEventSink];
+    }
+  } else if ([arguments  isEqual: @"thermalChannel"]) {
+    thermalEventSink = nil;
+
+    if (self.camera != nil) {
+      [self.camera setThermalEventSink:thermalEventSink];
     }
   }
   return nil;
@@ -843,9 +874,13 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
   }
   
   [self.camera.imageStreamController setStreamImages:autoStart];
-  
+
   // Force a frame rate to improve performance
   [self.camera.imageStreamController setMaxFramesPerSecond:[maxFramesPerSecond floatValue]];
+
+  // Keep the sensor rate pinned across stream (re)configuration — a stopped
+  // analysis stream must not leave the session uncapped (MIN-3056).
+  [self.camera applyFrameRateCap];
 }
 
 - (void)startAnalysisWithError:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
@@ -860,6 +895,9 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
   }
   
   [self.camera.imageStreamController setStreamImages:true];
+
+  // Re-pin the frame-rate cap now that the stream is live (MIN-3056).
+  [self.camera applyFrameRateCap];
 }
 
 - (void)stopAnalysisWithError:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
@@ -874,6 +912,10 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
   }
   
   [self.camera.imageStreamController setStreamImages:false];
+
+  // Keep the cap applied while only the preview runs — stopping analysis must
+  // not release the sensor back to the format's max rate (MIN-3056).
+  [self.camera applyFrameRateCap];
 }
 
 - (void)isVideoRecordingAndImageAnalysisSupportedSensor:(PigeonSensorPosition)sensor completion:(void (^)(NSNumber *_Nullable, FlutterError *_Nullable))completion {

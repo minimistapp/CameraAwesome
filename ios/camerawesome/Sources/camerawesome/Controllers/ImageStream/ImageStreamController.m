@@ -49,36 +49,50 @@ NSInteger const MaxPendingProcessedImage = 4;
     planeCount = 1;
   }
   
-  for (int i = 0; i < planeCount; i++) {
-    void *planeAddress;
-    size_t bytesPerRow;
-    size_t height;
-    size_t width;
-    
-    if (isPlanar) {
-      planeAddress = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, i);
-      bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, i);
-      height = CVPixelBufferGetHeightOfPlane(pixelBuffer, i);
-      width = CVPixelBufferGetWidthOfPlane(pixelBuffer, i);
-    } else {
-      planeAddress = CVPixelBufferGetBaseAddress(pixelBuffer);
-      bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
-      height = CVPixelBufferGetHeight(pixelBuffer);
-      width = CVPixelBufferGetWidth(pixelBuffer);
+  // Copying the planes allocates frame-sized NSData buffers; near the memory
+  // ceiling that throws NSMallocException (prod crashes on 1.7.30/1.7.31). A
+  // stream frame is droppable — skip it instead of letting the exception
+  // abort the app (MIN-3075).
+  BOOL planeCopyFailed = NO;
+  @try {
+    for (int i = 0; i < planeCount; i++) {
+      void *planeAddress;
+      size_t bytesPerRow;
+      size_t height;
+      size_t width;
+
+      if (isPlanar) {
+        planeAddress = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, i);
+        bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, i);
+        height = CVPixelBufferGetHeightOfPlane(pixelBuffer, i);
+        width = CVPixelBufferGetWidthOfPlane(pixelBuffer, i);
+      } else {
+        planeAddress = CVPixelBufferGetBaseAddress(pixelBuffer);
+        bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
+        height = CVPixelBufferGetHeight(pixelBuffer);
+        width = CVPixelBufferGetWidth(pixelBuffer);
+      }
+
+      NSNumber *length = @(bytesPerRow * height);
+      NSData *bytes = [NSData dataWithBytes:planeAddress length:length.unsignedIntegerValue];
+
+      [planes addObject:@{
+        @"bytesPerRow": @(bytesPerRow),
+        @"width": @(width),
+        @"height": @(height),
+        @"bytes": [FlutterStandardTypedData typedDataWithBytes:bytes],
+      }];
     }
-    
-    NSNumber *length = @(bytesPerRow * height);
-    NSData *bytes = [NSData dataWithBytes:planeAddress length:length.unsignedIntegerValue];
-    
-    [planes addObject:@{
-      @"bytesPerRow": @(bytesPerRow),
-      @"width": @(width),
-      @"height": @(height),
-      @"bytes": [FlutterStandardTypedData typedDataWithBytes:bytes],
-    }];
+  } @catch (NSException *exception) {
+    planeCopyFailed = YES;
   }
-  
+
   CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+
+  if (planeCopyFailed) {
+    [self droppedFrameFromStream];
+    return;
+  }
   
   NSDictionary *imageBuffer = @{
     @"width": [NSNumber numberWithUnsignedLong:imageWidth],
@@ -98,7 +112,14 @@ NSInteger const MaxPendingProcessedImage = 4;
       [self droppedFrameFromStream];
       return;
     }
-    sink(imageBuffer);
+    // Encoding the event envelope re-allocates the frame inside the standard
+    // codec; under the same memory pressure as the plane copy that throws
+    // NSMallocException too — drop the frame rather than abort (MIN-3075).
+    @try {
+      sink(imageBuffer);
+    } @catch (NSException *exception) {
+      [self droppedFrameFromStream];
+    }
   });
 
 }

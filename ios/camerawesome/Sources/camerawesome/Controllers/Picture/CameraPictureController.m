@@ -5,6 +5,8 @@
 //  Created by Dimitri Dessus on 24/07/2020.
 //
 
+#import <ImageIO/ImageIO.h>
+
 #import "CameraPictureController.h"
 #import "ExifContainer.h"
 #import "NSData+Exif.h"
@@ -47,15 +49,21 @@
 - (NSData *)writeMetadataIntoImageData:(NSData *)imageData metadata:(NSMutableDictionary *)metadata {
   // create an imagesourceref
   CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef) imageData, NULL);
-  
+  if (!source) {
+    NSLog(@"Error: Could not create image source");
+    return nil;
+  }
+
   // this is the type of image (e.g., public.jpeg)
   CFStringRef UTI = CGImageSourceGetType(source);
-  
+
   // create a new data object and write the new image into it
   NSMutableData *dest_data = [NSMutableData data];
   CGImageDestinationRef destination = CGImageDestinationCreateWithData((__bridge CFMutableDataRef)dest_data, UTI, 1, NULL);
   if (!destination) {
     NSLog(@"Error: Could not create image destination");
+    CFRelease(source);
+    return nil;
   }
   // add the image contained in the image source to the destination, overidding the old metadata with our modified metadata
   CGImageDestinationAddImageFromSource(destination, source, 0, (__bridge CFDictionaryRef) metadata);
@@ -66,7 +74,7 @@
   }
   CFRelease(destination);
   CFRelease(source);
-  return dest_data;
+  return success ? dest_data : nil;
 }
 
 - (void)captureOutput:(AVCapturePhotoOutput *)output
@@ -78,65 +86,96 @@ didFinishProcessingPhoto:(AVCapturePhoto *)photo
     return;
   }
 
-  // Add exif data
-  ExifContainer *container = [[ExifContainer alloc] init];
-  [container addCreationDate:[NSDate date]];
+  // Drain every transient full-size buffer before this callback returns
+  // instead of whenever AVFoundation's queue pool next drains — a capture
+  // burst otherwise stacks tens-of-MB autoreleased peaks and jetsams older
+  // 2GB iPads (MIN-3057).
+  @autoreleasepool {
+    // Add exif data
+    ExifContainer *container = [[ExifContainer alloc] init];
+    [container addCreationDate:[NSDate date]];
 
-  // Save GPS location only if provided
-  if (_saveGPSLocation) {
-    CLLocationManager *locationManager = [CLLocationManager new];
-    CLLocation *location = [locationManager location];
-    [container addLocation:location];
-  }
+    // Save GPS location only if provided
+    if (_saveGPSLocation) {
+      CLLocationManager *locationManager = [CLLocationManager new];
+      CLLocation *location = [locationManager location];
+      [container addLocation:location];
+    }
 
-  // Finalized bytes from the modern photo pipeline — this is the image after
-  // Smart HDR / Deep Fusion processing. Replaces the deprecated JPEG
-  // sample-buffer path, which delivered an unprocessed frame.
-  NSData *data = [photo fileDataRepresentation];
-  if (data == nil) {
-    _completion(nil, [FlutterError errorWithCode:@"CAPTURE ERROR" message:@"no photo data" details:@""]);
-    return;
-  }
+    // Finalized bytes from the modern photo pipeline — this is the image after
+    // Smart HDR / Deep Fusion processing. Replaces the deprecated JPEG
+    // sample-buffer path, which delivered an unprocessed frame.
+    NSData *data = [photo fileDataRepresentation];
+    if (data == nil) {
+      _completion(nil, [FlutterError errorWithCode:@"CAPTURE ERROR" message:@"no photo data" details:@""]);
+      return;
+    }
 
-  // Non-nil data doesn't guarantee a successful decode; a nil CGImage would
-  // later crash in imageByCroppingImage: (CGImageGetWidth / CGImageCreateWithImageInRect).
-  UIImage *decodedImage = [UIImage imageWithData:data];
-  if (decodedImage == nil || decodedImage.CGImage == nil) {
-    _completion(nil, [FlutterError errorWithCode:@"CAPTURE ERROR" message:@"invalid photo data" details:@""]);
-    return;
-  }
+    NSData *imageWithExif;
+    if (_aspectRatioType == Ratio4_3) {
+      // 4:3 equals the 4:3 sensor frame, so imageByCroppingImage: is a no-op
+      // (see its comment) — skip the full-resolution decode + quality-1.0
+      // re-encode round-trip entirely and rewrite metadata on the compressed
+      // bitstream (no pixel decode). Orientation must be stamped explicitly:
+      // the capture connection is pinned portrait, so the AVFoundation EXIF
+      // never reflects the real device orientation (MIN-3057).
+      NSMutableDictionary *metadata = [[container exifData] mutableCopy];
+      metadata[(NSString *)kCGImagePropertyOrientation] = @([self exifOrientationForCapture]);
+      imageWithExif = [self writeMetadataIntoImageData:data metadata:metadata];
+      if (imageWithExif == nil) {
+        _completion(nil, [FlutterError errorWithCode:@"CAPTURE ERROR" message:@"invalid photo data" details:@""]);
+        return;
+      }
+    } else {
+      // 16:9 / 1:1 trim the sensor frame, which needs pixel access: one decode
+      // + centered crop + re-encode. A nil CGImage would crash in
+      // imageByCroppingImage: (CGImageGetWidth / CGImageCreateWithImageInRect).
+      UIImage *decodedImage = [UIImage imageWithData:data];
+      if (decodedImage == nil || decodedImage.CGImage == nil) {
+        _completion(nil, [FlutterError errorWithCode:@"CAPTURE ERROR" message:@"invalid photo data" details:@""]);
+        return;
+      }
 
-  UIImage *image = [UIImage imageWithCGImage:decodedImage.CGImage
-                                       scale:1.0
-                                 orientation:[self getJpegOrientation]];
-  float originalWidth = image.size.width;
-  float originalHeight = image.size.height;
-  
-  float originalImageAspectRatio = originalWidth / originalHeight;
-  
-  float outputWidth = originalWidth;
-  float outputHeight = originalHeight;
-  if (originalImageAspectRatio != _aspectRatio) {
-    if (originalImageAspectRatio > _aspectRatio) {
-      outputWidth = originalHeight * _aspectRatio;
-    } else if (originalImageAspectRatio < _aspectRatio) {
-      outputHeight = originalWidth / _aspectRatio;
+      UIImage *image = [UIImage imageWithCGImage:decodedImage.CGImage
+                                           scale:1.0
+                                     orientation:[self getJpegOrientation]];
+
+      // The size argument is ignored (see imageByCroppingImage:) — the crop is
+      // derived from _aspectRatio in sensor pixel space.
+      UIImage *imageConverted = [self imageByCroppingImage:image toSize:CGSizeZero];
+
+      image = [UIImage imageWithCGImage:[imageConverted CGImage] scale:0.0 orientation:[self getJpegOrientation]];
+
+      // 0.9 is visually indistinguishable for this pipeline while roughly
+      // halving both the output file and the transient encode buffer that 1.0
+      // produced.
+      imageWithExif = [UIImageJPEGRepresentation(image, 0.9) addExif:container];
+    }
+
+    bool success = [imageWithExif writeToFile:_path atomically:YES];
+    if (!success) {
+      _completion(nil, [FlutterError errorWithCode:@"IOError" message:@"unable to write file" details:nil]);
+      return;
     }
   }
-  
-  UIImage *imageConverted = [self imageByCroppingImage:image toSize:CGSizeMake(outputWidth, outputHeight)];
-  
-  image = [UIImage imageWithCGImage:[imageConverted CGImage] scale:0.0 orientation:[self getJpegOrientation]];
-
-  NSData *imageWithExif = [UIImageJPEGRepresentation(image, 1.0) addExif:container];
-  
-  bool success = [imageWithExif writeToFile:_path atomically:YES];
-  if (!success) {
-    _completion(nil, [FlutterError errorWithCode:@"IOError" message:@"unable to write file" details:nil]);
-    return;
-  }
   _completionBlock();
-  
+}
+
+/// EXIF/TIFF orientation value (CGImagePropertyOrientation) equivalent to
+/// [getJpegOrientation], for paths that stamp metadata without building a
+/// UIImage.
+- (CGImagePropertyOrientation)exifOrientationForCapture {
+  switch ([self getJpegOrientation]) {
+    case UIImageOrientationUp: return kCGImagePropertyOrientationUp;
+    case UIImageOrientationDown: return kCGImagePropertyOrientationDown;
+    case UIImageOrientationLeft: return kCGImagePropertyOrientationLeft;
+    case UIImageOrientationRight: return kCGImagePropertyOrientationRight;
+    case UIImageOrientationUpMirrored: return kCGImagePropertyOrientationUpMirrored;
+    case UIImageOrientationDownMirrored: return kCGImagePropertyOrientationDownMirrored;
+    case UIImageOrientationLeftMirrored: return kCGImagePropertyOrientationLeftMirrored;
+    case UIImageOrientationRightMirrored: return kCGImagePropertyOrientationRightMirrored;
+  }
+  return kCGImagePropertyOrientationUp;
 }
 
 - (UIImage *)imageByCroppingImage:(UIImage *)image toSize:(CGSize)size {

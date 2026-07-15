@@ -61,6 +61,9 @@ class CamerawesomePlugin {
   static const EventChannel _physicalButtonChannel =
       EventChannel('camerawesome/physical_button');
 
+  static const EventChannel _thermalChannel =
+      EventChannel('camerawesome/thermal');
+
   static Stream<CameraOrientations>? _orientationStream;
 
   static Stream<CameraPhysicalButton>? _physicalButtonStream;
@@ -68,6 +71,8 @@ class CamerawesomePlugin {
   static Stream<bool>? _permissionsStream;
 
   static Stream<Map<String, dynamic>>? _imagesStream;
+
+  static Stream<String>? _thermalStream;
 
   static CameraRunningState currentState = CameraRunningState.stopped;
 
@@ -154,6 +159,19 @@ class CamerawesomePlugin {
       sink.add(physicalButton!);
     }));
     return _physicalButtonStream;
+  }
+
+  /// Effective thermal level of the device while the camera runs (MIN-3056):
+  /// `"nominal" | "fair" | "serious" | "critical" | "shutdown"` — the max of
+  /// `NSProcessInfo.thermalState` and the capture device's
+  /// `AVCaptureSystemPressureState`. State-channel semantics: a new
+  /// subscription immediately receives the current level, then a value on
+  /// every change. iOS-only — Android never emits and the stream stays silent.
+  static Stream<String> listenThermalState() {
+    _thermalStream ??= _thermalChannel
+        .receiveBroadcastStream('thermalChannel')
+        .map((dynamic data) => data as String);
+    return _thermalStream!;
   }
 
   static Stream<bool>? listenPermissionResult() {

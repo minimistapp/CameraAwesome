@@ -115,15 +115,23 @@ NSInteger const MaxPendingProcessedImage = 4;
   // calculate time interval between latest emitted frame
   NSDate *nowDate = [NSDate date];
   NSTimeInterval secondsBetween = [nowDate timeIntervalSinceDate:_latestEmittedFrame];
-  
-  // fps limit check, ignored if nil or == 0
-  if (_maxFramesPerSecond && _maxFramesPerSecond > 0) {
-    if (secondsBetween <= (1 / _maxFramesPerSecond)) {
+
+  // Effective limit = the requested rate, further capped by the thermal
+  // ceiling when one is active (MIN-3056). Either may be 0/unset (no limit);
+  // when only the ceiling is set it applies alone.
+  float effectiveMaxFps = _maxFramesPerSecond;
+  if (_thermalMaxFramesPerSecond > 0 && (effectiveMaxFps <= 0 || _thermalMaxFramesPerSecond < effectiveMaxFps)) {
+    effectiveMaxFps = _thermalMaxFramesPerSecond;
+  }
+
+  // fps limit check, ignored if == 0
+  if (effectiveMaxFps > 0) {
+    if (secondsBetween <= (1 / effectiveMaxFps)) {
       // skip image because out of time
       return YES;
     }
   }
-  
+
   return NO;
 }
 

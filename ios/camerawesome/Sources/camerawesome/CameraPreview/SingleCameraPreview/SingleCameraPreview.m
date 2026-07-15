@@ -112,9 +112,10 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   _videoController = [[VideoController alloc] init];
   _imageStreamController = [[ImageStreamController alloc] initWithStreamImages:streamImages];
   _motionController = [[MotionController alloc] init];
+  _thermalController = [[ThermalController alloc] init];
   _locationController = [[LocationController alloc] init];
   _physicalButtonController = [[PhysicalButtonController alloc] init];
-  
+
   [_motionController startMotionDetection];
 
   // Keep the capture connection locked to portrait so the preview texture
@@ -125,6 +126,19 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
       [weakSelf.captureConnection setVideoOrientation:AVCaptureVideoOrientationPortrait];
     }
   };
+
+  // Thermal governor (MIN-3056): back off the capture frame rate, the photo
+  // quality prioritization and the analysis throttle as the effective thermal
+  // level rises. The callback may fire on an arbitrary thread — the handler
+  // hops onto _dispatchQueue / the main queue itself.
+  _thermalController.onThermalLevelChanged = ^(CameraThermalLevel level) {
+    [weakSelf handleThermalLevelChanged:level];
+  };
+  [_thermalController start];
+  // initCameraPreview: ran before this controller existed (its bind call was
+  // a nil no-op on this first pass), so bind the already-selected device here.
+  // Safe to repeat: bindToCaptureDevice: unbinds any previous device first.
+  [_thermalController bindToCaptureDevice:_captureDevice];
 
   if (enablePhysicalButton) {
     [_physicalButtonController startListening];
@@ -201,6 +215,12 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
     [self->_focusStableCompletions removeAllObjects];
   });
 
+  // Drop the thermal-pressure KVO on the outgoing device too, before the
+  // reassignment below; the new device is bound at the end of this method
+  // (MIN-3056). Nil no-op on the very first pass (the controller is created
+  // after this method in initWithCameraSensor:, which binds explicitly).
+  [_thermalController unbindCaptureDevice];
+
   NSError *error;
   _captureDevice = [AVCaptureDevice deviceWithUniqueID:[self selectAvailableCamera:sensor]];
   _captureVideoInput = [AVCaptureDeviceInput deviceInputWithDevice:_captureDevice error:&error];
@@ -273,6 +293,11 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // after, in initWithCameraSensor:) so this is a no-op then; on a sensor
   // switch it reconnects the layer to the new device's video port.
   [self attachPreviewLayerConnection];
+
+  // Watch the new device's systemPressureState (MIN-3056). Nil no-op on the
+  // very first call (see initWithCameraSensor:, which binds after creating
+  // the controller); on a sensor switch this rebinds to the new device.
+  [_thermalController bindToCaptureDevice:_captureDevice];
 }
 
 /// Wire (or rewire) the native AVCaptureVideoPreviewLayer to the current video
@@ -411,6 +436,9 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // — so every camera teardown leaked a permanent 5 Hz device-motion (gyro)
   // subscription. Stopping releases the handler and breaks that retain cycle.
   [self.motionController stopMotionDetection];
+  // Same defensive stance for the thermal governor (MIN-3056): stop — never
+  // start — from dealloc. Drops the ProcessInfo observer + device KVO.
+  [self.thermalController stop];
 }
 
 /// Ceiling (sensor-native width, px) for the 4:3 preview device format.
@@ -503,9 +531,10 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
     return;
   }
 
-  // Long-edge cap for the analysis buffers (≈ the prior streaming resolution,
-  // so barcode/AprilTag behaviour is unchanged — only the preview gets sharper).
-  const int32_t kTargetLongEdge = 1280;
+  // Long-edge cap for the analysis buffers. 1024 for Android parity — the app
+  // requests nv21 analysis frames at width 1024 there — so both platforms feed
+  // the same-sized frames downstream (MIN-3056).
+  const int32_t kTargetLongEdge = 1024;
   int32_t g = SCPGreatestCommonDivisor(dims.width, dims.height);
   int32_t ratioW = dims.width / g;   // aspect in lowest terms
   int32_t ratioH = dims.height / g;
@@ -514,7 +543,15 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
   int32_t scaledW = ratioW * multiple;
   int32_t scaledH = ratioH * multiple;
 
-  if (multiple >= 1 && scaledW < dims.width && scaledH < dims.height) {
+  BOOL willDownscale = multiple >= 1 && scaledW < dims.width && scaledH < dims.height;
+  // Trace the downscale decision (requested vs delivered buffer size). Runs on
+  // preset/format changes only, never per frame.
+  NSLog(@"applyAnalysisOutputDownscale: long-edge cap %d, requested %dx%d, delivering %dx%d (active format %dx%d)",
+        kTargetLongEdge, scaledW, scaledH,
+        willDownscale ? scaledW : dims.width,
+        willDownscale ? scaledH : dims.height,
+        dims.width, dims.height);
+  if (willDownscale) {
     // Exact-aspect downscale (scaledW:scaledH == dims.width:dims.height).
     [self setAnalysisPixelFormat32BGRAWithWidth:scaledW height:scaledH];
   } else {
@@ -524,23 +561,44 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
   }
 }
 
-/// Max sustained capture rate while the analysis stream drives the session.
-/// 30fps is indistinguishable in the scanner preview but halves the sensor/ISP
-/// duty cycle vs the 60fps default of many iPad 4:3 formats — the dominant
-/// sustained thermal load on iPads (MIN-2747).
+/// Max sustained capture rate at nominal thermal level. 30fps is
+/// indistinguishable in the scanner preview but halves the sensor/ISP duty
+/// cycle vs the 60fps default of many iPad 4:3 formats — the dominant
+/// sustained thermal load on iPads (MIN-2747). Under thermal pressure the cap
+/// backs off further — see currentMaxFpsForThermalLevel (MIN-3056).
 static const int32_t kStreamingMaxFps = 30;
 
-/// Pin the capture frame rate while live image-analysis streaming drives the
-/// session (MIN-2747). Setting activeFormat (the 4:3 InputPriority path) — or a
-/// preset switch changing the format — resets activeVideoMin/MaxFrameDuration
-/// to the format's defaults, and nothing re-pinned them (VideoController only
-/// sets fps while recording), so the sensor was free to run at the format's max
-/// rate. Capping the *min* duration bounds the rate at kStreamingMaxFps while
-/// leaving the max duration free, so auto-exposure can still drop the rate in
-/// low light. No-op outside the streaming flow: video recording manages fps
-/// itself and must not be clamped here.
-- (void)applyStreamingFrameRateCap {
-  if (_captureDevice == nil || !_imageStreamController.streamImages) {
+/// Thermal fps ladder (MIN-3056): nominal/fair keep the nominal cap (30),
+/// serious drops to 24, critical/shutdown to 15.
+- (int32_t)currentMaxFpsForThermalLevel {
+  CameraThermalLevel level = _thermalController != nil ? _thermalController.currentLevel : CameraThermalLevelNominal;
+  switch (level) {
+    case CameraThermalLevelSerious:
+      return 24;
+    case CameraThermalLevelCritical:
+    case CameraThermalLevelShutdown:
+      return 15;
+    case CameraThermalLevelNominal:
+    case CameraThermalLevelFair:
+      return kStreamingMaxFps;
+  }
+  return kStreamingMaxFps;
+}
+
+/// Pin the capture frame rate whenever video recording isn't driving the
+/// session (MIN-2747, MIN-3056). Setting activeFormat (the 4:3 InputPriority
+/// path) — or a preset switch changing the format — resets
+/// activeVideoMin/MaxFrameDuration to the format's defaults, and nothing
+/// re-pinned them (VideoController only sets fps while recording), so the
+/// sensor was free to run at the format's max rate. The cap used to apply only
+/// while the analysis stream was enabled; it is now unconditional when not
+/// recording, because a stopped analysis stream must not leave the session
+/// uncapped (MIN-3056) — the preview keeps running either way. Capping the
+/// *min* duration bounds the rate while leaving the max duration free, so
+/// auto-exposure can still drop the rate in low light. Video recording manages
+/// fps itself and must not be clamped here.
+- (void)applyFrameRateCap {
+  if (_captureDevice == nil) {
     return;
   }
   if (_captureMode == Video || _videoController.isRecording) {
@@ -554,14 +612,14 @@ static const int32_t kStreamingMaxFps = 30;
   // have minFrameRate above the cap). When the format can't exceed the cap
   // anyway, reuse its own native minFrameDuration — frame durations must fall
   // exactly inside the supported range or AVFoundation throws.
-  double cappedFps = MIN((double)kStreamingMaxFps, range.maxFrameRate);
+  double cappedFps = MIN((double)[self currentMaxFpsForThermalLevel], range.maxFrameRate);
   cappedFps = MAX(cappedFps, range.minFrameRate);
   CMTime minFrameDuration = (cappedFps >= range.maxFrameRate)
       ? range.minFrameDuration
       : CMTimeMake(1, (int32_t)cappedFps);
   NSError *error = nil;
   if (![_captureDevice lockForConfiguration:&error]) {
-    NSLog(@"applyStreamingFrameRateCap: lockForConfiguration failed: %@", error.localizedDescription);
+    NSLog(@"applyFrameRateCap: lockForConfiguration failed: %@", error.localizedDescription);
     return;
   }
   @try {
@@ -570,10 +628,39 @@ static const int32_t kStreamingMaxFps = 30;
     // Same defensive stance as the analysis pixel-format set (MIN-2667): a
     // rejected duration must never crash camera setup — worst case we keep the
     // format's default rate.
-    NSLog(@"applyStreamingFrameRateCap: rejected frame duration: %@", exception.reason);
+    NSLog(@"applyFrameRateCap: rejected frame duration: %@", exception.reason);
   } @finally {
     [_captureDevice unlockForConfiguration];
   }
+}
+
+/// Thermal governor reaction (MIN-3056). [level] may be reported on an
+/// arbitrary thread — device/session work hops onto the serial capture queue,
+/// the Flutter sink onto the main queue (matching ImageStreamController's
+/// sink dispatch).
+- (void)handleThermalLevelChanged:(CameraThermalLevel)level {
+  dispatch_async(_dispatchQueue, ^{
+    // (a) Re-pin the frame-rate cap with the new thermal ceiling
+    //     (30 → 24 → 15 fps).
+    [self applyFrameRateCap];
+    // (b) Throttle the analysis stream: nominal/fair → no extra ceiling,
+    //     serious → 3 fps, critical/shutdown → 1 fps (0 = unthrottled).
+    float analysisCeiling = 0;
+    if (level == CameraThermalLevelSerious) {
+      analysisCeiling = 3;
+    } else if (level >= CameraThermalLevelCritical) {
+      analysisCeiling = 1;
+    }
+    self->_imageStreamController.thermalMaxFramesPerSecond = analysisCeiling;
+  });
+  // (c) Forward the level to Dart. Read the sink on the main queue at delivery
+  // time so a sink swapped in by setupCameraSensors is honoured.
+  NSString *levelString = CameraThermalLevelString(level);
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (self->_thermalEventSink != nil) {
+      self->_thermalEventSink(levelString);
+    }
+  });
 }
 
 /// Applies 32BGRA to the analysis data output, optionally pinned to
@@ -760,8 +847,8 @@ static const int32_t kStreamingMaxFps = 30;
   [self applyAnalysisOutputDownscale];
 
   // The format/preset change above reset the device's frame durations to the
-  // format defaults — re-pin the streaming rate cap (MIN-2747).
-  [self applyStreamingFrameRateCap];
+  // format defaults — re-pin the rate cap (MIN-2747).
+  [self applyFrameRateCap];
 }
 
 /// Get current video prewiew size
@@ -789,6 +876,10 @@ static const int32_t kStreamingMaxFps = 30;
   // Deterministic counterpart to the dealloc stop (MIN-2747) — dealloc timing
   // depends on the last reference, dispose is the plugin's explicit teardown.
   [self.motionController stopMotionDetection];
+  // Thermal governor teardown (MIN-3056): unbind the device KVO and drop the
+  // ProcessInfo thermal observer (stop also unbinds; explicit for clarity).
+  [self.thermalController unbindCaptureDevice];
+  [self.thermalController stop];
   // Synchronously on _dispatchQueue so teardown can't race in-flight KVO/timeout
   // blocks. dispose runs on the platform thread, never on _dispatchQueue.
   dispatch_sync(_dispatchQueue, ^{
@@ -888,10 +979,10 @@ static const int32_t kStreamingMaxFps = 30;
   [self setBestPreviewQuality];
   
   [_captureSession commitConfiguration];
-  // Re-pin the streaming fps cap after the commit: a preset set inside the
+  // Re-pin the fps cap after the commit: a preset set inside the
   // begin/commit block only takes effect now, and the format switch it
   // triggers resets the device's frame durations (MIN-2747).
-  [self applyStreamingFrameRateCap];
+  [self applyFrameRateCap];
   if (sessionIsRunning) {
     dispatch_async(_dispatchQueue, ^{
       [self->_captureSession startRunning];
@@ -1389,8 +1480,13 @@ static const int32_t kStreamingMaxFps = 30;
   // Opt into the modern processing pipeline (Smart HDR / Deep Fusion). Balanced
   // keeps shutter latency low while still gaining most of the quality — see
   // maxPhotoQualityPrioritization set on the output in initCameraPreview.
+  // Under thermal/system pressure (≥ serious) drop to Speed: the cheapest
+  // processing path, trading Deep Fusion for markedly less ISP work (MIN-3056).
   if (@available(iOS 13.0, *)) {
-    settings.photoQualityPrioritization = AVCapturePhotoQualityPrioritizationBalanced;
+    BOOL thermallyLimited = _thermalController != nil && _thermalController.currentLevel >= CameraThermalLevelSerious;
+    settings.photoQualityPrioritization = thermallyLimited
+        ? AVCapturePhotoQualityPrioritizationSpeed
+        : AVCapturePhotoQualityPrioritizationBalanced;
   }
 
   [_capturePhotoOutput capturePhotoWithSettings:settings

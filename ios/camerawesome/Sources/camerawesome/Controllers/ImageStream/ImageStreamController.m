@@ -7,7 +7,15 @@
 
 #import "ImageStreamController.h"
 
-@implementation ImageStreamController
+#import <os/lock.h>
+
+@implementation ImageStreamController {
+  // _processingImage is a read-modify-write counter touched from the capture
+  // queue (increment, copy-failure drop) and the main thread (Dart ack, sink
+  // drops); an unsynchronized RMW can lose a decrement and ratchet
+  // overflowCrashingGuard into skipping every frame.
+  os_unfair_lock _processingImageLock;
+}
 
 NSInteger const MaxPendingProcessedImage = 4;
 
@@ -15,6 +23,7 @@ NSInteger const MaxPendingProcessedImage = 4;
   self = [super init];
   _streamImages = streamImages;
   _processingImage = 0;
+  _processingImageLock = OS_UNFAIR_LOCK_INIT;
   return self;
 }
 
@@ -31,8 +40,10 @@ NSInteger const MaxPendingProcessedImage = 4;
     return;
   }
   
+  os_unfair_lock_lock(&_processingImageLock);
   _processingImage++;
-  
+  os_unfair_lock_unlock(&_processingImageLock);
+
   CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
   CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
   
@@ -166,13 +177,17 @@ NSInteger const MaxPendingProcessedImage = 4;
 }
 
 - (bool)overflowCrashingGuard {
+  os_unfair_lock_lock(&_processingImageLock);
+  NSInteger pending = _processingImage;
+  os_unfair_lock_unlock(&_processingImageLock);
+
   // overflow crash prevent condition
-  if (_processingImage > MaxPendingProcessedImage) {
+  if (pending > MaxPendingProcessedImage) {
     // too many frame are pending processing, skipping...
     // this prevent crashing on older phones like iPhone 6, 7...
     return YES;
   }
-  
+
   return NO;
 }
 
@@ -180,9 +195,11 @@ NSInteger const MaxPendingProcessedImage = 4;
 // rebalance the pending counter so dropped frames can't ratchet the stream into
 // a permanent overflowCrashingGuard skip.
 - (void)droppedFrameFromStream {
+  os_unfair_lock_lock(&_processingImageLock);
   if (_processingImage > 0) {
     _processingImage--;
   }
+  os_unfair_lock_unlock(&_processingImageLock);
 }
 
 // This is used to know the exact time when the image was received on the Flutter part
@@ -191,9 +208,11 @@ NSInteger const MaxPendingProcessedImage = 4;
   _latestEmittedFrame = [NSDate date];
   
   // used for the overflow prevent crashing condition
+  os_unfair_lock_lock(&_processingImageLock);
   if (_processingImage >= 0) {
     _processingImage--;
   }
+  os_unfair_lock_unlock(&_processingImageLock);
 }
 
 #pragma mark - Setters

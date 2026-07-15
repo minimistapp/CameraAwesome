@@ -356,7 +356,10 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
 - (void)captureOutput:(AVCaptureOutput *)output
     didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)metadataObjects
               fromConnection:(AVCaptureConnection *)connection {
-  if (self.qrCodeEventSink == nil || metadataObjects.count == 0) {
+  // Only touch qrCodeEventSink on the main queue (it's set/cleared there): this
+  // delegate runs on _dispatchQueue, so the sink nil-check lives inside the
+  // main-queue block below, not here (CodeRabbit, MIN-3077).
+  if (metadataObjects.count == 0) {
     return;
   }
   NSString *value = nil;

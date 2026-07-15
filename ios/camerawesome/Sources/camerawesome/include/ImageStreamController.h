@@ -16,6 +16,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property(readonly, nonatomic) bool streamImages;
 @property(readonly, nonatomic) float maxFramesPerSecond;
+/// Thermal ceiling on the emitted analysis rate (MIN-3056). 0 = no ceiling.
+/// Combined with [maxFramesPerSecond] by taking the lower of the two; when
+/// [maxFramesPerSecond] is 0/unset the ceiling applies alone. Set by
+/// SingleCameraPreview's thermal governor.
+@property(nonatomic, assign) float thermalMaxFramesPerSecond;
 @property(readonly, nonatomic) NSDate *latestEmittedFrame;
 @property(nonatomic) FlutterEventSink imageStreamEventSink;
 

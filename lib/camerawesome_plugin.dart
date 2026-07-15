@@ -61,6 +61,9 @@ class CamerawesomePlugin {
   static const EventChannel _physicalButtonChannel =
       EventChannel('camerawesome/physical_button');
 
+  static const EventChannel _thermalChannel =
+      EventChannel('camerawesome/thermal');
+
   static Stream<CameraOrientations>? _orientationStream;
 
   static Stream<CameraPhysicalButton>? _physicalButtonStream;
@@ -68,6 +71,12 @@ class CamerawesomePlugin {
   static Stream<bool>? _permissionsStream;
 
   static Stream<Map<String, dynamic>>? _imagesStream;
+
+  static Stream<String>? _thermalStream;
+
+  /// Last level seen on the thermal channel — replayed to late subscribers
+  /// (see [listenThermalState]).
+  static String? _lastThermalLevel;
 
   static CameraRunningState currentState = CameraRunningState.stopped;
 
@@ -154,6 +163,28 @@ class CamerawesomePlugin {
       sink.add(physicalButton!);
     }));
     return _physicalButtonStream;
+  }
+
+  /// Effective thermal level of the device while the camera runs (MIN-3056):
+  /// `"nominal" | "fair" | "serious" | "critical" | "shutdown"` — the max of
+  /// `NSProcessInfo.thermalState` and the capture device's
+  /// `AVCaptureSystemPressureState`. State-channel semantics: every
+  /// subscription immediately receives the current level (the native side
+  /// emits on the 0→1 listener transition; the last seen level is replayed
+  /// to later subscribers Dart-side), then a value on every change. The same
+  /// level can therefore be delivered twice in a row — dedupe if that
+  /// matters. iOS-only: on other platforms the stream completes empty (the
+  /// channel is never registered there, and listening would surface a
+  /// MissingPluginException as a stream error).
+  static Stream<String> listenThermalState() async* {
+    if (!Platform.isIOS) return;
+    final last = _lastThermalLevel;
+    if (last != null) yield last;
+    yield* _thermalStream ??= _thermalChannel.receiveBroadcastStream('thermalChannel').map((dynamic data) {
+      final level = data as String;
+      _lastThermalLevel = level;
+      return level;
+    });
   }
 
   static Stream<bool>? listenPermissionResult() {

@@ -13,7 +13,6 @@
 #import <Foundation/Foundation.h>
 
 #import "MotionController.h"
-#import "ThermalController.h"
 #import "LocationController.h"
 #import "VideoController.h"
 #import "ImageStreamController.h"
@@ -61,7 +60,6 @@ AVCaptureAudioDataOutputSampleBufferDelegate>
 @property(readonly, nonatomic) CGSize currentPreviewSize;
 @property(readonly, nonatomic) ImageStreamController *imageStreamController;
 @property(readonly, nonatomic) MotionController *motionController;
-@property(readonly, nonatomic) ThermalController *thermalController;
 @property(readonly, nonatomic) LocationController *locationController;
 @property(readonly, nonatomic) VideoController *videoController;
 @property(readonly, nonatomic) PhysicalButtonController *physicalButtonController;
@@ -74,11 +72,6 @@ AVCaptureAudioDataOutputSampleBufferDelegate>
 /// Wraps a UIDeviceOrientation value; set to nil to resume sensor-driven
 /// behavior. See [CamerawesomePlugin setCaptureOrientationOverrideOrientation:].
 @property(nonatomic, strong, nullable) NSNumber *captureOrientationOverride;
-
-/// Flutter sink for the "camerawesome/thermal" event channel (MIN-3056).
-/// Receives the lowercase effective-thermal-level string on every change,
-/// always on the main queue.
-@property(nonatomic, copy, nullable) FlutterEventSink thermalEventSink;
 
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
                         videoOptions:(nullable CupertinoVideoOptions *)videoOptions
@@ -119,7 +112,6 @@ AVCaptureAudioDataOutputSampleBufferDelegate>
 - (CGSize)getEffectivPreviewSize;
 - (void)setUpCaptureSessionForAudioError:(nonnull void (^)(NSError *))error;
 - (void)setBrightness:(NSNumber *)brightness error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error;
-- (void)applyFrameRateCap;
 @end
 
 NS_ASSUME_NONNULL_END

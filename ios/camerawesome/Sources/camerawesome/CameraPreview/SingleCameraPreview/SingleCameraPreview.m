@@ -286,6 +286,30 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
     if ([_captureDevice isSmoothAutoFocusSupported]) {
       [_captureDevice setSmoothAutoFocusEnabled:YES];
     }
+
+    // MIN-3071: restrict automatic primary-constituent switching to zoom
+    // changes only. On a virtual multi-camera back device (triple / dual-wide)
+    // the default `.auto` behavior lets AVFoundation do a focus/exposure-driven
+    // "fallback" switch — e.g. hop wide -> ultra-wide when continuous AF meets a
+    // subject closer than the wide's minimum focus distance — producing a
+    // visible FOV jump and quality drop at a constant 1x zoom (reported as a
+    // tap-to-focus "sensor switch"). `.restricted` with only `.videoZoomChanged`
+    // keeps the explicit 0.5x/2x/4x zoom presets switching constituents (they
+    // set `videoZoomFactor` directly; zoom-driven switches stay allowed) while
+    // suppressing the focus/exposure-driven fallbacks — we intentionally omit
+    // the `.focusModeChanged` / `.exposureModeChanged` conditions that the app's
+    // continuous tap-to-focus would otherwise trip. The setter throws on devices
+    // that don't support constituent switching (single-lens phones, the front
+    // camera), so gate on the active behavior not being `.unsupported`.
+    if (@available(iOS 15.0, *)) {
+      if (_captureDevice.activePrimaryConstituentDeviceSwitchingBehavior !=
+          AVCapturePrimaryConstituentDeviceSwitchingBehaviorUnsupported) {
+        [_captureDevice
+            setPrimaryConstituentDeviceSwitchingBehavior:AVCapturePrimaryConstituentDeviceSwitchingBehaviorRestricted
+                   restrictedSwitchingBehaviorConditions:AVCapturePrimaryConstituentDeviceRestrictedSwitchingBehaviorConditionVideoZoomChanged];
+      }
+    }
+
     [_captureDevice unlockForConfiguration];
   }
 

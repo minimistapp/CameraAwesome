@@ -889,7 +889,7 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
 
   // Keep the sensor rate pinned across stream (re)configuration — a stopped
   // analysis stream must not leave the session uncapped (MIN-3056).
-  [self.camera applyFrameRateCap];
+  [self.camera applyFrameRateCapAsync];
 }
 
 - (void)startAnalysisWithError:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
@@ -906,7 +906,7 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
   [self.camera.imageStreamController setStreamImages:true];
 
   // Re-pin the frame-rate cap now that the stream is live (MIN-3056).
-  [self.camera applyFrameRateCap];
+  [self.camera applyFrameRateCapAsync];
 }
 
 - (void)stopAnalysisWithError:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
@@ -924,7 +924,7 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
 
   // Keep the cap applied while only the preview runs — stopping analysis must
   // not release the sensor back to the format's max rate (MIN-3056).
-  [self.camera applyFrameRateCap];
+  [self.camera applyFrameRateCapAsync];
 }
 
 - (void)isVideoRecordingAndImageAnalysisSupportedSensor:(PigeonSensorPosition)sensor completion:(void (^)(NSNumber *_Nullable, FlutterError *_Nullable))completion {

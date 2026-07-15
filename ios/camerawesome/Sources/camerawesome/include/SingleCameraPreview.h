@@ -120,6 +120,7 @@ AVCaptureAudioDataOutputSampleBufferDelegate>
 - (void)setUpCaptureSessionForAudioError:(nonnull void (^)(NSError *))error;
 - (void)setBrightness:(NSNumber *)brightness error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error;
 - (void)applyFrameRateCap;
+- (void)applyFrameRateCapAsync;
 @end
 
 NS_ASSUME_NONNULL_END

@@ -73,8 +73,12 @@ NSString *CameraThermalLevelString(CameraThermalLevel level) {
     [self recomputeLevel];
     return;
   }
-  _boundDevice = device;
-  _observingPressure = YES;
+  // The pointer write shares the level lock: computeEffectiveLevel reads
+  // _boundDevice from arbitrary KVO/notification threads.
+  @synchronized(self) {
+    _boundDevice = device;
+    _observingPressure = YES;
+  }
   // KVO does not retain the observer; teardown is guarded in
   // unbindCaptureDevice (same @try pattern as the focus-stable observation).
   [device addObserver:self
@@ -85,13 +89,22 @@ NSString *CameraThermalLevelString(CameraThermalLevel level) {
 }
 
 - (void)unbindCaptureDevice {
-  if (_observingPressure) {
-    _observingPressure = NO;
+  // Take the pointer under the lock, tear down the observation outside it —
+  // removeObserver never re-enters the level path, but keeping lock scope
+  // minimal avoids ever holding it across AVFoundation calls.
+  AVCaptureDevice *device = nil;
+  @synchronized(self) {
+    if (_observingPressure) {
+      _observingPressure = NO;
+      device = _boundDevice;
+    }
+    _boundDevice = nil;
+  }
+  if (device != nil) {
     @try {
-      [_boundDevice removeObserver:self forKeyPath:@"systemPressureState" context:ThermalPressureContext];
+      [device removeObserver:self forKeyPath:@"systemPressureState" context:ThermalPressureContext];
     } @catch (NSException *exception) { /* already removed */ }
   }
-  _boundDevice = nil;
 }
 
 - (void)dealloc {
@@ -156,7 +169,12 @@ NSString *CameraThermalLevelString(CameraThermalLevel level) {
   }
 
   NSInteger pressureLevel = CameraThermalLevelNominal;
-  AVCaptureDevice *device = _boundDevice;
+  // Same lock as the writes in bind/unbind — this runs on arbitrary
+  // KVO/notification threads while a sensor switch may be rebinding.
+  AVCaptureDevice *device;
+  @synchronized(self) {
+    device = _boundDevice;
+  }
   if (device != nil) {
     AVCaptureSystemPressureLevel level = device.systemPressureState.level;
     if ([level isEqualToString:AVCaptureSystemPressureLevelFair]) {

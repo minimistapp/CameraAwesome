@@ -634,6 +634,15 @@ static const int32_t kStreamingMaxFps = 30;
   }
 }
 
+/// Async variant of applyFrameRateCap for platform-thread callers (the pigeon
+/// analysis handlers): hops onto the serial capture queue so the device lock
+/// never runs on — and can never briefly block — the main thread.
+- (void)applyFrameRateCapAsync {
+  dispatch_async(_dispatchQueue, ^{
+    [self applyFrameRateCap];
+  });
+}
+
 /// Thermal governor reaction (MIN-3056). [level] may be reported on an
 /// arbitrary thread — device/session work hops onto the serial capture queue,
 /// the Flutter sink onto the main queue (matching ImageStreamController's

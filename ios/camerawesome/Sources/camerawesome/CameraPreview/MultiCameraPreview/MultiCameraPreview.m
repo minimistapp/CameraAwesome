@@ -471,6 +471,26 @@
     // Create settings instance
     AVCapturePhotoSettings *settings = [AVCapturePhotoSettings photoSettings];
     [settings setHighResolutionPhotoEnabled:YES];
+
+    // Capture the still at the sensor's full size rather than the streaming
+    // format's smaller ceiling, mirroring the single-camera path (MIN-3066).
+    // Derive the max from THIS device's active format so the value is always a
+    // member of its supportedMaxPhotoDimensions (an out-of-set value throws).
+    if (@available(iOS 16.0, *)) {
+      CMVideoDimensions maxDims = {0, 0};
+      for (NSValue *value in self.devices[i].device.activeFormat.supportedMaxPhotoDimensions) {
+        CMVideoDimensions d = {0, 0};
+        [value getValue:&d size:sizeof(d)];
+        if ((int64_t)d.width * d.height > (int64_t)maxDims.width * maxDims.height) {
+          maxDims = d;
+        }
+      }
+      if (maxDims.width > 0 && maxDims.height > 0) {
+        self.devices[i].capturePhotoOutput.maxPhotoDimensions = maxDims;
+        settings.maxPhotoDimensions = maxDims;
+      }
+    }
+
     [self.devices[i].capturePhotoOutput setPhotoSettingsForSceneMonitoring:settings];
     
     [self.devices[i].capturePhotoOutput capturePhotoWithSettings:settings

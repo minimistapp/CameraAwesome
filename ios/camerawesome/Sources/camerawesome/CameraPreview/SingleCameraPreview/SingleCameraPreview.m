@@ -249,6 +249,9 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   
   // Creating photo output
   _capturePhotoOutput = [AVCapturePhotoOutput new];
+  // Pre-iOS-16 still-resolution ceiling. On iOS 16+ the ceiling is raised to the
+  // active format's full sensor size per-format in -applyMaxPhotoDimensions
+  // (MIN-3066); this flag stays as the fallback for older iOS.
   [_capturePhotoOutput setHighResolutionCaptureEnabled:YES];
   // Allow the modern processing pipeline up to "balanced" (Smart HDR / Deep
   // Fusion). Must be set before the session starts running. Per-shot requests
@@ -472,21 +475,66 @@ static BOOL SCPFormatIsLowerPower(AVCaptureDeviceFormat *a, AVCaptureDeviceForma
   return aMaxFps < bMaxFps;
 }
 
-/// Largest 4:3 device format up to [kPreviewFourThreeMaxWidth] — drives a sharp
-/// 4:3 preview layer. Same-sized variants resolve to the lower-power one (see
-/// SCPFormatIsLowerPower). Returns nil if the device exposes no 4:3 format in
-/// that range, in which case the caller falls back to the 640x480 preset.
+/// The widest still photo the format can capture, in pixels. Full-sensor stills
+/// come from formats whose photo pipeline reaches the sensor's native size;
+/// binned / low-power streaming formats cap it well below (e.g. ~2016 wide).
+/// iOS 16+ gives the definitive set via -supportedMaxPhotoDimensions (we take
+/// the largest entry); older iOS uses the deprecated
+/// -highResolutionStillImageDimensions. Used to pick a streaming format that can
+/// still deliver a full-resolution photo (MIN-3066).
+static int32_t SCPFormatMaxPhotoWidth(AVCaptureDeviceFormat *format) {
+  if (@available(iOS 16.0, *)) {
+    int32_t widest = 0;
+    for (NSValue *value in format.supportedMaxPhotoDimensions) {
+      CMVideoDimensions d = {0, 0};
+      [value getValue:&d size:sizeof(d)];
+      if (d.width > widest) {
+        widest = d.width;
+      }
+    }
+    if (widest > 0) {
+      return widest;
+    }
+  }
+  return format.highResolutionStillImageDimensions.width;
+}
+
+/// The 4:3 device format that drives the streaming preview + analysis. Ranked:
+///   1. largest still-capture width — so the still isn't capped below the
+///      sensor while this format is active (MIN-3066); binned/low-power formats
+///      lose here because they can't reach full sensor,
+///   2. largest video width up to [kPreviewFourThreeMaxWidth] for a sharp
+///      preview layer,
+///   3. lower-power variant among otherwise-equal formats (MIN-2747) — so the
+///      thermal preference survives as a tiebreak, not a hard rule.
+/// Video width stays capped at [kPreviewFourThreeMaxWidth] (streaming/analysis
+/// memory + heat); only the still ceiling is allowed to reach the sensor, via
+/// -applyMaxPhotoDimensions. Returns nil if the device exposes no 4:3 format in
+/// range, in which case the caller falls back to the 640x480 preset.
 - (AVCaptureDeviceFormat *)bestStreamingFourThreeFormat {
   AVCaptureDeviceFormat *best = nil;
-  int32_t bestWidth = 0;
+  int32_t bestVideoWidth = 0;
+  int32_t bestStillWidth = 0;
   for (AVCaptureDeviceFormat *format in _captureDevice.formats) {
     CMVideoDimensions dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
     if (dims.width * 3 != dims.height * 4) continue;                       // 4:3 only
     if (dims.width <= 640 || dims.width > kPreviewFourThreeMaxWidth) continue;
-    if (best == nil || dims.width > bestWidth ||
-        (dims.width == bestWidth && SCPFormatIsLowerPower(format, best))) {
-      bestWidth = dims.width;
+
+    int32_t stillWidth = SCPFormatMaxPhotoWidth(format);
+    BOOL better;
+    if (best == nil) {
+      better = YES;
+    } else if (stillWidth != bestStillWidth) {
+      better = stillWidth > bestStillWidth;
+    } else if (dims.width != bestVideoWidth) {
+      better = dims.width > bestVideoWidth;
+    } else {
+      better = SCPFormatIsLowerPower(format, best);
+    }
+    if (better) {
       best = format;
+      bestVideoWidth = dims.width;
+      bestStillWidth = stillWidth;
     }
   }
   return best;
@@ -732,6 +780,47 @@ static const int32_t kStreamingMaxFps = 30;
   }
 }
 
+/// Raise the still-capture ceiling to the sensor's full size for the format now
+/// active, decoupling photo resolution from the (deliberately small) streaming/
+/// analysis format (MIN-3066). While the scanner streams, the session runs on a
+/// ≤ kPreviewFourThreeMaxWidth activeFormat; without this, AVCapturePhotoOutput
+/// inherits that format's still ceiling (~2016×1512, → 1512² once 1:1-cropped)
+/// instead of the sensor. iOS 16+ lets the photo output produce stills larger
+/// than the video resolution via maxPhotoDimensions, and bestStreamingFourThree
+/// Format already prefers a format that can reach the sensor. The value must be
+/// one of the active format's supportedMaxPhotoDimensions (we take the largest,
+/// so it is valid by construction) and must be re-applied on every activeFormat/
+/// preset change. Pre-iOS-16 falls back to highResolutionCaptureEnabled/
+/// highResolutionPhotoEnabled, set on the output and per shot elsewhere.
+- (void)applyMaxPhotoDimensions {
+  if (@available(iOS 16.0, *)) {
+    if (_capturePhotoOutput == nil || _captureDevice == nil) {
+      return;
+    }
+    AVCaptureDeviceFormat *format = _captureDevice.activeFormat;
+    if (format == nil) {
+      return;
+    }
+    CMVideoDimensions maxDims = {0, 0};
+    for (NSValue *value in format.supportedMaxPhotoDimensions) {
+      CMVideoDimensions d = {0, 0};
+      [value getValue:&d size:sizeof(d)];
+      if ((int64_t)d.width * d.height > (int64_t)maxDims.width * maxDims.height) {
+        maxDims = d;
+      }
+    }
+    if (maxDims.width <= 0 || maxDims.height <= 0) {
+      return;
+    }
+    _capturePhotoOutput.maxPhotoDimensions = maxDims;
+
+    CMVideoDimensions videoDims = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
+    NSLog(@"applyMaxPhotoDimensions: active format video %dx%d (binned=%@), still ceiling %dx%d (MIN-3066)",
+          videoDims.width, videoDims.height, format.isVideoBinned ? @"YES" : @"NO",
+          maxDims.width, maxDims.height);
+  }
+}
+
 /// Set camera preview size
 - (void)setCameraPreset:(CGSize)currentPreviewSize {
   CGSize targetSize = currentPreviewSize;
@@ -772,13 +861,19 @@ static const int32_t kStreamingMaxFps = 30;
       // still capture. Match the streaming preview's aspect ratio to the
       // selected capture ratio so the preview fills a 4:3 screen and is WYSIWYG.
       //
-      // NOTE: this only sizes the *preview + analysis* stream. Stills are taken
-      // by AVCapturePhotoOutput at full sensor resolution regardless, so photo
-      // quality is unaffected. Memory matters: the full-sensor Photo preset
+      // NOTE: this sizes the *preview + analysis* stream, NOT the still. Setting
+      // an InputPriority activeFormat pins AVCapturePhotoOutput to that format's
+      // still ceiling too — the earlier assumption that stills stayed full-sensor
+      // "regardless" was wrong and shipped ~2016×1512 stills (→ 1512² at 1:1)
+      // (MIN-3066). Two things now keep stills full-resolution independently of
+      // this small streaming format: bestStreamingFourThreeFormat prefers a 4:3
+      // format that can still reach the sensor, and -applyMaxPhotoDimensions
+      // raises the photo output's maxPhotoDimensions to that format's max (iOS
+      // 16+). Memory still matters here: the full-sensor Photo *preset*
       // OOM-crashes on open (~12MP frames to the preview + MLKit). iOS has no
       // 4:3 HD *preset* (only 640x480 / 352x288 / Photo), so for 4:3 we pick a
-      // ~1280x960 4:3 device *format* (≈ the old 720p's memory, ~10x lighter
-      // than Photo) and fall back to the 640x480 preset if none is exposed.
+      // ~1280–1920-wide 4:3 device *format* (far lighter than the Photo preset)
+      // and fall back to the 640x480 preset if none is exposed.
       if (_aspectRatio == Ratio4_3) {
         forcedFormat = [self bestStreamingFourThreeFormat];
         if (forcedFormat == nil) {
@@ -858,6 +953,11 @@ static const int32_t kStreamingMaxFps = 30;
   // The format/preset change above reset the device's frame durations to the
   // format defaults — re-pin the rate cap (MIN-2747).
   [self applyFrameRateCap];
+
+  // The active format bounds the still resolution too — raise the photo output's
+  // ceiling to this format's full sensor size so stills aren't capped to the
+  // small streaming/analysis format (MIN-3066).
+  [self applyMaxPhotoDimensions];
 }
 
 /// Get current video prewiew size
@@ -1485,6 +1585,18 @@ static const int32_t kStreamingMaxFps = 30;
   AVCapturePhotoSettings *settings = [AVCapturePhotoSettings photoSettings];
   [settings setFlashMode:_flashMode];
   [settings setHighResolutionPhotoEnabled:YES];
+
+  // Request the still at the output's configured maximum (set per active format
+  // in -applyMaxPhotoDimensions) so the photo is full-sensor even though the
+  // analysis stream pins a small video format (MIN-3066). Must be ≤ the output's
+  // maxPhotoDimensions; reading it back keeps the two in lockstep. On pre-iOS-16
+  // the highResolutionPhotoEnabled flag above remains the ceiling.
+  if (@available(iOS 16.0, *)) {
+    CMVideoDimensions outputMax = _capturePhotoOutput.maxPhotoDimensions;
+    if (outputMax.width > 0 && outputMax.height > 0) {
+      settings.maxPhotoDimensions = outputMax;
+    }
+  }
 
   // Opt into the modern processing pipeline (Smart HDR / Deep Fusion). Balanced
   // keeps shutter latency low while still gaining most of the quality — see

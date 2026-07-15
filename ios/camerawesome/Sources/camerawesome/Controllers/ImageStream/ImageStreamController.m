@@ -7,7 +7,15 @@
 
 #import "ImageStreamController.h"
 
-@implementation ImageStreamController
+#import <os/lock.h>
+
+@implementation ImageStreamController {
+  // _processingImage is a read-modify-write counter touched from the capture
+  // queue (increment, copy-failure drop) and the main thread (Dart ack, sink
+  // drops); an unsynchronized RMW can lose a decrement and ratchet
+  // overflowCrashingGuard into skipping every frame.
+  os_unfair_lock _processingImageLock;
+}
 
 NSInteger const MaxPendingProcessedImage = 4;
 
@@ -15,6 +23,7 @@ NSInteger const MaxPendingProcessedImage = 4;
   self = [super init];
   _streamImages = streamImages;
   _processingImage = 0;
+  _processingImageLock = OS_UNFAIR_LOCK_INIT;
   return self;
 }
 
@@ -31,8 +40,10 @@ NSInteger const MaxPendingProcessedImage = 4;
     return;
   }
   
+  os_unfair_lock_lock(&_processingImageLock);
   _processingImage++;
-  
+  os_unfair_lock_unlock(&_processingImageLock);
+
   CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
   CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
   
@@ -49,36 +60,50 @@ NSInteger const MaxPendingProcessedImage = 4;
     planeCount = 1;
   }
   
-  for (int i = 0; i < planeCount; i++) {
-    void *planeAddress;
-    size_t bytesPerRow;
-    size_t height;
-    size_t width;
-    
-    if (isPlanar) {
-      planeAddress = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, i);
-      bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, i);
-      height = CVPixelBufferGetHeightOfPlane(pixelBuffer, i);
-      width = CVPixelBufferGetWidthOfPlane(pixelBuffer, i);
-    } else {
-      planeAddress = CVPixelBufferGetBaseAddress(pixelBuffer);
-      bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
-      height = CVPixelBufferGetHeight(pixelBuffer);
-      width = CVPixelBufferGetWidth(pixelBuffer);
+  // Copying the planes allocates frame-sized NSData buffers; near the memory
+  // ceiling that throws NSMallocException (prod crashes on 1.7.30/1.7.31). A
+  // stream frame is droppable — skip it instead of letting the exception
+  // abort the app (MIN-3075).
+  BOOL planeCopyFailed = NO;
+  @try {
+    for (int i = 0; i < planeCount; i++) {
+      void *planeAddress;
+      size_t bytesPerRow;
+      size_t height;
+      size_t width;
+
+      if (isPlanar) {
+        planeAddress = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, i);
+        bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, i);
+        height = CVPixelBufferGetHeightOfPlane(pixelBuffer, i);
+        width = CVPixelBufferGetWidthOfPlane(pixelBuffer, i);
+      } else {
+        planeAddress = CVPixelBufferGetBaseAddress(pixelBuffer);
+        bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
+        height = CVPixelBufferGetHeight(pixelBuffer);
+        width = CVPixelBufferGetWidth(pixelBuffer);
+      }
+
+      NSNumber *length = @(bytesPerRow * height);
+      NSData *bytes = [NSData dataWithBytes:planeAddress length:length.unsignedIntegerValue];
+
+      [planes addObject:@{
+        @"bytesPerRow": @(bytesPerRow),
+        @"width": @(width),
+        @"height": @(height),
+        @"bytes": [FlutterStandardTypedData typedDataWithBytes:bytes],
+      }];
     }
-    
-    NSNumber *length = @(bytesPerRow * height);
-    NSData *bytes = [NSData dataWithBytes:planeAddress length:length.unsignedIntegerValue];
-    
-    [planes addObject:@{
-      @"bytesPerRow": @(bytesPerRow),
-      @"width": @(width),
-      @"height": @(height),
-      @"bytes": [FlutterStandardTypedData typedDataWithBytes:bytes],
-    }];
+  } @catch (NSException *exception) {
+    planeCopyFailed = YES;
   }
-  
+
   CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+
+  if (planeCopyFailed) {
+    [self droppedFrameFromStream];
+    return;
+  }
   
   NSDictionary *imageBuffer = @{
     @"width": [NSNumber numberWithUnsignedLong:imageWidth],
@@ -89,9 +114,25 @@ NSInteger const MaxPendingProcessedImage = 4;
   };
   
   dispatch_async(dispatch_get_main_queue(), ^{
-    self->_imageStreamEventSink(imageBuffer);
+    // The sink is nilled on the main thread when Dart cancels the stream
+    // (screen close / scanner dismiss) — a frame dispatched before the cancel
+    // would invoke a nil block and crash (MIN-3074). The setter and this block
+    // both run on the main thread, so the snapshot + check is race-free.
+    FlutterEventSink sink = self->_imageStreamEventSink;
+    if (sink == nil) {
+      [self droppedFrameFromStream];
+      return;
+    }
+    // Encoding the event envelope re-allocates the frame inside the standard
+    // codec; under the same memory pressure as the plane copy that throws
+    // NSMallocException too — drop the frame rather than abort (MIN-3075).
+    @try {
+      sink(imageBuffer);
+    } @catch (NSException *exception) {
+      [self droppedFrameFromStream];
+    }
   });
-  
+
 }
 
 - (NSString *)getInputImageOrientation:(UIDeviceOrientation)orientation {
@@ -136,14 +177,29 @@ NSInteger const MaxPendingProcessedImage = 4;
 }
 
 - (bool)overflowCrashingGuard {
+  os_unfair_lock_lock(&_processingImageLock);
+  NSInteger pending = _processingImage;
+  os_unfair_lock_unlock(&_processingImageLock);
+
   // overflow crash prevent condition
-  if (_processingImage > MaxPendingProcessedImage) {
+  if (pending > MaxPendingProcessedImage) {
     // too many frame are pending processing, skipping...
     // this prevent crashing on older phones like iPhone 6, 7...
     return YES;
   }
-  
+
   return NO;
+}
+
+// A frame that never reaches Dart never gets the receivedImageFromStream ack —
+// rebalance the pending counter so dropped frames can't ratchet the stream into
+// a permanent overflowCrashingGuard skip.
+- (void)droppedFrameFromStream {
+  os_unfair_lock_lock(&_processingImageLock);
+  if (_processingImage > 0) {
+    _processingImage--;
+  }
+  os_unfair_lock_unlock(&_processingImageLock);
 }
 
 // This is used to know the exact time when the image was received on the Flutter part
@@ -152,9 +208,11 @@ NSInteger const MaxPendingProcessedImage = 4;
   _latestEmittedFrame = [NSDate date];
   
   // used for the overflow prevent crashing condition
+  os_unfair_lock_lock(&_processingImageLock);
   if (_processingImage >= 0) {
     _processingImage--;
   }
+  os_unfair_lock_unlock(&_processingImageLock);
 }
 
 #pragma mark - Setters

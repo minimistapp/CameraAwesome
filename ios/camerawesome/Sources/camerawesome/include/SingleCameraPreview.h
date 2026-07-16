@@ -13,7 +13,6 @@
 #import <Foundation/Foundation.h>
 
 #import "MotionController.h"
-#import "ThermalController.h"
 #import "LocationController.h"
 #import "VideoController.h"
 #import "ImageStreamController.h"
@@ -33,7 +32,8 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @interface SingleCameraPreview : NSObject<AVCaptureVideoDataOutputSampleBufferDelegate,
-AVCaptureAudioDataOutputSampleBufferDelegate>
+AVCaptureAudioDataOutputSampleBufferDelegate,
+AVCaptureMetadataOutputObjectsDelegate>
 
 // TODO: move this to a single camera ?
 @property(readonly, nonatomic) AVCaptureSession *captureSession;
@@ -61,7 +61,6 @@ AVCaptureAudioDataOutputSampleBufferDelegate>
 @property(readonly, nonatomic) CGSize currentPreviewSize;
 @property(readonly, nonatomic) ImageStreamController *imageStreamController;
 @property(readonly, nonatomic) MotionController *motionController;
-@property(readonly, nonatomic) ThermalController *thermalController;
 @property(readonly, nonatomic) LocationController *locationController;
 @property(readonly, nonatomic) VideoController *videoController;
 @property(readonly, nonatomic) PhysicalButtonController *physicalButtonController;
@@ -75,10 +74,11 @@ AVCaptureAudioDataOutputSampleBufferDelegate>
 /// behavior. See [CamerawesomePlugin setCaptureOrientationOverrideOrientation:].
 @property(nonatomic, strong, nullable) NSNumber *captureOrientationOverride;
 
-/// Flutter sink for the "camerawesome/thermal" event channel (MIN-3056).
-/// Receives the lowercase effective-thermal-level string on every change,
-/// always on the main queue.
-@property(nonatomic, copy, nullable) FlutterEventSink thermalEventSink;
+/// Flutter sink for the "camerawesome/qrcodes" event channel (MIN-3077).
+/// Receives the decoded string of a detected QR code, always on the main
+/// queue. QR detection uses the hardware AVCaptureMetadataOutput reader, so
+/// the app no longer runs the CPU image-analysis stream just to scan QR codes.
+@property(nonatomic, copy, nullable) FlutterEventSink qrCodeEventSink;
 
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
                         videoOptions:(nullable CupertinoVideoOptions *)videoOptions
@@ -121,6 +121,7 @@ AVCaptureAudioDataOutputSampleBufferDelegate>
 - (void)setBrightness:(NSNumber *)brightness error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error;
 - (void)applyFrameRateCap;
 - (void)applyFrameRateCapAsync;
+- (void)updateAnalysisConnectionState;
 @end
 
 NS_ASSUME_NONNULL_END

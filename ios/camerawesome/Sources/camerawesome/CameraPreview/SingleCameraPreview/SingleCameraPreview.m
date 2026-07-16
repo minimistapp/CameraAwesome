@@ -16,6 +16,13 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
 /// data output — guarded so an unsupported pixel format / aspect never crashes
 /// the camera (MIN-2667). See the implementation for details.
 - (void)setAnalysisPixelFormat32BGRAWithWidth:(int32_t)width height:(int32_t)height;
+/// Enables QR detection on the hardware metadata output when the connection
+/// offers it (MIN-3077). See the implementation for the mid-configuration guard.
+- (void)applyQrMetadataTypes;
+/// Enables the analysis (video-data) connection only while it's consumed
+/// (analysis stream on, or recording) — otherwise the idle session stops
+/// producing dropped frames (MIN-3077). See the implementation.
+- (void)updateAnalysisConnectionState;
 @end
 
 @implementation SingleCameraPreview {
@@ -43,6 +50,11 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // preview layer never auto-connects — we wire it explicitly and rebuild it
   // on every sensor switch (initCameraPreview:), parallel to _captureConnection.
   AVCaptureConnection *_previewConnection;
+  // Hardware QR reader (MIN-3077). AVFoundation's ISP-accelerated
+  // machine-readable-code detector, added alongside the photo output in
+  // initCameraPreview: and torn down / recreated on every sensor switch. Lets
+  // us scan QR codes without running the CPU image-analysis stream.
+  AVCaptureMetadataOutput *_metadataOutput;
 }
 
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
@@ -112,7 +124,6 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   _videoController = [[VideoController alloc] init];
   _imageStreamController = [[ImageStreamController alloc] initWithStreamImages:streamImages];
   _motionController = [[MotionController alloc] init];
-  _thermalController = [[ThermalController alloc] init];
   _locationController = [[LocationController alloc] init];
   _physicalButtonController = [[PhysicalButtonController alloc] init];
 
@@ -127,25 +138,15 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
     }
   };
 
-  // Thermal governor (MIN-3056): back off the capture frame rate, the photo
-  // quality prioritization and the analysis throttle as the effective thermal
-  // level rises. The callback may fire on an arbitrary thread — the handler
-  // hops onto _dispatchQueue / the main queue itself.
-  _thermalController.onThermalLevelChanged = ^(CameraThermalLevel level) {
-    [weakSelf handleThermalLevelChanged:level];
-  };
-  [_thermalController start];
-  // initCameraPreview: ran before this controller existed (its bind call was
-  // a nil no-op on this first pass), so bind the already-selected device here.
-  // Safe to repeat: bindToCaptureDevice: unbinds any previous device first.
-  [_thermalController bindToCaptureDevice:_captureDevice];
-
   if (enablePhysicalButton) {
     [_physicalButtonController startListening];
   }
-  
+
   [self setBestPreviewQuality];
-  
+
+  // Don't feed the video-data output while nothing consumes it (MIN-3077).
+  [self updateAnalysisConnectionState];
+
   return self;
 }
 
@@ -215,12 +216,6 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
     [self->_focusStableCompletions removeAllObjects];
   });
 
-  // Drop the thermal-pressure KVO on the outgoing device too, before the
-  // reassignment below; the new device is bound at the end of this method
-  // (MIN-3056). Nil no-op on the very first pass (the controller is created
-  // after this method in initWithCameraSensor:, which binds explicitly).
-  [_thermalController unbindCaptureDevice];
-
   NSError *error;
   _captureDevice = [AVCaptureDevice deviceWithUniqueID:[self selectAvailableCamera:sensor]];
   _captureVideoInput = [AVCaptureDeviceInput deviceInputWithDevice:_captureDevice error:&error];
@@ -260,7 +255,23 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
     _capturePhotoOutput.maxPhotoQualityPrioritization = AVCapturePhotoQualityPrioritizationBalanced;
   }
   [_captureSession addOutput:_capturePhotoOutput];
-  
+
+  // Hardware QR reader (MIN-3077). Added like the photo output: the video input
+  // above was added with -addInputWithNoConnections, but -addOutput: still forms
+  // the metadata connection to the video port (the photo output relies on the
+  // same auto-connection). Detection runs on AVFoundation's ISP-accelerated
+  // machine-readable-code path — no per-frame CPU pixel work — so the app no
+  // longer needs the image-analysis stream running just to scan QR codes.
+  // Recreated on every sensor switch (torn down in setSensor: / dispose).
+  _metadataOutput = [[AVCaptureMetadataOutput alloc] init];
+  if ([_captureSession canAddOutput:_metadataOutput]) {
+    [_captureSession addOutput:_metadataOutput];
+    [_metadataOutput setMetadataObjectsDelegate:self queue:_dispatchQueue];
+    [self applyQrMetadataTypes];
+  } else {
+    _metadataOutput = nil;
+  }
+
   // Mirror the preview only on portrait mode
   [_captureConnection setAutomaticallyAdjustsVideoMirroring:NO];
   [_captureConnection setVideoMirrored:(_cameraSensorPosition == PigeonSensorPositionFront)];
@@ -320,11 +331,57 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // after, in initWithCameraSensor:) so this is a no-op then; on a sensor
   // switch it reconnects the layer to the new device's video port.
   [self attachPreviewLayerConnection];
+}
 
-  // Watch the new device's systemPressureState (MIN-3056). Nil no-op on the
-  // very first call (see initWithCameraSensor:, which binds after creating
-  // the controller); on a sensor switch this rebinds to the new device.
-  [_thermalController bindToCaptureDevice:_captureDevice];
+#pragma mark - QR metadata delegate (MIN-3077)
+
+/// Enable QR detection on the metadata output when the live connection offers
+/// it. Guarded because -setMetadataObjectTypes: throws if a type isn't in
+/// availableMetadataObjectTypes, and that set can be transiently empty while a
+/// sensor switch is mid-configuration — so this is also re-applied after the
+/// commit in setSensor:.
+- (void)applyQrMetadataTypes {
+  if (_metadataOutput == nil) {
+    return;
+  }
+  if ([_metadataOutput.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeQRCode]) {
+    _metadataOutput.metadataObjectTypes = @[AVMetadataObjectTypeQRCode];
+  }
+}
+
+/// Delivered by the hardware machine-readable-code reader on _dispatchQueue.
+/// Forwards the first decoded QR string to Dart over the "camerawesome/qrcodes"
+/// event channel. The sink is only ever touched on the main thread (matching
+/// the analysis stream's contract), so hop there before calling it.
+- (void)captureOutput:(AVCaptureOutput *)output
+    didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)metadataObjects
+              fromConnection:(AVCaptureConnection *)connection {
+  // Only touch qrCodeEventSink on the main queue (it's set/cleared there): this
+  // delegate runs on _dispatchQueue, so the sink nil-check lives inside the
+  // main-queue block below, not here (CodeRabbit, MIN-3077).
+  if (metadataObjects.count == 0) {
+    return;
+  }
+  NSString *value = nil;
+  for (AVMetadataObject *object in metadataObjects) {
+    if (![object isKindOfClass:[AVMetadataMachineReadableCodeObject class]]) {
+      continue;
+    }
+    AVMetadataMachineReadableCodeObject *code = (AVMetadataMachineReadableCodeObject *)object;
+    if ([code.type isEqualToString:AVMetadataObjectTypeQRCode] && code.stringValue.length > 0) {
+      value = code.stringValue;
+      break;
+    }
+  }
+  if (value == nil) {
+    return;
+  }
+  dispatch_async(dispatch_get_main_queue(), ^{
+    FlutterEventSink sink = self.qrCodeEventSink;
+    if (sink != nil) {
+      sink(value);
+    }
+  });
 }
 
 /// Wire (or rewire) the native AVCaptureVideoPreviewLayer to the current video
@@ -463,9 +520,6 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // — so every camera teardown leaked a permanent 5 Hz device-motion (gyro)
   // subscription. Stopping releases the handler and breaks that retain cycle.
   [self.motionController stopMotionDetection];
-  // Same defensive stance for the thermal governor (MIN-3056): stop — never
-  // start — from dealloc. Drops the ProcessInfo observer + device KVO.
-  [self.thermalController stop];
 }
 
 /// Ceiling (sensor-native width, px) for the 4:3 preview device format.
@@ -633,29 +687,10 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
   }
 }
 
-/// Max sustained capture rate at nominal thermal level. 30fps is
-/// indistinguishable in the scanner preview but halves the sensor/ISP duty
-/// cycle vs the 60fps default of many iPad 4:3 formats — the dominant
-/// sustained thermal load on iPads (MIN-2747). Under thermal pressure the cap
-/// backs off further — see currentMaxFpsForThermalLevel (MIN-3056).
+/// Max sustained capture rate. 30fps is indistinguishable in the scanner
+/// preview but halves the sensor/ISP duty cycle vs the 60fps default of many
+/// iPad 4:3 formats — the dominant sustained thermal load on iPads (MIN-2747).
 static const int32_t kStreamingMaxFps = 30;
-
-/// Thermal fps ladder (MIN-3056): nominal/fair keep the nominal cap (30),
-/// serious drops to 24, critical/shutdown to 15.
-- (int32_t)currentMaxFpsForThermalLevel {
-  CameraThermalLevel level = _thermalController != nil ? _thermalController.currentLevel : CameraThermalLevelNominal;
-  switch (level) {
-    case CameraThermalLevelSerious:
-      return 24;
-    case CameraThermalLevelCritical:
-    case CameraThermalLevelShutdown:
-      return 15;
-    case CameraThermalLevelNominal:
-    case CameraThermalLevelFair:
-      return kStreamingMaxFps;
-  }
-  return kStreamingMaxFps;
-}
 
 /// Pin the capture frame rate whenever video recording isn't driving the
 /// session (MIN-2747, MIN-3056). Setting activeFormat (the 4:3 InputPriority
@@ -684,7 +719,7 @@ static const int32_t kStreamingMaxFps = 30;
   // have minFrameRate above the cap). When the format can't exceed the cap
   // anyway, reuse its own native minFrameDuration — frame durations must fall
   // exactly inside the supported range or AVFoundation throws.
-  double cappedFps = MIN((double)[self currentMaxFpsForThermalLevel], range.maxFrameRate);
+  double cappedFps = MIN((double)kStreamingMaxFps, range.maxFrameRate);
   cappedFps = MAX(cappedFps, range.minFrameRate);
   CMTime minFrameDuration = (cappedFps >= range.maxFrameRate)
       ? range.minFrameDuration
@@ -715,33 +750,19 @@ static const int32_t kStreamingMaxFps = 30;
   });
 }
 
-/// Thermal governor reaction (MIN-3056). [level] may be reported on an
-/// arbitrary thread — device/session work hops onto the serial capture queue,
-/// the Flutter sink onto the main queue (matching ImageStreamController's
-/// sink dispatch).
-- (void)handleThermalLevelChanged:(CameraThermalLevel)level {
-  dispatch_async(_dispatchQueue, ^{
-    // (a) Re-pin the frame-rate cap with the new thermal ceiling
-    //     (30 → 24 → 15 fps).
-    [self applyFrameRateCap];
-    // (b) Throttle the analysis stream: nominal/fair → no extra ceiling,
-    //     serious → 3 fps, critical/shutdown → 1 fps (0 = unthrottled).
-    float analysisCeiling = 0;
-    if (level == CameraThermalLevelSerious) {
-      analysisCeiling = 3;
-    } else if (level >= CameraThermalLevelCritical) {
-      analysisCeiling = 1;
-    }
-    self->_imageStreamController.thermalMaxFramesPerSecond = analysisCeiling;
-  });
-  // (c) Forward the level to Dart. Read the sink on the main queue at delivery
-  // time so a sink swapped in by setupCameraSensors is honoured.
-  NSString *levelString = CameraThermalLevelString(level);
-  dispatch_async(dispatch_get_main_queue(), ^{
-    if (self->_thermalEventSink != nil) {
-      self->_thermalEventSink(levelString);
-    }
-  });
+/// Enable the analysis (video-data) connection only when something actually
+/// consumes its frames — the Dart image-analysis stream or video recording
+/// (MIN-3077). Otherwise the session keeps producing a full-rate stream of
+/// downscaled BGRA buffers that the delegate immediately drops (see
+/// -captureOutput:didOutputSampleBuffer:), which is pure ISP + memory-bandwidth
+/// heat while the scanner just previews. The native Camera app has no such data
+/// output; disabling the connection makes our idle session behave the same. The
+/// preview layer has its own connection (_previewConnection) and is unaffected.
+- (void)updateAnalysisConnectionState {
+  BOOL shouldFeed = _imageStreamController.streamImages || _videoController.isRecording;
+  if (_captureConnection != nil && _captureConnection.isEnabled != shouldFeed) {
+    _captureConnection.enabled = shouldFeed;
+  }
 }
 
 /// Applies 32BGRA to the analysis data output, optionally pinned to
@@ -1009,10 +1030,6 @@ static const int32_t kStreamingMaxFps = 30;
   // Deterministic counterpart to the dealloc stop (MIN-2747) — dealloc timing
   // depends on the last reference, dispose is the plugin's explicit teardown.
   [self.motionController stopMotionDetection];
-  // Thermal governor teardown (MIN-3056): unbind the device KVO and drop the
-  // ProcessInfo thermal observer (stop also unbinds; explicit for clarity).
-  [self.thermalController unbindCaptureDevice];
-  [self.thermalController stop];
   // Synchronously on _dispatchQueue so teardown can't race in-flight KVO/timeout
   // blocks. dispose runs on the platform thread, never on _dispatchQueue.
   dispatch_sync(_dispatchQueue, ^{
@@ -1089,6 +1106,12 @@ static const int32_t kStreamingMaxFps = 30;
   [_videoController setVideoIsDisconnected:YES];
 
   [_captureSession removeOutput:_capturePhotoOutput];
+  // Drop the QR metadata output too; initCameraPreview: recreates it for the
+  // new device (MIN-3077).
+  if (_metadataOutput != nil) {
+    [_captureSession removeOutput:_metadataOutput];
+    _metadataOutput = nil;
+  }
   [_captureSession removeConnection:_captureConnection];
   // Drop the preview-layer connection too (it's tied to the outgoing input);
   // initCameraPreview: → attachPreviewLayerConnection rebuilds it for the new
@@ -1116,6 +1139,12 @@ static const int32_t kStreamingMaxFps = 30;
   // begin/commit block only takes effect now, and the format switch it
   // triggers resets the device's frame durations (MIN-2747).
   [self applyFrameRateCap];
+  // Re-apply QR types after the commit too — availableMetadataObjectTypes can
+  // be empty while the session is mid-configuration (MIN-3077).
+  [self applyQrMetadataTypes];
+  // The connection was rebuilt for the new device (defaults to enabled); gate
+  // it on actual consumption again (MIN-3077).
+  [self updateAnalysisConnectionState];
   if (sessionIsRunning) {
     dispatch_async(_dispatchQueue, ^{
       [self->_captureSession startRunning];
@@ -1625,13 +1654,8 @@ static const int32_t kStreamingMaxFps = 30;
   // Opt into the modern processing pipeline (Smart HDR / Deep Fusion). Balanced
   // keeps shutter latency low while still gaining most of the quality — see
   // maxPhotoQualityPrioritization set on the output in initCameraPreview.
-  // Under thermal/system pressure (≥ serious) drop to Speed: the cheapest
-  // processing path, trading Deep Fusion for markedly less ISP work (MIN-3056).
   if (@available(iOS 13.0, *)) {
-    BOOL thermallyLimited = _thermalController != nil && _thermalController.currentLevel >= CameraThermalLevelSerious;
-    settings.photoQualityPrioritization = thermallyLimited
-        ? AVCapturePhotoQualityPrioritizationSpeed
-        : AVCapturePhotoQualityPrioritizationBalanced;
+    settings.photoQualityPrioritization = AVCapturePhotoQualityPrioritizationBalanced;
   }
 
   [_capturePhotoOutput capturePhotoWithSettings:settings
@@ -1652,7 +1676,13 @@ static const int32_t kStreamingMaxFps = 30;
         [self->_audioOutput setSampleBufferDelegate:self queue:self->_dispatchQueue];
       }
       [self->_captureVideoOutput setSampleBufferDelegate:self queue:self->_dispatchQueue];
-      
+      // Recording consumes the video-data output — force its connection on (the
+      // isRecording flag may not be observable yet at this point, so don't rely
+      // on -updateAnalysisConnectionState here) (MIN-3077).
+      if (self->_captureConnection != nil) {
+        self->_captureConnection.enabled = YES;
+      }
+
       completion(nil);
     } options:_videoOptions quality: _recordingQuality completion:completion];
   } else {
@@ -1673,7 +1703,13 @@ static const int32_t kStreamingMaxFps = 30;
 /// Stop recording video
 - (void)stopRecordingVideo:(nonnull void (^)(NSNumber * _Nullable, FlutterError * _Nullable))completion {
   if (_videoController.isRecording) {
-    [_videoController stopRecordingVideo:completion];
+    __weak typeof(self) weakSelf = self;
+    [_videoController stopRecordingVideo:^(NSNumber *_Nullable ok, FlutterError *_Nullable err) {
+      // Recording no longer consumes the video-data output — re-gate the
+      // connection so the idle preview stops producing dropped frames (MIN-3077).
+      [weakSelf updateAnalysisConnectionState];
+      completion(ok, err);
+    }];
   } else {
     completion(@(NO), [FlutterError errorWithCode:@"VIDEO_ERROR" message:@"video is not recording" details:@""]);
   }

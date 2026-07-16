@@ -80,4 +80,21 @@ class CupertinoAnalysisOptions {
 
   const CupertinoAnalysisOptions.bgra8888()
       : this._(outputFormat: InputAnalysisImageFormat.bgra8888);
+
+  /// Luma-only analysis frames (MIN-3084): the native side switches the data
+  /// output to biplanar YUV (420f full-range, falling back to 420v video-range
+  /// whose luma is 16–235 rather than 0–255) and ships just the Y plane, in
+  /// the same nv21-shaped payload Android emits — ~4x less bridge transfer
+  /// than bgra8888 and no color conversion for grayscale consumers.
+  ///
+  /// Caveats:
+  /// - [Nv21Image.bytes] holds ONLY the Y plane (`width * height` bytes),
+  ///   not Android's full `1.5 * width * height` NV21 buffer, and the planes
+  ///   list carries dimensions only (empty bytes).
+  /// - Never feed this stream to MLKit on iOS — it expects bgra8888 there.
+  /// - While video recording is running, frames temporarily arrive as
+  ///   bgra8888 again (the recording pipeline requires it), so consumers must
+  ///   handle both [AnalysisImage] variants per frame.
+  const CupertinoAnalysisOptions.nv21()
+      : this._(outputFormat: InputAnalysisImageFormat.nv21);
 }

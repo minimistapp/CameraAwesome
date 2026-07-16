@@ -12,7 +12,13 @@
 - (instancetype)init {
   self = [super init];
   _motionManager = [[CMMotionManager alloc] init];
-  _motionManager.deviceMotionUpdateInterval = 0.2f;
+  // 1 Hz is enough: the handler only reacts to orientation *changes* (portrait
+  // connection re-pin, Dart orientation events, EXIF orientation at capture
+  // time), yet it runs on the main queue for the whole camera session — at the
+  // old 5 Hz that was a continuous main-thread wakeup for a signal that
+  // changes at most every few seconds (MIN-3084). Tradeoff: after a physical
+  // rotation, orientation-dependent behavior can lag up to ~1s.
+  _motionManager.deviceMotionUpdateInterval = 1.0f;
   return self;
 }
 

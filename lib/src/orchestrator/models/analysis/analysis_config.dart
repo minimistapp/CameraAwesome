@@ -92,9 +92,12 @@ class CupertinoAnalysisOptions {
   ///   not Android's full `1.5 * width * height` NV21 buffer, and the planes
   ///   list carries dimensions only (empty bytes).
   /// - Never feed this stream to MLKit on iOS — it expects bgra8888 there.
-  /// - While video recording is running, frames temporarily arrive as
-  ///   bgra8888 again (the recording pipeline requires it), so consumers must
-  ///   handle both [AnalysisImage] variants per frame.
+  /// - Frames are not guaranteed to be [Nv21Image]: while video recording is
+  ///   running they temporarily arrive as bgra8888 (the recording pipeline
+  ///   requires it), and on a device where neither 420f nor 420v is available
+  ///   every frame stays bgra8888. Consumers must handle both [AnalysisImage]
+  ///   variants per frame — dispatch with `when(nv21: ..., bgra8888: ...)`,
+  ///   never cast.
   const CupertinoAnalysisOptions.nv21()
       : this._(outputFormat: InputAnalysisImageFormat.nv21);
 }

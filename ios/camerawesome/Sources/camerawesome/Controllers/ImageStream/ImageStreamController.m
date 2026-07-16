@@ -51,14 +51,25 @@ NSInteger const MaxPendingProcessedImage = 4;
   // output is 32BGRA historically, or biplanar YUV when the stream requested
   // nv21 (MIN-3084) — then only the tightly-packed luma (Y) plane crosses the
   // bridge, in the exact shape Android's nv21 emit uses, so the Dart side
-  // reuses its existing Nv21Image path unchanged.
+  // reuses its existing Nv21Image path unchanged. Anything else is dropped
+  // rather than mislabeled "bgra8888" — a corrupt payload is worse than a
+  // silent frame gap.
   const OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
-  NSDictionary *imageBuffer;
+  NSDictionary *imageBuffer = nil;
   if (pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange ||
       pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange) {
     imageBuffer = [self lumaImageBufferFrom:pixelBuffer orientation:orientation];
-  } else {
+  } else if (pixelFormat == kCVPixelFormatType_32BGRA) {
     imageBuffer = [self bgraImageBufferFrom:pixelBuffer orientation:orientation];
+  } else {
+    // Should be unreachable (the output is only ever configured to BGRA or
+    // 420f/420v) — log on change, not per frame, so a misconfigured stream is
+    // diagnosable without spamming.
+    static OSType lastUnsupportedFormat = 0;
+    if (pixelFormat != lastUnsupportedFormat) {
+      lastUnsupportedFormat = pixelFormat;
+      NSLog(@"ImageStreamController: dropping frames with unsupported pixel format %u (MIN-3084)", (unsigned int)pixelFormat);
+    }
   }
 
   CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);

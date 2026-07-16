@@ -1731,9 +1731,39 @@ static const int32_t kStreamingMaxFps = 30;
 /// Record video into the given path
 - (void)recordVideoAtPath:(NSString *)path completion:(nonnull void (^)(FlutterError * _Nullable))completion {
   if (!_videoController.isRecording) {
+    // The video writer is pinned to 32BGRA, so an nv21 analysis stream must
+    // hand the output back to BGRA for the duration of the recording
+    // (MIN-3084). Done BEFORE the recording starts so a failure can abort it
+    // cleanly: if BGRA didn't stick (theoretical — transiently absent from
+    // availableVideoCVPixelFormatTypes), every frame would be dropped by the
+    // BGRA-only forward guard and the recording would complete "successfully"
+    // as an empty file. Skip the session reconfigure entirely for the common
+    // BGRA-stream case.
+    if (_requestedAnalysisFormat == nv21) {
+      _forceBGRAAnalysisForRecording = YES;
+      [self applyAnalysisOutputDownscale];
+      NSNumber *applied = _captureVideoOutput.videoSettings[(NSString *)kCVPixelBufferPixelFormatTypeKey];
+      if (applied == nil || applied.unsignedIntValue != kCVPixelFormatType_32BGRA) {
+        [self clearForceBGRAAnalysisForRecording];
+        completion([FlutterError errorWithCode:@"VIDEO_ERROR"
+                                       message:@"analysis output could not switch back to BGRA for recording"
+                                       details:@""]);
+        return;
+      }
+    }
+    // Any startup failure after the BGRA flip must restore the nv21 format —
+    // stopRecordingVideo never runs for a recording that never started, so the
+    // force flag would otherwise stay latched and the stream would silently
+    // lose its luma payload for the rest of the session (MIN-3084).
+    void (^recordingCompletion)(FlutterError *_Nullable) = ^(FlutterError *_Nullable error) {
+      if (error != nil) {
+        [self clearForceBGRAAnalysisForRecording];
+      }
+      completion(error);
+    };
     [_videoController recordVideoAtPath:path captureDevice:_captureDevice orientation:_motionController.deviceOrientation audioSetupCallback:^{
       [self setUpCaptureSessionForAudioError:^(NSError *error) {
-        completion([FlutterError errorWithCode:@"VIDEO_ERROR" message:@"error when trying to setup audio" details:[error localizedDescription]]);
+        recordingCompletion([FlutterError errorWithCode:@"VIDEO_ERROR" message:@"error when trying to setup audio" details:[error localizedDescription]]);
       }];
     } videoWriterCallback:^{
       if (self->_videoController.isAudioEnabled) {
@@ -1746,17 +1776,9 @@ static const int32_t kStreamingMaxFps = 30;
       if (self->_captureConnection != nil) {
         self->_captureConnection.enabled = YES;
       }
-      // The video writer is pinned to 32BGRA, so an nv21 analysis stream must
-      // hand the output back to BGRA for the duration of the recording
-      // (MIN-3084). Skip the session reconfigure entirely for the common
-      // BGRA-stream case.
-      if (self->_requestedAnalysisFormat == nv21) {
-        self->_forceBGRAAnalysisForRecording = YES;
-        [self applyAnalysisOutputDownscale];
-      }
 
-      completion(nil);
-    } options:_videoOptions quality: _recordingQuality completion:completion];
+      recordingCompletion(nil);
+    } options:_videoOptions quality: _recordingQuality completion:recordingCompletion];
   } else {
     completion([FlutterError errorWithCode:@"VIDEO_ERROR" message:@"already recording video" details:@""]);
   }

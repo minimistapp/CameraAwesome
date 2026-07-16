@@ -165,7 +165,19 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
 }
 
 - (void)setAspectRatio:(AspectRatio)ratio {
+  if (_aspectRatio == ratio) {
+    return;
+  }
   _aspectRatio = ratio;
+  // The 4:3 and 16:9 session configs differ (tuned 4:3 device format vs 1080p
+  // preset — MIN-3098), so re-pick the config when the ratio actually changes.
+  // This also catches the app's initial ratio push right after setup (init runs
+  // with the enum default 4:3 before Dart sends the persisted ratio). Skip
+  // while recording: the writer is pinned to the current format, matching
+  // setPreviewSize's recording guard.
+  if (!_videoController.isRecording) {
+    [self setBestPreviewQuality];
+  }
 }
 
 /// Set image stream Flutter sink
@@ -701,10 +713,12 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
   }
 }
 
-/// Max sustained capture rate. 30fps is indistinguishable in the scanner
-/// preview but halves the sensor/ISP duty cycle vs the 60fps default of many
-/// iPad 4:3 formats — the dominant sustained thermal load on iPads (MIN-2747).
-static const int32_t kStreamingMaxFps = 30;
+/// Max sustained capture rate for preview/streaming sessions. 24fps stays
+/// fluid for framing while trimming the sensor/ISP duty cycle a further ~20%
+/// below the earlier 30fps cap, toward native-Camera-app power parity
+/// (MIN-2747, MIN-3098). Video recording manages its own rate and is exempt
+/// (see applyFrameRateCap).
+static const int32_t kStreamingMaxFps = 24;
 
 /// Pin the capture frame rate whenever video recording isn't driving the
 /// session (MIN-2747, MIN-3056). Setting activeFormat (the 4:3 InputPriority
@@ -750,6 +764,43 @@ static const int32_t kStreamingMaxFps = 30;
     // rejected duration must never crash camera setup — worst case we keep the
     // format's default rate.
     NSLog(@"applyFrameRateCap: rejected frame duration: %@", exception.reason);
+  } @finally {
+    [_captureDevice unlockForConfiguration];
+  }
+}
+
+/// Video-HDR policy (MIN-3098). automaticallyAdjustsVideoHDREnabled defaults
+/// to YES, so left alone the device may run video-HDR processing on the
+/// preview stream — a cost the native Camera app doesn't pay in photo mode.
+/// Turn it off whenever video recording isn't driving the session; restore the
+/// system default (auto) for video so recordings keep HDR. Stills are
+/// unaffected either way: photo HDR is owned by AVCapturePhotoOutput, not the
+/// device's video-HDR flag. Must re-run after every activeFormat/preset change
+/// (videoHDREnabled is only settable when the active format supports it) and
+/// after a sensor switch (fresh device, fresh defaults).
+- (void)applyVideoHDRPolicy {
+  if (_captureDevice == nil) {
+    return;
+  }
+  BOOL wantsAutoHDR = _captureMode == Video || _videoController.isRecording;
+  NSError *error = nil;
+  if (![_captureDevice lockForConfiguration:&error]) {
+    NSLog(@"applyVideoHDRPolicy: lockForConfiguration failed: %@", error.localizedDescription);
+    return;
+  }
+  @try {
+    if (wantsAutoHDR) {
+      _captureDevice.automaticallyAdjustsVideoHDREnabled = YES;
+    } else if (_captureDevice.activeFormat.videoHDRSupported) {
+      // Order matters: setting videoHDREnabled throws while the automatic
+      // flag is YES.
+      _captureDevice.automaticallyAdjustsVideoHDREnabled = NO;
+      _captureDevice.videoHDREnabled = NO;
+    }
+  } @catch (NSException *exception) {
+    // Same defensive stance as applyFrameRateCap (MIN-2667): a rejected HDR
+    // flag must never crash camera setup.
+    NSLog(@"applyVideoHDRPolicy: rejected: %@", exception.reason);
   } @finally {
     [_captureDevice unlockForConfiguration];
   }
@@ -963,12 +1014,19 @@ static const int32_t kStreamingMaxFps = 30;
          // Fallback to best quality if no specific size or options given
          targetSize = CGSizeZero;
       }
-  } else if (_imageStreamController.streamImages) {
-      // Live image-analysis streaming. This used to force 16:9 720p, which
-      // pinned the *preview* to 16:9 even when the user picked 4:3 — so on a
-      // 4:3 iPad the preview was a letterboxed strip and didn't match the 4:3
-      // still capture. Match the streaming preview's aspect ratio to the
-      // selected capture ratio so the preview fills a 4:3 screen and is WYSIWYG.
+  } else {
+      // Any live-preview session — streaming analysis or idle (MIN-3098). This
+      // tuned branch used to apply only while the analysis stream ran; with the
+      // stream off (the iOS prod default since MIN-3077 moved QR to the
+      // hardware detector) init fell through to the largest device format →
+      // the 4K preset: an unbinned 4K/30 sensor readout feeding a phone-sized
+      // preview. That is near-recording sustained load, far above the native
+      // Camera app's binned ~2MP photo-mode preview, and was the dominant idle
+      // heat source. Idle now gets the exact streaming session config, so a
+      // session that isn't recording always runs the low-power format. This
+      // deliberately overrides explicit setPreviewSize requests for non-video
+      // sessions — the session shape is owned by the aspect ratio + this
+      // policy (the app never calls setPreviewSize).
       //
       // NOTE: this sizes the *preview + analysis* stream, NOT the still. Setting
       // an InputPriority activeFormat pins AVCapturePhotoOutput to that format's
@@ -995,11 +1053,7 @@ static const int32_t kStreamingMaxFps = 30;
         // kPreviewFourThreeMaxWidth above.
         targetSize = CGSizeMake(1080, 1920);
       }
-  } else if (CGSizeEqualToSize(currentPreviewSize, CGSizeZero)) {
-      // If neither recording nor streaming, and no size provided, use best quality
-      targetSize = CGSizeZero;
-  } 
-  // else: Use the non-zero currentPreviewSize passed in.
+  }
 
   if (forcedFormat != nil) {
     // Drive the stream from a chosen 4:3 device format. InputPriority tells the
@@ -1067,6 +1121,10 @@ static const int32_t kStreamingMaxFps = 30;
   // ceiling to this format's full sensor size so stills aren't capped to the
   // small streaming/analysis format (MIN-3066).
   [self applyMaxPhotoDimensions];
+
+  // HDR is a per-mode policy, not a per-format default — re-assert it after
+  // the format/preset change (MIN-3098).
+  [self applyVideoHDRPolicy];
 }
 
 /// Get current video prewiew size
@@ -1203,6 +1261,9 @@ static const int32_t kStreamingMaxFps = 30;
   // begin/commit block only takes effect now, and the format switch it
   // triggers resets the device's frame durations (MIN-2747).
   [self applyFrameRateCap];
+  // Same for the HDR policy: the new device's activeFormat is only final after
+  // the commit, and the in-block run saw the outgoing format (MIN-3098).
+  [self applyVideoHDRPolicy];
   // Re-apply QR types after the commit too — availableMetadataObjectTypes can
   // be empty while the session is mid-configuration (MIN-3077).
   [self applyQrMetadataTypes];
@@ -1637,6 +1698,13 @@ static const int32_t kStreamingMaxFps = 30;
   }
   
   _captureMode = captureMode;
+
+  // Re-run the session config for the new mode (MIN-3098): Photo/Preview picks
+  // the tuned low-power preview format (+ video-HDR off, fps cap); Video
+  // restores the full-quality video preset (+ auto HDR). Without this the
+  // low-power preview format would leak into a recording — or the video config
+  // into the idle preview.
+  [self setBestPreviewQuality];
 
   if (captureMode == Video && _videoController.isAudioEnabled) {
     [self setUpCaptureSessionForAudioError:^(NSError *audioError) {

@@ -12,10 +12,12 @@
 static void * const FocusStableContext = (void *)&FocusStableContext;
 
 @interface SingleCameraPreview ()
-/// Safely applies 32BGRA (optionally at a fixed width/height) to the analysis
-/// data output — guarded so an unsupported pixel format / aspect never crashes
+/// Safely applies the analysis pixel format (optionally at a fixed
+/// width/height) to the analysis data output — 32BGRA by default, or the
+/// 420f/420v luma-friendly YUV formats when the stream requested nv21
+/// (MIN-3084) — guarded so an unsupported pixel format / aspect never crashes
 /// the camera (MIN-2667). See the implementation for details.
-- (void)setAnalysisPixelFormat32BGRAWithWidth:(int32_t)width height:(int32_t)height;
+- (void)applyAnalysisPixelFormatWithWidth:(int32_t)width height:(int32_t)height;
 /// Enables QR detection on the hardware metadata output when the connection
 /// offers it (MIN-3077). See the implementation for the mid-configuration guard.
 - (void)applyQrMetadataTypes;
@@ -55,6 +57,12 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // initCameraPreview: and torn down / recreated on every sensor switch. Lets
   // us scan QR codes without running the CPU image-analysis stream.
   AVCaptureMetadataOutput *_metadataOutput;
+  // While recording, the analysis output must deliver 32BGRA regardless of the
+  // requested analysis format: VideoController appends these same buffers
+  // through an AVAssetWriterInputPixelBufferAdaptor pinned to 32BGRA, so a YUV
+  // buffer would fail the writer (MIN-3084). Set for the duration of a
+  // recording; the nv21 format is restored when recording stops.
+  BOOL _forceBGRAAnalysisForRecording;
 }
 
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
@@ -83,11 +91,17 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // Creating capture session
   _captureSession = [[AVCaptureSession alloc] init];
   _captureVideoOutput = [AVCaptureVideoDataOutput new];
+  // Default analysis format. Must be set explicitly BEFORE the baseline
+  // pixel-format call below: the enum's zero value is yuv_420_888, so a
+  // zero-initialized ivar would silently request YUV for every camera that
+  // never calls setupImageAnalysisStream — i.e. all the MLKit QR screens,
+  // which require 32BGRA on iOS (MIN-3084).
+  _requestedAnalysisFormat = bgra8888;
   // Baseline analysis pixel format. -setVideoSettings: throws
-  // NSInvalidArgumentException ("Unsupported pixel format type") if 32BGRA is
-  // not currently in the output's availableVideoCVPixelFormatTypes, so guard it
-  // and never let camera setup crash (MIN-2667).
-  [self setAnalysisPixelFormat32BGRAWithWidth:0 height:0];
+  // NSInvalidArgumentException ("Unsupported pixel format type") if the format
+  // is not currently in the output's availableVideoCVPixelFormatTypes, so
+  // guard it and never let camera setup crash (MIN-2667).
+  [self applyAnalysisPixelFormatWithWidth:0 height:0];
   [_captureVideoOutput setAlwaysDiscardsLateVideoFrames:YES];
   // Deliver frames on the serial capture queue, NOT the main queue (MIN-2747):
   // with the delegate on main, the analysis stream's per-frame BGRA copy +
@@ -679,11 +693,11 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
         dims.width, dims.height);
   if (willDownscale) {
     // Exact-aspect downscale (scaledW:scaledH == dims.width:dims.height).
-    [self setAnalysisPixelFormat32BGRAWithWidth:scaledW height:scaledH];
+    [self applyAnalysisPixelFormatWithWidth:scaledW height:scaledH];
   } else {
     // Already small enough (or no clean multiple) — don't scale; the format
     // ceiling keeps memory bounded on its own.
-    [self setAnalysisPixelFormat32BGRAWithWidth:0 height:0];
+    [self applyAnalysisPixelFormatWithWidth:0 height:0];
   }
 }
 
@@ -765,43 +779,68 @@ static const int32_t kStreamingMaxFps = 30;
   }
 }
 
-/// Applies 32BGRA to the analysis data output, optionally pinned to
-/// [width]x[height] when both are > 0. Centralises the crash-safety that opening
-/// the QR scanner needs (MIN-2667):
+/// Applies the analysis pixel format to the analysis data output, optionally
+/// pinned to [width]x[height] when both are > 0. The format is 32BGRA (the
+/// MLKit requirement) unless the analysis stream requested nv21 (MIN-3084) —
+/// then we prefer biplanar YUV so ImageStreamController can ship just the luma
+/// (Y) plane to Dart: 420f (full-range, matches Android's nv21 luma) first,
+/// 420v (video-range, slightly compressed luma — ArUco's adaptive threshold
+/// tolerates it) as fallback, 32BGRA last. Recording overrides all of this back
+/// to 32BGRA because the video writer consumes these same buffers
+/// (_forceBGRAAnalysisForRecording).
 ///
+/// Centralises the crash-safety that opening the QR scanner needs (MIN-2667):
 /// -setVideoSettings: throws NSInvalidArgumentException if the pixel format is
 /// not currently in the output's availableVideoCVPixelFormatTypes, or if the
 /// width/height don't preserve the active format's exact aspect. In an
 /// analysis-only / previewOnly session (no photo output) the session is driven
 /// off an InputPriority forced activeFormat, and on some devices/iOS versions
-/// 32BGRA is momentarily absent from availableVideoCVPixelFormatTypes at this
+/// a format is momentarily absent from availableVideoCVPixelFormatTypes at this
 /// point in setup — setting it then threw and crashed the app on open.
 ///
-/// So we: (a) skip entirely when 32BGRA is not offered — the analysis pipeline
-/// (ImageStreamController + the Dart MLKit path) requires 32BGRA, so we never
-/// substitute another format; the output keeps whatever 32BGRA settings it
-/// already had; and (b) guard every set, falling back from
-/// pixel-format+dimensions to pixel-format-only, so a rejection degrades to
-/// "no downscale this pass" (bounded by the format ceiling) instead of crashing.
-- (void)setAnalysisPixelFormat32BGRAWithWidth:(int32_t)width height:(int32_t)height {
+/// So we: (a) pick the first candidate format that is actually offered and skip
+/// entirely when none is — the output keeps whatever settings it already had;
+/// and (b) guard every set, falling back from pixel-format+dimensions to
+/// pixel-format-only, so a rejection degrades to "no downscale this pass"
+/// (bounded by the format ceiling) instead of crashing.
+- (void)applyAnalysisPixelFormatWithWidth:(int32_t)width height:(int32_t)height {
   if (_captureVideoOutput == nil) {
     return;
   }
 
-  BOOL bgraAvailable = NO;
-  for (NSNumber *available in _captureVideoOutput.availableVideoCVPixelFormatTypes) {
-    if (available.unsignedIntValue == kCVPixelFormatType_32BGRA) {
-      bgraAvailable = YES;
+  NSArray<NSNumber *> *candidates;
+  if (_requestedAnalysisFormat == nv21 && !_forceBGRAAnalysisForRecording) {
+    candidates = @[
+      @(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange),
+      @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+      @(kCVPixelFormatType_32BGRA),
+    ];
+  } else {
+    candidates = @[ @(kCVPixelFormatType_32BGRA) ];
+  }
+
+  NSNumber *chosen = nil;
+  NSArray<NSNumber *> *available = _captureVideoOutput.availableVideoCVPixelFormatTypes;
+  for (NSNumber *candidate in candidates) {
+    if ([available containsObject:candidate]) {
+      chosen = candidate;
       break;
     }
   }
-  if (!bgraAvailable) {
+  if (chosen == nil) {
     return;
+  }
+  if (candidates.count > 1 && ![chosen isEqualToNumber:candidates.firstObject]) {
+    // The nv21 stream is running on a lesser format: 420v (video-range luma)
+    // or, worst case, BGRA — the Dart side keeps working either way
+    // (ImageStreamController emits the dict shape matching the actual buffer),
+    // the ~4x payload win is just partially/fully lost on this device.
+    NSLog(@"applyAnalysisPixelFormat: 420f unavailable, using %@ (MIN-3084)", chosen);
   }
 
   NSMutableDictionary *settings =
       [NSMutableDictionary dictionaryWithDictionary:_captureVideoOutput.videoSettings ?: @{}];
-  settings[(NSString *)kCVPixelBufferPixelFormatTypeKey] = @(kCVPixelFormatType_32BGRA);
+  settings[(NSString *)kCVPixelBufferPixelFormatTypeKey] = chosen;
   if (width > 0 && height > 0) {
     settings[(NSString *)kCVPixelBufferWidthKey] = @(width);
     settings[(NSString *)kCVPixelBufferHeightKey] = @(height);
@@ -818,11 +857,36 @@ static const int32_t kStreamingMaxFps = 30;
     // downscale rather than crash; the format ceiling keeps memory bounded.
     @try {
       _captureVideoOutput.videoSettings =
-          @{(NSString *)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA)};
+          @{(NSString *)kCVPixelBufferPixelFormatTypeKey : chosen};
     } @catch (NSException *inner) {
       // Leave videoSettings untouched; analysis frames stay at the format size.
     }
   }
+}
+
+/// Store the analysis format the Dart stream requested (MIN-3084) and re-apply
+/// the output's pixel format + aspect-exact downscale against the live
+/// activeFormat. Called from the plugin's setupImageAnalysisStream handler; the
+/// ivar persists across sensor switches (setSensor → setCameraPreset →
+/// applyAnalysisOutputDownscale re-applies it) and resets naturally with the
+/// camera instance on reopen (Dart re-runs setup then).
+- (void)updateRequestedAnalysisFormat:(InputAnalysisImageFormat)format {
+  if (_requestedAnalysisFormat == format) {
+    return;
+  }
+  _requestedAnalysisFormat = format;
+  [self applyAnalysisOutputDownscale];
+}
+
+/// Undo the recording-time BGRA override (MIN-3084): restore the requested
+/// nv21 (YUV) analysis format once the video writer no longer consumes the
+/// data-output buffers. No-op for BGRA streams (the flag is only set for nv21).
+- (void)clearForceBGRAAnalysisForRecording {
+  if (!_forceBGRAAnalysisForRecording) {
+    return;
+  }
+  _forceBGRAAnalysisForRecording = NO;
+  [self applyAnalysisOutputDownscale];
 }
 
 /// Raise the still-capture ceiling to the sensor's full size for the format now
@@ -1665,9 +1729,39 @@ static const int32_t kStreamingMaxFps = 30;
 /// Record video into the given path
 - (void)recordVideoAtPath:(NSString *)path completion:(nonnull void (^)(FlutterError * _Nullable))completion {
   if (!_videoController.isRecording) {
+    // The video writer is pinned to 32BGRA, so an nv21 analysis stream must
+    // hand the output back to BGRA for the duration of the recording
+    // (MIN-3084). Done BEFORE the recording starts so a failure can abort it
+    // cleanly: if BGRA didn't stick (theoretical — transiently absent from
+    // availableVideoCVPixelFormatTypes), every frame would be dropped by the
+    // BGRA-only forward guard and the recording would complete "successfully"
+    // as an empty file. Skip the session reconfigure entirely for the common
+    // BGRA-stream case.
+    if (_requestedAnalysisFormat == nv21) {
+      _forceBGRAAnalysisForRecording = YES;
+      [self applyAnalysisOutputDownscale];
+      NSNumber *applied = _captureVideoOutput.videoSettings[(NSString *)kCVPixelBufferPixelFormatTypeKey];
+      if (applied == nil || applied.unsignedIntValue != kCVPixelFormatType_32BGRA) {
+        [self clearForceBGRAAnalysisForRecording];
+        completion([FlutterError errorWithCode:@"VIDEO_ERROR"
+                                       message:@"analysis output could not switch back to BGRA for recording"
+                                       details:@""]);
+        return;
+      }
+    }
+    // Any startup failure after the BGRA flip must restore the nv21 format —
+    // stopRecordingVideo never runs for a recording that never started, so the
+    // force flag would otherwise stay latched and the stream would silently
+    // lose its luma payload for the rest of the session (MIN-3084).
+    void (^recordingCompletion)(FlutterError *_Nullable) = ^(FlutterError *_Nullable error) {
+      if (error != nil) {
+        [self clearForceBGRAAnalysisForRecording];
+      }
+      completion(error);
+    };
     [_videoController recordVideoAtPath:path captureDevice:_captureDevice orientation:_motionController.deviceOrientation audioSetupCallback:^{
       [self setUpCaptureSessionForAudioError:^(NSError *error) {
-        completion([FlutterError errorWithCode:@"VIDEO_ERROR" message:@"error when trying to setup audio" details:[error localizedDescription]]);
+        recordingCompletion([FlutterError errorWithCode:@"VIDEO_ERROR" message:@"error when trying to setup audio" details:[error localizedDescription]]);
       }];
     } videoWriterCallback:^{
       if (self->_videoController.isAudioEnabled) {
@@ -1681,8 +1775,8 @@ static const int32_t kStreamingMaxFps = 30;
         self->_captureConnection.enabled = YES;
       }
 
-      completion(nil);
-    } options:_videoOptions quality: _recordingQuality completion:completion];
+      recordingCompletion(nil);
+    } options:_videoOptions quality: _recordingQuality completion:recordingCompletion];
   } else {
     completion([FlutterError errorWithCode:@"VIDEO_ERROR" message:@"already recording video" details:@""]);
   }
@@ -1706,6 +1800,9 @@ static const int32_t kStreamingMaxFps = 30;
       // Recording no longer consumes the video-data output — re-gate the
       // connection so the idle preview stops producing dropped frames (MIN-3077).
       [weakSelf updateAnalysisConnectionState];
+      // Restore the nv21 (YUV) analysis format that recording forced back to
+      // BGRA (MIN-3084).
+      [weakSelf clearForceBGRAAnalysisForRecording];
       completion(ok, err);
     }];
   } else {
@@ -1797,7 +1894,16 @@ static const int32_t kStreamingMaxFps = 30;
       // Ensure VideoController's captureOutput can handle being called multiple times for the same timestamp (once for video, once for audio)
       // or ensure it only processes the video buffer here.
       // Assuming it can differentiate based on 'output' or buffer type.
-      [_videoController captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection captureVideoOutput:_captureVideoOutput];
+      //
+      // Only forward 32BGRA buffers: the writer's pixel-buffer adaptor is
+      // pinned to 32BGRA, and YUV frames can still be in flight for a beat
+      // after recording start switches an nv21 analysis stream back to BGRA
+      // (the settings change and this delegate race on different mechanisms)
+      // (MIN-3084).
+      CVPixelBufferRef recordingBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+      if (recordingBuffer != nil && CVPixelBufferGetPixelFormatType(recordingBuffer) == kCVPixelFormatType_32BGRA) {
+        [_videoController captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection captureVideoOutput:_captureVideoOutput];
+      }
     }
   } else if (output == _audioOutput) {
     // Send audio buffers only to video recording controller if recording & audio enabled

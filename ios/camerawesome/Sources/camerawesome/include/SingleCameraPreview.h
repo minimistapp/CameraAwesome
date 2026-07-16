@@ -80,6 +80,13 @@ AVCaptureMetadataOutputObjectsDelegate>
 /// the app no longer runs the CPU image-analysis stream just to scan QR codes.
 @property(nonatomic, copy, nullable) FlutterEventSink qrCodeEventSink;
 
+/// The pixel format the Dart analysis stream asked for (MIN-3084). bgra8888
+/// (the default, required by the MLKit consumers) keeps the historical 32BGRA
+/// output; nv21 switches the data output to biplanar YUV so only the luma (Y)
+/// plane crosses the bridge — ~4x less transfer for the AprilTag detector.
+/// Update via -updateRequestedAnalysisFormat:, never directly.
+@property(readonly, nonatomic) InputAnalysisImageFormat requestedAnalysisFormat;
+
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
                         videoOptions:(nullable CupertinoVideoOptions *)videoOptions
                     recordingQuality:(VideoRecordingQuality)recordingQuality
@@ -122,6 +129,7 @@ AVCaptureMetadataOutputObjectsDelegate>
 - (void)applyFrameRateCap;
 - (void)applyFrameRateCapAsync;
 - (void)updateAnalysisConnectionState;
+- (void)updateRequestedAnalysisFormat:(InputAnalysisImageFormat)format;
 @end
 
 NS_ASSUME_NONNULL_END

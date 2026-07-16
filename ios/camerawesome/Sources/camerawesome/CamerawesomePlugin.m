@@ -873,6 +873,14 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
   
   [self.camera.imageStreamController setStreamImages:autoStart];
 
+  // Honor the stream's requested pixel format (MIN-3084). Historically iOS
+  // ignored [format] and always delivered 32BGRA; "nv21" now switches the
+  // data output to biplanar YUV so only the luma plane crosses the bridge.
+  // Anything else (including the "bgra8888" the MLKit screens rely on) keeps
+  // the 32BGRA behavior.
+  InputAnalysisImageFormat requestedFormat = [format isEqualToString:@"nv21"] ? nv21 : bgra8888;
+  [self.camera updateRequestedAnalysisFormat:requestedFormat];
+
   // Force a frame rate to improve performance
   [self.camera.imageStreamController setMaxFramesPerSecond:[maxFramesPerSecond floatValue]];
 

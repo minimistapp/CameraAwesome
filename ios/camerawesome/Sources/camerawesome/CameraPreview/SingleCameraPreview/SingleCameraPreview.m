@@ -1598,13 +1598,11 @@ static const int32_t kStreamingMaxFps = 30;
 
 /// Take the picture into the given path
 - (void)takePictureAtPath:(NSString *)path completion:(nonnull void (^)(NSNumber * _Nullable, FlutterError * _Nullable))completion {
-  // Don't fire the shutter mid-hunt. If AF/AE are still converging (common right
-  // after a tap, or after the scene changes under continuous AF), wait for them
-  // to settle — bounded by a short timeout so the shutter stays responsive. This
-  // is what prevents the "looked focused a moment later, soft in the shot".
-  [self whenFocusStableWithTimeout:0.6 completion:^{
-    [self capturePictureAtPath:path completion:completion];
-  }];
+  // Fire the shutter immediately on press, matching the native Camera app.
+  // Blocking to let AF/AE settle first delayed the capture enough that a moving
+  // camera produced a moved/blurry shot (Salvos report) — the frame was taken a
+  // moment after the tap, by which point the framing had already changed.
+  [self capturePictureAtPath:path completion:completion];
 }
 
 - (void)capturePictureAtPath:(NSString *)path completion:(nonnull void (^)(NSNumber * _Nullable, FlutterError * _Nullable))completion {

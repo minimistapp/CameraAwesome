@@ -713,12 +713,12 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
   }
 }
 
-/// Max sustained capture rate for preview/streaming sessions. 24fps stays
-/// fluid for framing while trimming the sensor/ISP duty cycle a further ~20%
-/// below the earlier 30fps cap, toward native-Camera-app power parity
-/// (MIN-2747, MIN-3098). Video recording manages its own rate and is exempt
-/// (see applyFrameRateCap).
-static const int32_t kStreamingMaxFps = 24;
+/// Max sustained capture rate for preview/streaming sessions. 30fps matches
+/// the native Camera app's photo-mode preview rate and halves the sensor/ISP
+/// duty cycle vs the 60fps default of many formats (MIN-2747, MIN-3098; a
+/// 24fps trial felt choppier than native, so 30 is the floor we ship). Video
+/// recording manages its own rate and is exempt (see applyFrameRateCap).
+static const int32_t kStreamingMaxFps = 30;
 
 /// Pin the capture frame rate whenever video recording isn't driving the
 /// session (MIN-2747, MIN-3056). Setting activeFormat (the 4:3 InputPriority

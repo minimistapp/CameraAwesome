@@ -63,11 +63,6 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // buffer would fail the writer (MIN-3084). Set for the duration of a
   // recording; the nv21 format is restored when recording stops.
   BOOL _forceBGRAAnalysisForRecording;
-  // Whether the session is *supposed* to be running (last start/stop intent).
-  // Gates the auto-recovery in the interruption/runtime-error observers so we
-  // resume a session that pressure knocked over, but never start one the app
-  // deliberately stopped (background, dispose) — MIN-3176.
-  BOOL _shouldBeRunning;
 }
 
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
@@ -165,25 +160,6 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
 
   // Don't feed the video-data output while nothing consumes it (MIN-3077).
   [self updateAnalysisConnectionState];
-
-  // Recover from system-pressure (memory/thermal) interruptions and media-reset
-  // runtime errors instead of leaving the preview frozen until the app is
-  // force-quit (MIN-3176). _captureSession is created once and reused for this
-  // object's lifetime, so a single registration here covers every sensor
-  // switch; removed in -dispose.
-  NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
-  [center addObserver:self
-             selector:@selector(sessionWasInterrupted:)
-                 name:AVCaptureSessionWasInterruptedNotification
-               object:_captureSession];
-  [center addObserver:self
-             selector:@selector(sessionInterruptionEnded:)
-                 name:AVCaptureSessionInterruptionEndedNotification
-               object:_captureSession];
-  [center addObserver:self
-             selector:@selector(sessionRuntimeError:)
-                 name:AVCaptureSessionRuntimeErrorNotification
-               object:_captureSession];
 
   return self;
 }
@@ -1195,13 +1171,6 @@ static const int32_t kStreamingMaxFps = 30;
 
 /// Dispose camera inputs & outputs
 - (void)dispose {
-  // Remove the session-recovery observers *first* so no interruption/runtime
-  // handler can enqueue a restart while we tear the session down. -stop then
-  // flips the intent and stops on _dispatchQueue; the dispatch_sync below is a
-  // barrier that guarantees it completed before we strip inputs/outputs (MIN-3176).
-  [[NSNotificationCenter defaultCenter] removeObserver:self name:AVCaptureSessionWasInterruptedNotification object:_captureSession];
-  [[NSNotificationCenter defaultCenter] removeObserver:self name:AVCaptureSessionInterruptionEndedNotification object:_captureSession];
-  [[NSNotificationCenter defaultCenter] removeObserver:self name:AVCaptureSessionRuntimeErrorNotification object:_captureSession];
   [self stop];
   [self.physicalButtonController stopListening];
   // Deterministic counterpart to the dealloc stop (MIN-2747) — dealloc timing
@@ -1243,75 +1212,16 @@ static const int32_t kStreamingMaxFps = 30;
   }
 }
 
-/// Start camera preview. The intent flag and the AVCaptureSession call are both
-/// set on _dispatchQueue so a start/stop pair can't race: _shouldBeRunning is
-/// only ever touched here, in -stop, and in the recovery handlers — all on this
-/// one serial queue — and the enqueued startRunning is conditional on the latest
-/// intent, so it can't revive a session a later -stop turned off (MIN-3176).
+/// Start camera preview
 - (void)start {
   dispatch_async(_dispatchQueue, ^{
-    self->_shouldBeRunning = YES;
-    if (!self->_captureSession.isRunning) {
-      [self->_captureSession startRunning];
-    }
+    [self->_captureSession startRunning];
   });
 }
 
-/// Stop camera preview. Queued on _dispatchQueue for the same reason as -start;
-/// dispose's dispatch_sync barrier (and refresh's stop-then-start) preserve the
-/// previously-synchronous ordering.
+/// Stop camera preview
 - (void)stop {
-  dispatch_async(_dispatchQueue, ^{
-    self->_shouldBeRunning = NO;
-    if (self->_captureSession.isRunning) {
-      [self->_captureSession stopRunning];
-    }
-  });
-}
-
-#pragma mark - Session pressure / interruption recovery (MIN-3176)
-
-/// The session was interrupted — commonly by system (memory/thermal) pressure
-/// during a full-sensor capture burst, but also by backgrounding, a phone call,
-/// or another app claiming the camera. Nothing used to observe this, so a
-/// pressure interruption left the preview frozen until the app was force-quit.
-/// Log the reason; recovery is driven by -sessionInterruptionEnded:.
-- (void)sessionWasInterrupted:(NSNotification *)note {
-  NSInteger reason = [note.userInfo[AVCaptureSessionInterruptionReasonKey] integerValue];
-  NSLog(@"AVCaptureSession interrupted (reason %ld); will resume when it ends (MIN-3176)", (long)reason);
-}
-
-/// The interruption cleared — resume the preview so it heals on its own instead
-/// of staying frozen. Only if the app still wants the camera running (guards
-/// against re-starting a session we deliberately stopped) and it isn't already
-/// running. AVFoundation posts this on an internal thread, so hop to the
-/// session work queue like every other start/stop.
-- (void)sessionInterruptionEnded:(NSNotification *)note {
-  NSLog(@"AVCaptureSession interruption ended — resuming preview if intended (MIN-3176)");
-  // Intent check runs on _dispatchQueue (never off it), so it always sees the
-  // latest start/stop and can't revive a deliberately-stopped session.
-  dispatch_async(_dispatchQueue, ^{
-    if (self->_shouldBeRunning && !self->_captureSession.isRunning) {
-      [self->_captureSession startRunning];
-    }
-  });
-}
-
-/// A runtime error tears the session down mid-flight. AVErrorMediaServicesWereReset
-/// (the media server was reset — a documented consequence of a severe pressure
-/// event) is recoverable by restarting the session; restart it, guarded exactly
-/// like the interruption path so we never loop on an unrecoverable error or
-/// revive a stopped session (MIN-3176). error.code is read locally (safe off
-/// the queue); the _shouldBeRunning check stays on _dispatchQueue.
-- (void)sessionRuntimeError:(NSNotification *)note {
-  NSError *error = note.userInfo[AVCaptureSessionErrorKey];
-  NSLog(@"AVCaptureSession runtime error (%ld) (MIN-3176)", (long)error.code);
-  if (error.code != AVErrorMediaServicesWereReset) return;
-  dispatch_async(_dispatchQueue, ^{
-    if (self->_shouldBeRunning && !self->_captureSession.isRunning) {
-      [self->_captureSession startRunning];
-    }
-  });
+  [_captureSession stopRunning];
 }
 
 /// Set sensor between Front & Rear camera

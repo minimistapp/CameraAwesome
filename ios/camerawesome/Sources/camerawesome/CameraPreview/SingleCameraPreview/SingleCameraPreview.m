@@ -66,8 +66,10 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // Whether the session is *supposed* to be running (last start/stop intent).
   // Gates the auto-recovery in the interruption/runtime-error observers so we
   // resume a session that pressure knocked over, but never start one the app
-  // deliberately stopped (background, dispose) — MIN-3176.
-  BOOL _shouldBeRunning;
+  // deliberately stopped (background, dispose) — MIN-3176. _Atomic: written on
+  // the caller thread (start/stop) and read on _dispatchQueue (the queued start
+  // and the recovery handlers), so the reads stay coherent without a lock.
+  _Atomic(BOOL) _shouldBeRunning;
 }
 
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
@@ -1243,30 +1245,28 @@ static const int32_t kStreamingMaxFps = 30;
   }
 }
 
-/// Start camera preview. The intent flag and the AVCaptureSession call are both
-/// set on _dispatchQueue so a start/stop pair can't race: _shouldBeRunning is
-/// only ever touched here, in -stop, and in the recovery handlers — all on this
-/// one serial queue — and the enqueued startRunning is conditional on the latest
-/// intent, so it can't revive a session a later -stop turned off (MIN-3176).
+/// Start camera preview. `_shouldBeRunning` (the latest intent) is set on the
+/// caller thread; startRunning is queued on _dispatchQueue but guarded by that
+/// intent, so a start immediately followed by stop can't leave a deliberately-
+/// stopped session running. The atomic flag keeps the queued block and the
+/// recovery handlers reading a coherent value (MIN-3176).
 - (void)start {
+  _shouldBeRunning = YES;
   dispatch_async(_dispatchQueue, ^{
-    self->_shouldBeRunning = YES;
-    if (!self->_captureSession.isRunning) {
+    if (self->_shouldBeRunning && !self->_captureSession.isRunning) {
       [self->_captureSession startRunning];
     }
   });
 }
 
-/// Stop camera preview. Queued on _dispatchQueue for the same reason as -start;
-/// dispose's dispatch_sync barrier (and refresh's stop-then-start) preserve the
-/// previously-synchronous ordering.
+/// Stop camera preview. Unlike -start, stopRunning runs on the CALLER thread, not
+/// _dispatchQueue: that queue is the video-data output's sample-buffer delegate
+/// queue, and stopRunning blocks until pending buffer callbacks drain — queuing
+/// it on that same queue stalled the app ~5s on every camera close. Running it on
+/// the caller thread restores the original fast, synchronous stop (MIN-3176).
 - (void)stop {
-  dispatch_async(_dispatchQueue, ^{
-    self->_shouldBeRunning = NO;
-    if (self->_captureSession.isRunning) {
-      [self->_captureSession stopRunning];
-    }
-  });
+  _shouldBeRunning = NO;
+  [_captureSession stopRunning];
 }
 
 #pragma mark - Session pressure / interruption recovery (MIN-3176)

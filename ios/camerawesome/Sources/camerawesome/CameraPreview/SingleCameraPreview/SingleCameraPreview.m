@@ -25,6 +25,11 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
 /// (analysis stream on, or recording) — otherwise the idle session stops
 /// producing dropped frames (MIN-3077). See the implementation.
 - (void)updateAnalysisConnectionState;
+/// Re-asserts smooth continuous autofocus (+ the MIN-3071 constituent-switching
+/// restriction). Must run after every -activeFormat/preset change, which resets
+/// focusMode to the format default — otherwise the scan preview loses AF
+/// (MIN-3316). See the implementation.
+- (void)applyContinuousAutoFocusPolicy;
 @end
 
 @implementation SingleCameraPreview {
@@ -316,41 +321,11 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
           name:AVCaptureDeviceSubjectAreaDidChangeNotification
         object:_captureDevice];
 
-  // Default the live preview to smooth continuous autofocus so it converges
-  // gently and doesn't visibly "pump" while hunting before the first tap.
-  if ([_captureDevice lockForConfiguration:nil]) {
-    if ([_captureDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
-      [_captureDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
-    }
-    if ([_captureDevice isSmoothAutoFocusSupported]) {
-      [_captureDevice setSmoothAutoFocusEnabled:YES];
-    }
-
-    // MIN-3071: restrict automatic primary-constituent switching to zoom
-    // changes only. On a virtual multi-camera back device (triple / dual-wide)
-    // the default `.auto` behavior lets AVFoundation do a focus/exposure-driven
-    // "fallback" switch — e.g. hop wide -> ultra-wide when continuous AF meets a
-    // subject closer than the wide's minimum focus distance — producing a
-    // visible FOV jump and quality drop at a constant 1x zoom (reported as a
-    // tap-to-focus "sensor switch"). `.restricted` with only `.videoZoomChanged`
-    // keeps the explicit 0.5x/2x/4x zoom presets switching constituents (they
-    // set `videoZoomFactor` directly; zoom-driven switches stay allowed) while
-    // suppressing the focus/exposure-driven fallbacks — we intentionally omit
-    // the `.focusModeChanged` / `.exposureModeChanged` conditions that the app's
-    // continuous tap-to-focus would otherwise trip. The setter throws on devices
-    // that don't support constituent switching (single-lens phones, the front
-    // camera), so gate on the active behavior not being `.unsupported`.
-    if (@available(iOS 15.0, *)) {
-      if (_captureDevice.activePrimaryConstituentDeviceSwitchingBehavior !=
-          AVCapturePrimaryConstituentDeviceSwitchingBehaviorUnsupported) {
-        [_captureDevice
-            setPrimaryConstituentDeviceSwitchingBehavior:AVCapturePrimaryConstituentDeviceSwitchingBehaviorRestricted
-                   restrictedSwitchingBehaviorConditions:AVCapturePrimaryConstituentDeviceRestrictedSwitchingBehaviorConditionVideoZoomChanged];
-      }
-    }
-
-    [_captureDevice unlockForConfiguration];
-  }
+  // Default the live preview to smooth continuous autofocus. Setting
+  // -activeFormat later (in -setCameraPreset) resets focusMode to the format
+  // default, so this policy must be re-applied after every format/preset change
+  // — otherwise the scan preview can't focus on a QR/barcode (MIN-3316).
+  [self applyContinuousAutoFocusPolicy];
 
   [self cacheDeviceZoomBounds];
 
@@ -1006,6 +981,49 @@ static const int32_t kStreamingMaxFps = 30;
 }
 
 /// Set camera preview size
+/// Re-assert the live-preview autofocus policy: smooth continuous autofocus,
+/// plus the MIN-3071 primary-constituent switching restriction. Setting
+/// -activeFormat (or a session preset) resets the device's focusMode to the
+/// format default — so, like -applyVideoHDRPolicy and -applyFrameRateCap, this
+/// must run again after every format/preset change. Without it the tuned
+/// low-power preview format (MIN-3098) leaves the scan preview without continuous
+/// AF, and it can't focus on a QR/barcode held close (MIN-3316).
+- (void)applyContinuousAutoFocusPolicy {
+  if (_captureDevice == nil) {
+    return;
+  }
+  NSError *error = nil;
+  if (![_captureDevice lockForConfiguration:&error]) {
+    NSLog(@"applyContinuousAutoFocusPolicy: lockForConfiguration failed: %@", error.localizedDescription);
+    return;
+  }
+  if ([_captureDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
+    [_captureDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
+  }
+  if ([_captureDevice isSmoothAutoFocusSupported]) {
+    [_captureDevice setSmoothAutoFocusEnabled:YES];
+  }
+
+  // MIN-3071: restrict automatic primary-constituent switching to zoom changes
+  // only. On a virtual multi-camera back device the default `.auto` behavior lets
+  // AVFoundation do a focus/exposure-driven "fallback" switch — e.g. hop wide ->
+  // ultra-wide when continuous AF meets a subject closer than the wide's minimum
+  // focus distance — a visible FOV jump at a constant 1x zoom. `.restricted` with
+  // only `.videoZoomChanged` keeps the explicit zoom presets switching while
+  // suppressing the focus/exposure-driven fallbacks. The setter throws on devices
+  // without constituent switching, so gate on the behavior not being `.unsupported`.
+  if (@available(iOS 15.0, *)) {
+    if (_captureDevice.activePrimaryConstituentDeviceSwitchingBehavior !=
+        AVCapturePrimaryConstituentDeviceSwitchingBehaviorUnsupported) {
+      [_captureDevice
+          setPrimaryConstituentDeviceSwitchingBehavior:AVCapturePrimaryConstituentDeviceSwitchingBehaviorRestricted
+                 restrictedSwitchingBehaviorConditions:AVCapturePrimaryConstituentDeviceRestrictedSwitchingBehaviorConditionVideoZoomChanged];
+    }
+  }
+
+  [_captureDevice unlockForConfiguration];
+}
+
 - (void)setCameraPreset:(CGSize)currentPreviewSize {
   CGSize targetSize = currentPreviewSize;
   // Overrides for the streaming preview shape (see the streaming branch).
@@ -1149,6 +1167,10 @@ static const int32_t kStreamingMaxFps = 30;
   // HDR is a per-mode policy, not a per-format default — re-assert it after
   // the format/preset change (MIN-3098).
   [self applyVideoHDRPolicy];
+
+  // Setting -activeFormat above reset focusMode to the format default — re-assert
+  // smooth continuous autofocus so the preview keeps focusing (MIN-3316).
+  [self applyContinuousAutoFocusPolicy];
 }
 
 /// Get current video prewiew size

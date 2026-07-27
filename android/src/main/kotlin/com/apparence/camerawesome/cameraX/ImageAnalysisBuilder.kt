@@ -7,6 +7,9 @@ import androidx.camera.core.AspectRatio
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.internal.utils.ImageUtil
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import com.apparence.camerawesome.utils.ResettableCountDownLatch
 import io.flutter.plugin.common.EventChannel
 import kotlinx.coroutines.*
@@ -71,10 +74,34 @@ class ImageAnalysisBuilder private constructor(
     fun build(): ImageAnalysis {
         val outputImageFormat = if (format == OutputImageFormat.RGBA_8888) ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888 else ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888
         countDownLatch.reset()
-        // Prefer aligning analysis with preview by targeting aspect ratio instead of resolution.
-        // This reduces mismatches across devices and rotations and mirrors the preview selection.
+        // Align analysis with preview on aspect ratio (MIN-1991: a ratio mismatch
+        // makes the shared UseCaseGroup ViewPort crop captures to the analysis FOV)
+        // *and* honour the caller's requested width. Expressing the ratio via
+        // setTargetAspectRatio would leave resolution entirely to CameraX, which
+        // defaults ImageAnalysis to 640x480 — far too coarse to decode a 1D
+        // barcode (MIN-3302). The two APIs are mutually exclusive, so the ratio
+        // moves into the selector's AspectRatioStrategy, matching how preview and
+        // capture are configured in CameraXState.getResolutionSelector.
         val imageAnalysis = ImageAnalysis.Builder()
-            .setTargetAspectRatio(aspectRatio)
+            .setResolutionSelector(
+                ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(
+                        when (aspectRatio) {
+                            AspectRatio.RATIO_16_9 -> AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY
+                            else -> AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
+                        }
+                    )
+                    // Closest-higher-then-lower rather than an exact match: the
+                    // requested width is a floor to aim for, and every device
+                    // exposes a different set of analysis resolutions.
+                    .setResolutionStrategy(
+                        ResolutionStrategy(
+                            Size(width, height),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                        )
+                    )
+                    .build()
+            )
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .setOutputImageFormat(outputImageFormat).build()
         imageAnalysis.setAnalyzer(Dispatchers.IO.asExecutor()) { imageProxy ->

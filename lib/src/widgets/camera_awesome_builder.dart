@@ -366,6 +366,15 @@ class _CameraWidgetBuilder extends State<CameraAwesomeBuilder> with WidgetsBindi
   void didChangeAppLifecycleState(AppLifecycleState state) {
     switch (state) {
       case AppLifecycleState.resumed:
+        // Last-resort session recovery (MIN-3440): the iOS capture session can
+        // die while the app is away (media-services reset, thermal shutdown,
+        // another app claiming the camera) and the native interruption-ended
+        // notification may never fire once we're suspended. startRunning is a
+        // no-op on a healthy session and Android's start() is a no-op stub, so
+        // this is safe to fire on every foreground. Calls the pigeon interface
+        // directly: CamerawesomePlugin.start()'s currentState guard would skip
+        // the call — Dart still believes the camera is running.
+        CameraInterface().start().catchError((_) => false);
         break;
       case AppLifecycleState.inactive:
       case AppLifecycleState.paused:

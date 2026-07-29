@@ -68,6 +68,10 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // buffer would fail the writer (MIN-3084). Set for the duration of a
   // recording; the nv21 format is restored when recording stops.
   BOOL _forceBGRAAnalysisForRecording;
+  // Whether Dart last asked the session to run (set in -start, cleared in
+  // -stop). Gates the MIN-3440 session-death recovery so an auto-restart can
+  // never resurrect a deliberately stopped session (dispose, screen closed).
+  BOOL _shouldBeRunning;
 }
 
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
@@ -95,6 +99,27 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   
   // Creating capture session
   _captureSession = [[AVCaptureSession alloc] init];
+
+  // Session-death recovery (MIN-3440): a running session can die out from
+  // under the app — mediaserverd crashing (media services reset), a thermal
+  // system-pressure shutdown, or another foreground app claiming the camera —
+  // and AVFoundation reports it only through these notifications. Without
+  // observers the native preview freezes on its last frame forever (turning
+  // black on the next connection change) and only killing the app recovers.
+  // Delivered on an arbitrary thread; handlers hop to _dispatchQueue.
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(sessionRuntimeError:)
+                                               name:AVCaptureSessionRuntimeErrorNotification
+                                             object:_captureSession];
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(sessionWasInterrupted:)
+                                               name:AVCaptureSessionWasInterruptedNotification
+                                             object:_captureSession];
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(sessionInterruptionEnded:)
+                                               name:AVCaptureSessionInterruptionEndedNotification
+                                             object:_captureSession];
+
   _captureVideoOutput = [AVCaptureVideoDataOutput new];
   // Default analysis format. Must be set explicitly BEFORE the baseline
   // pixel-format call below: the enum's zero value is yuv_420_888, so a
@@ -1204,9 +1229,10 @@ static const int32_t kStreamingMaxFps = 30;
     [self teardownFocusStableObservation];
     [self->_focusStableCompletions removeAllObjects];
   });
-  [[NSNotificationCenter defaultCenter] removeObserver:self
-      name:AVCaptureDeviceSubjectAreaDidChangeNotification
-    object:nil];
+  // Drops the subject-area observation and the MIN-3440 session-health
+  // observers in one go — self observes nothing else via NSNotificationCenter
+  // (focus-stable tracking is KVO, torn down above).
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
 
   for (AVCaptureInput *input in [_captureSession inputs]) {
     [_captureSession removeInput:input];
@@ -1236,6 +1262,7 @@ static const int32_t kStreamingMaxFps = 30;
 
 /// Start camera preview
 - (void)start {
+  _shouldBeRunning = YES;
   dispatch_async(_dispatchQueue, ^{
     [self->_captureSession startRunning];
   });
@@ -1243,7 +1270,53 @@ static const int32_t kStreamingMaxFps = 30;
 
 /// Stop camera preview
 - (void)stop {
+  _shouldBeRunning = NO;
   [_captureSession stopRunning];
+}
+
+#pragma mark - Session-death recovery (MIN-3440)
+
+/// The session stopped because of an error. AVErrorMediaServicesWereReset
+/// (mediaserverd died) is the recoverable case Apple documents: the app must
+/// call -startRunning itself or the preview stays frozen forever. Other codes
+/// are only logged — blindly restarting can loop on unrecoverable errors
+/// (hardware fault, camera access revoked).
+- (void)sessionRuntimeError:(NSNotification *)notification {
+  NSError *error = notification.userInfo[AVCaptureSessionErrorKey];
+  NSLog(@"CamerAwesome: capture session runtime error: %@", error);
+  if (error.code == AVErrorMediaServicesWereReset) {
+    [self restartSessionIfNeeded];
+  }
+}
+
+/// Interruption began. Log the reason (system pressure, camera claimed by
+/// another foreground app, backgrounding, …) so field reports of a frozen
+/// camera come with evidence in the device log.
+- (void)sessionWasInterrupted:(NSNotification *)notification {
+  NSNumber *reason = notification.userInfo[AVCaptureSessionInterruptionReasonKey];
+  NSLog(@"CamerAwesome: capture session interrupted, reason %@", reason);
+}
+
+/// Interruption over. AVFoundation resumes the session by itself in the common
+/// cases (backgrounding); the explicit restart covers the ones where it
+/// doesn't, e.g. recovery after a system-pressure shutdown.
+- (void)sessionInterruptionEnded:(NSNotification *)notification {
+  NSLog(@"CamerAwesome: capture session interruption ended");
+  [self restartSessionIfNeeded];
+}
+
+/// Restart the session on the session queue if Dart still expects it running.
+/// -startRunning on an already-running session is a no-op, and _shouldBeRunning
+/// is re-checked on _dispatchQueue so a concurrent -stop wins over a queued
+/// recovery.
+- (void)restartSessionIfNeeded {
+  dispatch_async(_dispatchQueue, ^{
+    if (!self->_shouldBeRunning || self->_captureSession.isRunning) {
+      return;
+    }
+    NSLog(@"CamerAwesome: restarting capture session");
+    [self->_captureSession startRunning];
+  });
 }
 
 /// Set sensor between Front & Rear camera

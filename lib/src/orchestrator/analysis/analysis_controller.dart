@@ -47,8 +47,8 @@ class AnalysisController {
     if (Platform.isIOS) {
       await CamerawesomePlugin.setupAnalysis(
         format: conf.cupertinoOptions.outputFormat,
-        // TODO Can't set width on iOS
-        width: 0,
+        // Long-edge request; 0 keeps the native 1024 default (MIN-3475).
+        width: conf.cupertinoOptions.width,
         maxFramesPerSecond: conf.maxFramesPerSecond,
         autoStart: conf.autoStart,
       );

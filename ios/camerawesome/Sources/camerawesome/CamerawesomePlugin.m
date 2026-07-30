@@ -48,6 +48,11 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
 /// lives here so it survives camera re-setup, like captureOrientationOverride.
 /// (MIN-2646)
 @property(nonatomic, strong, nullable) NSNumber *previewOrientationOverride;
+/// Close-range scan bias requested by the Dart side (MIN-3475). The scanner
+/// screens set it in initState — usually before setupCamera has created the
+/// SingleCameraPreview — so it lives here and is pushed onto every new camera,
+/// like captureOrientationOverride. Cleared by the screens on dispose.
+@property(nonatomic, assign) BOOL closeRangeScanModeRequested;
 - (instancetype)init:(NSObject<FlutterPluginRegistrar>*)registrar;
 @end
 
@@ -116,6 +121,25 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
   [previewOrientationChannel setMethodCallHandler:^(FlutterMethodCall *call, FlutterResult result) {
     if ([call.method isEqualToString:@"setPreviewOrientationOverride"]) {
       [weakInstance setPreviewOrientationOverrideFromString:call.arguments];
+      result(nil);
+    } else {
+      result(FlutterMethodNotImplemented);
+    }
+  }];
+
+  // Close-range scan bias for the field-scanner screens (MIN-3475). A plain
+  // method channel for the same reason as preview_orientation above: one
+  // iOS-only setter isn't worth regenerating the pigeon interface across
+  // three platforms. Stored on the plugin so a call arriving before
+  // setupCamera still lands on the camera it eventually creates.
+  FlutterMethodChannel *closeRangeScanChannel =
+      [FlutterMethodChannel methodChannelWithName:@"camerawesome/close_range_scan"
+                                  binaryMessenger:[registrar messenger]];
+  [closeRangeScanChannel setMethodCallHandler:^(FlutterMethodCall *call, FlutterResult result) {
+    if ([call.method isEqualToString:@"setCloseRangeScanMode"]) {
+      BOOL enabled = [call.arguments boolValue];
+      weakInstance.closeRangeScanModeRequested = enabled;
+      [weakInstance.camera setCloseRangeScanMode:enabled];
       result(nil);
     } else {
       result(FlutterMethodNotImplemented);
@@ -231,7 +255,12 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
                                                         captureMode:captureModeType
                                                          completion:completion
                                                       dispatchQueue:dispatch_queue_create("camerawesome.single_preview.dispatchqueue", NULL)];
-    
+
+    // The scanner screens request scan mode before setupCamera runs (their
+    // initState precedes camera init) — push the stored request onto the
+    // fresh camera (MIN-3475). No-op when it was never set.
+    [self.camera setCloseRangeScanMode:self.closeRangeScanModeRequested];
+
     int64_t textureId = [self->_textureRegistry registerTexture:self.camera.previewTexture];
     
     __weak typeof(self) weakSelf = self;
@@ -880,6 +909,13 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
   // the 32BGRA behavior.
   InputAnalysisImageFormat requestedFormat = [format isEqualToString:@"nv21"] ? nv21 : bgra8888;
   [self.camera updateRequestedAnalysisFormat:requestedFormat];
+
+  // Honor the stream's requested resolution too (MIN-3475): [width] always
+  // arrived over the pigeon bridge but was ignored on iOS, pinning analysis
+  // buffers to the built-in 1024 long-edge cap. 0 (the Dart default) keeps
+  // that cap; the field scanners ask for 1920 so small 1D barcodes retain
+  // enough pixels per module to decode.
+  [self.camera updateRequestedAnalysisWidth:[width intValue]];
 
   // Force a frame rate to improve performance
   [self.camera.imageStreamController setMaxFramesPerSecond:[maxFramesPerSecond floatValue]];

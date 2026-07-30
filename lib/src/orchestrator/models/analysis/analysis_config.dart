@@ -74,12 +74,22 @@ class CupertinoAnalysisOptions {
   /// Recommended format for image analysis on iOS is bgra8888.
   final InputAnalysisImageFormat outputFormat;
 
+  /// Requested long edge, in pixels, for the analysis buffers. iOS caps
+  /// analysis frames at a 1024 long edge by default (Android parity,
+  /// MIN-3056); a consumer that needs more detail — small 1D barcodes hold
+  /// their data in bar widths alone and go undecodable below ~2px per module
+  /// (MIN-3475) — can raise it. 0 keeps the platform default. The active
+  /// format is the hard ceiling (the native side only ever downscales), so
+  /// values beyond ~1920 deliver the format size.
+  final int width;
+
   const CupertinoAnalysisOptions._({
     required this.outputFormat,
+    this.width = 0,
   });
 
-  const CupertinoAnalysisOptions.bgra8888()
-      : this._(outputFormat: InputAnalysisImageFormat.bgra8888);
+  const CupertinoAnalysisOptions.bgra8888({int width = 0})
+      : this._(outputFormat: InputAnalysisImageFormat.bgra8888, width: width);
 
   /// Luma-only analysis frames (MIN-3084): the native side switches the data
   /// output to biplanar YUV (420f full-range, falling back to 420v video-range

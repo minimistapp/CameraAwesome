@@ -72,6 +72,16 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // -stop). Gates the MIN-3440 session-death recovery so an auto-restart can
   // never resurrect a deliberately stopped session (dispose, screen closed).
   BOOL _shouldBeRunning;
+  // Close-range scan bias (MIN-3475), set only by the field-scanner screens.
+  // Flips applyContinuousAutoFocusPolicy from the MIN-3071 restricted
+  // constituent switching to `.auto`, so a triple-camera device can do its
+  // focus-driven hop to the ultra-wide/macro constituent — without it the
+  // wide lens (min focus ~20cm on the Pros) can never sharpen a small code
+  // held close, and the scanner sits permanently defocused.
+  BOOL _closeRangeScanMode;
+  // Long edge (px) the Dart analysis stream requested (MIN-3475); 0 means
+  // "no request" and keeps applyAnalysisOutputDownscale's built-in 1024 cap.
+  int32_t _requestedAnalysisLongEdge;
 }
 
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
@@ -687,13 +697,17 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
 
   // Long-edge cap for the analysis buffers. 1024 for Android parity — the app
   // requests nv21 analysis frames at width 1024 there — so both platforms feed
-  // the same-sized frames downstream (MIN-3056).
+  // the same-sized frames downstream (MIN-3056). A stream that asked for more
+  // via setupImageAnalysisStream's width (small 1D barcodes need ~2x the
+  // detail a QR does, MIN-3475) raises the cap; the active format is still
+  // the hard ceiling since we only ever downscale.
   const int32_t kTargetLongEdge = 1024;
+  int32_t targetLongEdge = _requestedAnalysisLongEdge > 0 ? _requestedAnalysisLongEdge : kTargetLongEdge;
   int32_t g = SCPGreatestCommonDivisor(dims.width, dims.height);
   int32_t ratioW = dims.width / g;   // aspect in lowest terms
   int32_t ratioH = dims.height / g;
   int32_t longRatio = MAX(ratioW, ratioH);
-  int32_t multiple = (longRatio > 0) ? (kTargetLongEdge / longRatio) : 0;
+  int32_t multiple = (longRatio > 0) ? (targetLongEdge / longRatio) : 0;
   int32_t scaledW = ratioW * multiple;
   int32_t scaledH = ratioH * multiple;
 
@@ -701,7 +715,7 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
   // Trace the downscale decision (requested vs delivered buffer size). Runs on
   // preset/format changes only, never per frame.
   NSLog(@"applyAnalysisOutputDownscale: long-edge cap %d, requested %dx%d, delivering %dx%d (active format %dx%d)",
-        kTargetLongEdge, scaledW, scaledH,
+        targetLongEdge, scaledW, scaledH,
         willDownscale ? scaledW : dims.width,
         willDownscale ? scaledH : dims.height,
         dims.width, dims.height);
@@ -931,6 +945,26 @@ static const int32_t kStreamingMaxFps = 30;
   [self applyAnalysisOutputDownscale];
 }
 
+/// Store the analysis long edge the Dart stream requested (MIN-3475) and
+/// re-apply the downscale. Same lifecycle as -updateRequestedAnalysisFormat:
+/// — persists across sensor switches, resets with the camera instance.
+- (void)updateRequestedAnalysisWidth:(int)width {
+  int32_t requested = width > 0 ? (int32_t)width : 0;
+  if (_requestedAnalysisLongEdge == requested) {
+    return;
+  }
+  _requestedAnalysisLongEdge = requested;
+  [self applyAnalysisOutputDownscale];
+}
+
+- (void)setCloseRangeScanMode:(BOOL)enabled {
+  if (_closeRangeScanMode == enabled) {
+    return;
+  }
+  _closeRangeScanMode = enabled;
+  [self applyContinuousAutoFocusPolicy];
+}
+
 /// Undo the recording-time BGRA override (MIN-3084): restore the requested
 /// nv21 (YUV) analysis format once the video writer no longer consumes the
 /// data-output buffers. No-op for BGRA streams (the flag is only set for nv21).
@@ -1026,7 +1060,21 @@ static const int32_t kStreamingMaxFps = 30;
     [_captureDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
   }
   if ([_captureDevice isSmoothAutoFocusSupported]) {
-    [_captureDevice setSmoothAutoFocusEnabled:YES];
+    // Smooth AF trades convergence speed for cinematic lens moves — right for
+    // the capture preview, wrong for a scanner racing to sharpen a held-up
+    // code, so scan mode takes the fast racks (MIN-3475).
+    [_captureDevice setSmoothAutoFocusEnabled:_closeRangeScanMode ? NO : YES];
+  }
+  if ([_captureDevice isAutoFocusRangeRestrictionSupported]) {
+    // Codes are always held near the device; keeping AF out of the far range
+    // halves the hunt. Written in both directions so toggling scan mode off
+    // actively clears the near-only bias — a camera that inherited the
+    // plugin-stored request and later had it withdrawn must not stay stuck
+    // near (CodeRabbit, PR #33). Tap-to-focus (focusOnPoint:) still applies
+    // its per-tap IOSFocusSettings value on top afterwards.
+    [_captureDevice setAutoFocusRangeRestriction:_closeRangeScanMode
+                                                     ? AVCaptureAutoFocusRangeRestrictionNear
+                                                     : AVCaptureAutoFocusRangeRestrictionNone];
   }
 
   // MIN-3071: restrict automatic primary-constituent switching to zoom changes
@@ -1037,12 +1085,24 @@ static const int32_t kStreamingMaxFps = 30;
   // only `.videoZoomChanged` keeps the explicit zoom presets switching while
   // suppressing the focus/exposure-driven fallbacks. The setter throws on devices
   // without constituent switching, so gate on the behavior not being `.unsupported`.
+  //
+  // Close-range scan mode (MIN-3475) is the deliberate exception: that fallback
+  // hop IS the macro mode a triple-camera device needs to focus a code held
+  // closer than the wide lens's ~20cm minimum — and a scanner screen has no
+  // framing to protect from the FOV jump. `.auto` requires the conditions
+  // argument to be `.none` (the API contract when not `.restricted`).
   if (@available(iOS 15.0, *)) {
     if (_captureDevice.activePrimaryConstituentDeviceSwitchingBehavior !=
         AVCapturePrimaryConstituentDeviceSwitchingBehaviorUnsupported) {
-      [_captureDevice
-          setPrimaryConstituentDeviceSwitchingBehavior:AVCapturePrimaryConstituentDeviceSwitchingBehaviorRestricted
-                 restrictedSwitchingBehaviorConditions:AVCapturePrimaryConstituentDeviceRestrictedSwitchingBehaviorConditionVideoZoomChanged];
+      if (_closeRangeScanMode) {
+        [_captureDevice
+            setPrimaryConstituentDeviceSwitchingBehavior:AVCapturePrimaryConstituentDeviceSwitchingBehaviorAuto
+                   restrictedSwitchingBehaviorConditions:AVCapturePrimaryConstituentDeviceRestrictedSwitchingBehaviorConditionNone];
+      } else {
+        [_captureDevice
+            setPrimaryConstituentDeviceSwitchingBehavior:AVCapturePrimaryConstituentDeviceSwitchingBehaviorRestricted
+                   restrictedSwitchingBehaviorConditions:AVCapturePrimaryConstituentDeviceRestrictedSwitchingBehaviorConditionVideoZoomChanged];
+      }
     }
   }
 

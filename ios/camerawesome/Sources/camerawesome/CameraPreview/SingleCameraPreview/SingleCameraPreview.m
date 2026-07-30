@@ -1065,11 +1065,16 @@ static const int32_t kStreamingMaxFps = 30;
     // code, so scan mode takes the fast racks (MIN-3475).
     [_captureDevice setSmoothAutoFocusEnabled:_closeRangeScanMode ? NO : YES];
   }
-  if (_closeRangeScanMode && [_captureDevice isAutoFocusRangeRestrictionSupported]) {
+  if ([_captureDevice isAutoFocusRangeRestrictionSupported]) {
     // Codes are always held near the device; keeping AF out of the far range
-    // halves the hunt. Only ever set while in scan mode — the main capture
-    // screen manages this per tap via IOSFocusSettings (focusOnPoint:).
-    [_captureDevice setAutoFocusRangeRestriction:AVCaptureAutoFocusRangeRestrictionNear];
+    // halves the hunt. Written in both directions so toggling scan mode off
+    // actively clears the near-only bias — a camera that inherited the
+    // plugin-stored request and later had it withdrawn must not stay stuck
+    // near (CodeRabbit, PR #33). Tap-to-focus (focusOnPoint:) still applies
+    // its per-tap IOSFocusSettings value on top afterwards.
+    [_captureDevice setAutoFocusRangeRestriction:_closeRangeScanMode
+                                                     ? AVCaptureAutoFocusRangeRestrictionNear
+                                                     : AVCaptureAutoFocusRangeRestrictionNone];
   }
 
   // MIN-3071: restrict automatic primary-constituent switching to zoom changes

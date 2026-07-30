@@ -446,6 +446,26 @@ class CamerawesomePlugin {
     );
   }
 
+  static const MethodChannel _closeRangeScanChannel =
+      MethodChannel('camerawesome/close_range_scan');
+
+  /// Bias the iOS session for scanning a code held close to the device
+  /// (MIN-3475). Re-allows the virtual multi-camera's focus-driven fallback to
+  /// the ultra-wide/macro constituent — suppressed everywhere else since
+  /// MIN-3071 — which is the only way a triple-camera device (wide lens
+  /// minimum focus ~20cm) can sharpen a small code held closer than that. Also
+  /// restricts autofocus to the near range and disables smooth AF for faster
+  /// convergence. The request survives camera (re)creation, so set it when
+  /// entering a scanner screen (before or after camera init) and clear it on
+  /// dispose. No-op on Android.
+  static Future<void> setCloseRangeScanMode(bool enabled) {
+    if (!Platform.isIOS) return Future.value();
+    return _closeRangeScanChannel.invokeMethod(
+      'setCloseRangeScanMode',
+      enabled,
+    );
+  }
+
   /// set brightness manually with range [0,1]
   static Future<void> setBrightness(double brightness) {
     if (brightness < 0 || brightness > 1) {

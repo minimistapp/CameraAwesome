@@ -130,6 +130,14 @@ AVCaptureMetadataOutputObjectsDelegate>
 - (void)applyFrameRateCapAsync;
 - (void)updateAnalysisConnectionState;
 - (void)updateRequestedAnalysisFormat:(InputAnalysisImageFormat)format;
+/// Long-edge (px) the Dart analysis stream asked for; 0 keeps the built-in
+/// 1024 cap. See -applyAnalysisOutputDownscale (MIN-3475).
+- (void)updateRequestedAnalysisWidth:(int)width;
+/// Bias this session for close-range code scanning (MIN-3475): re-allows the
+/// virtual multi-camera's focus-driven fallback to the ultra-wide/macro
+/// constituent (suppressed everywhere else since MIN-3071), restricts AF to
+/// the near range and drops smooth AF for faster racks. Scanner screens only.
+- (void)setCloseRangeScanMode:(BOOL)enabled;
 @end
 
 NS_ASSUME_NONNULL_END

@@ -31,9 +31,21 @@ class ImageAnalysisBuilder private constructor(
     // analysis FOV — cutting the photo's top/bottom vs the preview (MIN-1991).
     var aspectRatio: Int,
     private val executor: Executor,
-    var previewStreamSink: EventChannel.EventSink? = null,
     private val maxFramesPerSecond: Double?,
 ) {
+    // The ack bookkeeping below lives and dies with the Dart stream, not with a
+    // CameraX binding: acks route to this builder instance across rebinds, so a
+    // rebind must NOT clear the count (a late ack from the previous binding
+    // would then decrement the new binding's count). When the stream attaches
+    // or detaches, though, outstanding acks are orphaned — reset so a lost ack
+    // can't hold the gate to the stale-timeout cadence forever.
+    var previewStreamSink: EventChannel.EventSink? = null
+        set(value) {
+            field = value
+            pendingAcks.set(0)
+            lastSentTimeStamp = 0L
+        }
+
     private var lastImageEmittedTimeStamp: Long? = null
 
     // Frames sent to Dart but not yet acked via receivedImageFromStream ->
@@ -52,8 +64,8 @@ class ImageAnalysisBuilder private constructor(
     private var lastSentTimeStamp: Long = 0L
 
     fun lastFrameAnalysisFinished() {
-        // Never below zero: an ack from a use case torn down by build() must
-        // not pre-open the gate of the next binding.
+        // Never below zero: an ack for a frame orphaned by a sink reset must
+        // not pre-open the gate for the frame that follows it.
         pendingAcks.updateAndGet { if (it > 0) it - 1 else 0 }
     }
 
@@ -93,8 +105,6 @@ class ImageAnalysisBuilder private constructor(
     @SuppressLint("RestrictedApi")
     fun build(): ImageAnalysis {
         val outputImageFormat = if (format == OutputImageFormat.RGBA_8888) ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888 else ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888
-        pendingAcks.set(0)
-        lastSentTimeStamp = 0L
         // Align analysis with preview on aspect ratio (MIN-1991: a ratio mismatch
         // makes the shared UseCaseGroup ViewPort crop captures to the analysis FOV)
         // *and* honour the caller's requested width. Expressing the ratio via

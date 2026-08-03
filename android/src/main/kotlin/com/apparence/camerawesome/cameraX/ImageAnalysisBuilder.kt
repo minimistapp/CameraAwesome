@@ -13,6 +13,7 @@ import androidx.camera.core.resolutionselector.ResolutionStrategy
 import io.flutter.plugin.common.EventChannel
 import kotlinx.coroutines.*
 import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.roundToLong
 
 enum class OutputImageFormat {
@@ -35,18 +36,25 @@ class ImageAnalysisBuilder private constructor(
 ) {
     private var lastImageEmittedTimeStamp: Long? = null
 
-    // Timestamp of the frame currently being processed by Dart, 0 when idle.
-    // Dart acks each frame via receivedImageFromStream -> lastFrameAnalysisFinished.
-    // Keeping at most one un-acked frame in flight bounds the platform channel's
-    // main-thread queue: without it, frames (each a multi-MB map) pile up faster
-    // than Dart drains them and every other platform call — including takePhoto —
-    // queues behind them (MIN-3577). The predecessor of this flag was a one-shot
-    // latch that stopped gating after the first frame.
+    // Frames sent to Dart but not yet acked via receivedImageFromStream ->
+    // lastFrameAnalysisFinished. Keeping un-acked frames from accumulating
+    // bounds the platform channel's main-thread queue: without it, frames (each
+    // a multi-MB map) pile up faster than Dart drains them and every other
+    // platform call — including takePhoto — queues behind them (MIN-3577). The
+    // predecessor of this gate was a one-shot latch that stopped gating after
+    // the first frame. A counter rather than a boolean because acks carry no
+    // frame id: after a stale-ack escape puts a second frame in flight, the
+    // first frame's late ack must not reopen the gate while the second is
+    // still outstanding.
+    private val pendingAcks = AtomicInteger(0)
+
     @Volatile
-    private var inFlightSince: Long = 0L
+    private var lastSentTimeStamp: Long = 0L
 
     fun lastFrameAnalysisFinished() {
-        inFlightSince = 0L
+        // Never below zero: an ack from a use case torn down by build() must
+        // not pre-open the gate of the next binding.
+        pendingAcks.updateAndGet { if (it > 0) it - 1 else 0 }
     }
 
     companion object {
@@ -85,7 +93,8 @@ class ImageAnalysisBuilder private constructor(
     @SuppressLint("RestrictedApi")
     fun build(): ImageAnalysis {
         val outputImageFormat = if (format == OutputImageFormat.RGBA_8888) ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888 else ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888
-        inFlightSince = 0L
+        pendingAcks.set(0)
+        lastSentTimeStamp = 0L
         // Align analysis with preview on aspect ratio (MIN-1991: a ratio mismatch
         // makes the shared UseCaseGroup ViewPort crop captures to the analysis FOV)
         // *and* honour the caller's requested width. Expressing the ratio via
@@ -134,7 +143,7 @@ class ImageAnalysisBuilder private constructor(
                 if (last != null && now - last < minIntervalMs) {
                     return@use
                 }
-                if (inFlightSince != 0L && now - inFlightSince < STALE_ACK_TIMEOUT_MS) {
+                if (pendingAcks.get() > 0 && now - lastSentTimeStamp < STALE_ACK_TIMEOUT_MS) {
                     return@use
                 }
                 val imageMap = imageProxyBaseAdapter(imageProxy)
@@ -169,7 +178,8 @@ class ImageAnalysisBuilder private constructor(
                     }
                 }
                 lastImageEmittedTimeStamp = now
-                inFlightSince = now
+                lastSentTimeStamp = now
+                pendingAcks.incrementAndGet()
                 executor.execute { previewStreamSink?.success(imageMap) }
             }
         }

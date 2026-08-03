@@ -10,11 +10,9 @@ import androidx.camera.core.internal.utils.ImageUtil
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
-import com.apparence.camerawesome.utils.ResettableCountDownLatch
 import io.flutter.plugin.common.EventChannel
 import kotlinx.coroutines.*
 import java.util.concurrent.Executor
-import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
 enum class OutputImageFormat {
@@ -36,12 +34,26 @@ class ImageAnalysisBuilder private constructor(
     private val maxFramesPerSecond: Double?,
 ) {
     private var lastImageEmittedTimeStamp: Long? = null
-    private var countDownLatch = ResettableCountDownLatch(1)
+
+    // Timestamp of the frame currently being processed by Dart, 0 when idle.
+    // Dart acks each frame via receivedImageFromStream -> lastFrameAnalysisFinished.
+    // Keeping at most one un-acked frame in flight bounds the platform channel's
+    // main-thread queue: without it, frames (each a multi-MB map) pile up faster
+    // than Dart drains them and every other platform call — including takePhoto —
+    // queues behind them (MIN-3577). The predecessor of this flag was a one-shot
+    // latch that stopped gating after the first frame.
+    @Volatile
+    private var inFlightSince: Long = 0L
+
     fun lastFrameAnalysisFinished() {
-        countDownLatch.countDown()
+        inFlightSince = 0L
     }
 
     companion object {
+        // If an ack never arrives (e.g. the Dart-side listener threw before
+        // acking), resume sending after this long instead of wedging the stream.
+        private const val STALE_ACK_TIMEOUT_MS = 2_000L
+
         fun configure(
             aspectRatio: Int,
             format: OutputImageFormat,
@@ -73,7 +85,7 @@ class ImageAnalysisBuilder private constructor(
     @SuppressLint("RestrictedApi")
     fun build(): ImageAnalysis {
         val outputImageFormat = if (format == OutputImageFormat.RGBA_8888) ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888 else ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888
-        countDownLatch.reset()
+        inFlightSince = 0L
         // Align analysis with preview on aspect ratio (MIN-1991: a ratio mismatch
         // makes the shared UseCaseGroup ViewPort crop captures to the analysis FOV)
         // *and* honour the caller's requested width. Expressing the ratio via
@@ -105,61 +117,61 @@ class ImageAnalysisBuilder private constructor(
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .setOutputImageFormat(outputImageFormat).build()
         imageAnalysis.setAnalyzer(Dispatchers.IO.asExecutor()) { imageProxy ->
-            if (previewStreamSink == null) {
-                return@setAnalyzer
-            }
-            when (format) {
-                OutputImageFormat.JPEG -> {
-                    val jpegImage = ImageUtil.yuvImageToJpegByteArray(
-                        imageProxy,
-                        Rect(0, 0, imageProxy.width, imageProxy.height),
-                        80,
-                        imageProxy.imageInfo.rotationDegrees
-                    )
-                    val imageMap = imageProxyBaseAdapter(imageProxy)
-                    imageMap["jpegImage"] = jpegImage
-                    imageMap["cropRect"] = cropRect(imageProxy)
-                    executor.execute { previewStreamSink?.success(imageMap) }
+            // `use` closes the ImageProxy as soon as this block returns — whether
+            // the frame is dropped or copied. The previous scheme sent every frame
+            // and applied the FPS cap by *delaying the close*, holding the camera's
+            // buffer hostage so KEEP_ONLY_LATEST couldn't hand over fresh frames:
+            // the preview pipeline itself stuttered under load (MIN-3577). Now
+            // dropped frames cost nothing and the buffer is always returned
+            // immediately.
+            imageProxy.use {
+                if (previewStreamSink == null) {
+                    return@use
                 }
-
-                OutputImageFormat.YUV_420_888 -> {
-                    val planes = imagePlanesAdapter(imageProxy)
-                    val imageMap = imageProxyBaseAdapter(imageProxy)
-                    imageMap["planes"] = planes
-                    imageMap["cropRect"] = cropRect(imageProxy)
-                    executor.execute { previewStreamSink?.success(imageMap) }
+                val now = System.currentTimeMillis()
+                val minIntervalMs = maxFramesPerSecond?.let { (1000 / it).roundToLong() } ?: 0L
+                val last = lastImageEmittedTimeStamp
+                if (last != null && now - last < minIntervalMs) {
+                    return@use
                 }
-
-                OutputImageFormat.NV21 -> {
-                    val nv21Image = ImageUtil.yuv_420_888toNv21(imageProxy)
-                    val planes = imagePlanesAdapter(imageProxy)
-                    val imageMap = imageProxyBaseAdapter(imageProxy)
-                    imageMap["nv21Image"] = nv21Image
-                    imageMap["planes"] = planes
-                    imageMap["cropRect"] = cropRect(imageProxy)
-                    executor.execute { previewStreamSink?.success(imageMap) }
+                if (inFlightSince != 0L && now - inFlightSince < STALE_ACK_TIMEOUT_MS) {
+                    return@use
                 }
-                OutputImageFormat.RGBA_8888 -> {
-                    val planes = imagePlanesAdapter(imageProxy)
-                    val imageMap = imageProxyBaseAdapter(imageProxy)
-                    imageMap["planes"] = planes
-                    executor.execute { previewStreamSink?.success(imageMap) }
-                }
-            }
-            CoroutineScope(Dispatchers.IO).launch {
-                maxFramesPerSecond?.let {
-                    if (lastImageEmittedTimeStamp == null) {
-                        delay((1000 / it).roundToLong())
-                    } else {
-                        delay(
-                            (1000 / it).roundToInt() - (System.currentTimeMillis() - lastImageEmittedTimeStamp!!)
+                val imageMap = imageProxyBaseAdapter(imageProxy)
+                when (format) {
+                    OutputImageFormat.JPEG -> {
+                        imageMap["jpegImage"] = ImageUtil.yuvImageToJpegByteArray(
+                            imageProxy,
+                            Rect(0, 0, imageProxy.width, imageProxy.height),
+                            80,
+                            imageProxy.imageInfo.rotationDegrees
                         )
+                        imageMap["cropRect"] = cropRect(imageProxy)
+                    }
+
+                    OutputImageFormat.YUV_420_888 -> {
+                        imageMap["planes"] = imagePlanesAdapter(imageProxy)
+                        imageMap["cropRect"] = cropRect(imageProxy)
+                    }
+
+                    OutputImageFormat.NV21 -> {
+                        imageMap["nv21Image"] = ImageUtil.yuv_420_888toNv21(imageProxy)
+                        // Stride metadata only: NV21 consumers read
+                        // planes.first.bytesPerRow, while the pixel data travels in
+                        // nv21Image. Copying the three YUV planes alongside it
+                        // roughly doubled the per-frame payload (MIN-3577).
+                        imageMap["planes"] = imagePlanesMetadataAdapter(imageProxy)
+                        imageMap["cropRect"] = cropRect(imageProxy)
+                    }
+
+                    OutputImageFormat.RGBA_8888 -> {
+                        imageMap["planes"] = imagePlanesAdapter(imageProxy)
                     }
                 }
-                countDownLatch.await()
-                imageProxy.close()
+                lastImageEmittedTimeStamp = now
+                inFlightSince = now
+                executor.execute { previewStreamSink?.success(imageMap) }
             }
-            lastImageEmittedTimeStamp = System.currentTimeMillis()
         }
         return imageAnalysis
     }
@@ -183,6 +195,15 @@ class ImageAnalysisBuilder private constructor(
             "format" to format.name.lowercase(),
             "rotation" to "rotation${imageProxy.imageInfo.rotationDegrees}deg",
         )
+    }
+
+    @SuppressLint("RestrictedApi", "UnsafeOptInUsageError")
+    private fun imagePlanesMetadataAdapter(imageProxy: ImageProxy): List<Map<String, Any>> {
+        return imageProxy.image!!.planes.map {
+            mapOf(
+                "bytes" to ByteArray(0), "rowStride" to it.rowStride, "pixelStride" to it.pixelStride
+            )
+        }
     }
 
     @SuppressLint("RestrictedApi", "UnsafeOptInUsageError")

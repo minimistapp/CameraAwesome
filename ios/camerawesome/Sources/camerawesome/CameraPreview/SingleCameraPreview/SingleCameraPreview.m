@@ -314,11 +314,11 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // active format's full sensor size per-format in -applyMaxPhotoDimensions
   // (MIN-3066); this flag stays as the fallback for older iOS.
   [_capturePhotoOutput setHighResolutionCaptureEnabled:YES];
-  // Ceiling for the modern processing pipeline (Smart HDR / Deep Fusion). Must
-  // be set before the session starts running, and per-shot requests in
-  // takePictureAtPath must not exceed it. Memory-gated: constrained iPads cap at
-  // Speed to avoid the full-sensor Deep-Fusion jetsam (MIN-3176) — see
-  // -preferredPhotoQualityPrioritization.
+  // Ceiling for the capture processing pipeline. Must be set before the
+  // session starts running, and per-shot requests in takePictureAtPath must
+  // not exceed it. Speed everywhere: no Deep-Fusion jetsam on constrained
+  // iPads (MIN-3176) and no multi-frame bracket delaying the frame latch
+  // (MIN-3080) — see -preferredPhotoQualityPrioritization.
   if (@available(iOS 13.0, *)) {
     _capturePhotoOutput.maxPhotoQualityPrioritization = [self preferredPhotoQualityPrioritization];
   }
@@ -624,9 +624,10 @@ static int32_t SCPFormatMaxPhotoWidth(AVCaptureDeviceFormat *format) {
 ///   3. lower-power variant among otherwise-equal formats (MIN-2747) — so the
 ///      thermal preference survives as a tiebreak, not a hard rule.
 /// Video width stays capped at [kPreviewFourThreeMaxWidth] (streaming/analysis
-/// memory + heat); only the still ceiling is allowed to reach the sensor, via
-/// -applyMaxPhotoDimensions. Returns nil if the device exposes no 4:3 format in
-/// range, in which case the caller falls back to the 640x480 preset.
+/// memory + heat); only the still ceiling is raised — to ~12MP, not the sensor
+/// max (MIN-3080) — via -applyMaxPhotoDimensions. Returns nil if the device
+/// exposes no 4:3 format in range, in which case the caller falls back to the
+/// 640x480 preset.
 - (AVCaptureDeviceFormat *)bestStreamingFourThreeFormat {
   AVCaptureDeviceFormat *best = nil;
   int32_t bestVideoWidth = 0;
@@ -976,16 +977,32 @@ static const int32_t kStreamingMaxFps = 30;
   [self applyAnalysisOutputDownscale];
 }
 
-/// Raise the still-capture ceiling to the sensor's full size for the format now
-/// active, decoupling photo resolution from the (deliberately small) streaming/
-/// analysis format (MIN-3066). While the scanner streams, the session runs on a
+/// Long-edge target for stills. ~12MP (4032px on a 4:3 sensor) — the classic
+/// full-sensor size, and the resolution the native Camera app ships by default.
+/// The ceiling used to be the *largest* supportedMaxPhotoDimensions, which on
+/// 48MP sensors (iPhone 14 Pro+) selected the 8064-wide readout: every shot
+/// then paid a per-capture sensor reconfiguration away from the small streaming
+/// format plus a multi-frame fusion pass at 4x the pixels, latching the frame
+/// ~1s after the tap — the MIN-3080 "photo is a different moment than the
+/// preview" lag (and the MIN-3125 upload-weight blow-up). The app's own
+/// pipeline compresses/downscales well below 48MP anyway, so the extra pixels
+/// were pure cost.
+static const int32_t kStillLongEdgeTarget = 4032;
+
+/// Raise the still-capture ceiling for the format now active, decoupling photo
+/// resolution from the (deliberately small) streaming/analysis format
+/// (MIN-3066). While the scanner streams, the session runs on a
 /// ≤ kPreviewFourThreeMaxWidth activeFormat; without this, AVCapturePhotoOutput
 /// inherits that format's still ceiling (~2016×1512, → 1512² once 1:1-cropped)
 /// instead of the sensor. iOS 16+ lets the photo output produce stills larger
 /// than the video resolution via maxPhotoDimensions, and bestStreamingFourThree
-/// Format already prefers a format that can reach the sensor. The value must be
-/// one of the active format's supportedMaxPhotoDimensions (we take the largest,
-/// so it is valid by construction) and must be re-applied on every activeFormat/
+/// Format already prefers a format that can reach the sensor. Among the active
+/// format's supportedMaxPhotoDimensions we pick the *smallest* entry whose long
+/// edge reaches kStillLongEdgeTarget — not the largest — so 48MP sensors still
+/// deliver ~12MP stills without the per-shot high-res readout switch that
+/// delays the frame latch (MIN-3080); if no entry reaches the target the
+/// largest available wins. The value is one of supportedMaxPhotoDimensions, so
+/// it is valid by construction, and must be re-applied on every activeFormat/
 /// preset change. Pre-iOS-16 falls back to highResolutionCaptureEnabled/
 /// highResolutionPhotoEnabled, set on the output and per shot elsewhere.
 - (void)applyMaxPhotoDimensions {
@@ -997,13 +1014,22 @@ static const int32_t kStreamingMaxFps = 30;
     if (format == nil) {
       return;
     }
-    CMVideoDimensions maxDims = {0, 0};
+    CMVideoDimensions maxDims = {0, 0};     // largest seen — fallback
+    CMVideoDimensions targetDims = {0, 0};  // smallest that reaches the target
     for (NSValue *value in format.supportedMaxPhotoDimensions) {
       CMVideoDimensions d = {0, 0};
       [value getValue:&d size:sizeof(d)];
       if ((int64_t)d.width * d.height > (int64_t)maxDims.width * maxDims.height) {
         maxDims = d;
       }
+      if (MAX(d.width, d.height) >= kStillLongEdgeTarget &&
+          (targetDims.width == 0 ||
+           (int64_t)d.width * d.height < (int64_t)targetDims.width * targetDims.height)) {
+        targetDims = d;
+      }
+    }
+    if (targetDims.width > 0) {
+      maxDims = targetDims;
     }
     if (maxDims.width <= 0 || maxDims.height <= 0) {
       return;
@@ -1017,26 +1043,20 @@ static const int32_t kStreamingMaxFps = 30;
   }
 }
 
-/// The computational-photography quality tier to request, adapted to device RAM.
-/// `Balanced` opts into Smart HDR / Deep Fusion, which fuses several full-sensor
-/// frames (full-sensor since MIN-3066) and does extra *face-aware* processing.
-/// That transient spike is both large and face-content-sensitive, and on 2–3 GB
-/// iPads it jetsams the capture session mid-shot — the preview freezes until the
-/// app is relaunched (MIN-3176; cf. the 2 GB-iPad jetsam guard in
-/// CameraPictureController's capture finalize, MIN-3057). Reducing "Media
-/// Quality" only shrank the *post*-capture file, so it merely relieved the
-/// downstream footprint enough to dodge the spike — the spike itself lives here.
-/// Constrained devices therefore fall back to `Speed` (single frame, no Deep
-/// Fusion), trading a little still quality for a capture that stays within
-/// budget; devices with headroom keep `Balanced` so MIN-3066's quality stands.
+/// The computational-photography quality tier to request: `Speed` — a single
+/// frame, no Smart HDR / Deep Fusion — on every device. `Balanced` fused
+/// several frames per shot, which (a) jetsammed the capture session on 2–3 GB
+/// iPads via its face-aware full-sensor memory spike (MIN-3176; cf. the 2 GB-
+/// iPad jetsam guard in CameraPictureController's capture finalize, MIN-3057),
+/// and (b) stretched the tap→frame-latch time as part of the MIN-3080 capture
+/// lag: the multi-frame bracket exposes *after* the request, so the saved
+/// photo showed a later moment than the preview at tap. The subject here is a
+/// static item on a table in shop lighting — fusion buys little, and shutter
+/// immediacy is the product requirement (cf. MIN-3094, which removed the
+/// AF-settle wait for the same reason). This is both the per-shot request and
+/// the output ceiling (initCameraPreview), kept in lockstep via this method.
 - (AVCapturePhotoQualityPrioritization)preferredPhotoQualityPrioritization API_AVAILABLE(ios(13.0)) {
-  // ~3.5 GiB splits the 2/3 GB "constrained iPad" class (→ Speed) from the
-  // 4 GB+ fleet (→ Balanced). Tune here if the quality trade-off needs shifting.
-  const unsigned long long lowMemoryCeiling = (unsigned long long)(3.5 * 1024 * 1024 * 1024);
-  if (NSProcessInfo.processInfo.physicalMemory <= lowMemoryCeiling) {
-    return AVCapturePhotoQualityPrioritizationSpeed;
-  }
-  return AVCapturePhotoQualityPrioritizationBalanced;
+  return AVCapturePhotoQualityPrioritizationSpeed;
 }
 
 /// Set camera preview size
@@ -1949,10 +1969,11 @@ static const int32_t kStreamingMaxFps = 30;
   [settings setHighResolutionPhotoEnabled:YES];
 
   // Request the still at the output's configured maximum (set per active format
-  // in -applyMaxPhotoDimensions) so the photo is full-sensor even though the
-  // analysis stream pins a small video format (MIN-3066). Must be ≤ the output's
-  // maxPhotoDimensions; reading it back keeps the two in lockstep. On pre-iOS-16
-  // the highResolutionPhotoEnabled flag above remains the ceiling.
+  // in -applyMaxPhotoDimensions: ~12MP, not the sensor max — MIN-3080) so the
+  // photo stays high-res even though the analysis stream pins a small video
+  // format (MIN-3066). Must be ≤ the output's maxPhotoDimensions; reading it
+  // back keeps the two in lockstep. On pre-iOS-16 the highResolutionPhotoEnabled
+  // flag above remains the ceiling.
   if (@available(iOS 16.0, *)) {
     CMVideoDimensions outputMax = _capturePhotoOutput.maxPhotoDimensions;
     if (outputMax.width > 0 && outputMax.height > 0) {

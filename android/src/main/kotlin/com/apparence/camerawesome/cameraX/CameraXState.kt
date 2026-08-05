@@ -225,8 +225,9 @@ data class CameraXState(
 //                    .build()
 
 
-                val aeFpsRange =
-                    CameraCapabilities.pickAeTargetFpsRange(cameraSelector, cameraProvider)
+                val aeFpsRange = CameraCapabilities.pickAeTargetFpsRange(
+                    cameraSelector, cameraProvider, activity.applicationContext
+                )
                 val preview = Preview.Builder().apply {
                     if (aspectRatio != null) {
                         setTargetAspectRatio(aspectRatio!!)
@@ -295,8 +296,9 @@ data class CameraXState(
                 if (sensors.first().position == PigeonSensorPosition.FRONT) CameraSelector.DEFAULT_FRONT_CAMERA else backCameraSelector()
             // Cap the exposure AE may choose, so the preview stays smooth and
             // hand-held captures stay sharp in shop lighting (MIN-3577).
-            val aeFpsRange =
-                CameraCapabilities.pickAeTargetFpsRange(cameraSelector, cameraProvider)
+            val aeFpsRange = CameraCapabilities.pickAeTargetFpsRange(
+                cameraSelector, cameraProvider, activity.applicationContext
+            )
             // Preview
             if (currentCaptureMode != CaptureModes.ANALYSIS_ONLY) {
                 previews!!.add(

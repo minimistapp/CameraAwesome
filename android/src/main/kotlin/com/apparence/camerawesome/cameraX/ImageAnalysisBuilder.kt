@@ -2,7 +2,6 @@ package com.apparence.camerawesome.cameraX
 
 import android.annotation.SuppressLint
 import android.graphics.Rect
-import android.util.Range
 import android.util.Size
 import androidx.camera.core.AspectRatio
 import androidx.camera.core.ImageAnalysis
@@ -34,11 +33,6 @@ class ImageAnalysisBuilder private constructor(
     private val executor: Executor,
     private val maxFramesPerSecond: Double?,
 ) {
-    // Set by CameraXState on every rebind, for the same reason aspectRatio is
-    // mutable: this builder is configured once but the camera it binds to can
-    // change. Null leaves the HAL's default AE behaviour alone (MIN-3577).
-    var aeTargetFpsRange: Range<Int>? = null
-
     // The ack bookkeeping below lives and dies with the Dart stream, not with a
     // CameraX binding: acks route to this builder instance across rebinds, so a
     // rebind must NOT clear the count (a late ack from the previous binding
@@ -140,9 +134,7 @@ class ImageAnalysisBuilder private constructor(
                     .build()
             )
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .setOutputImageFormat(outputImageFormat)
-            .also { CameraCapabilities.applyAeTargetFpsRange(it, aeTargetFpsRange) }
-            .build()
+            .setOutputImageFormat(outputImageFormat).build()
         imageAnalysis.setAnalyzer(Dispatchers.IO.asExecutor()) { imageProxy ->
             // `use` closes the ImageProxy as soon as this block returns — whether
             // the frame is dropped or copied. The previous scheme sent every frame

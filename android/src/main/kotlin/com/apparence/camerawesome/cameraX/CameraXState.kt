@@ -225,15 +225,12 @@ data class CameraXState(
 //                    .build()
 
 
-                val aeFpsRange = CameraCapabilities.pickAeTargetFpsRange(
-                    cameraSelector, cameraProvider, activity.applicationContext
-                )
-                val preview = Preview.Builder().apply {
-                    if (aspectRatio != null) {
-                        setTargetAspectRatio(aspectRatio!!)
-                    }
-                    CameraCapabilities.applyAeTargetFpsRange(this, aeFpsRange)
-                }.build()
+                val preview = if (aspectRatio != null) {
+                    Preview.Builder().setTargetAspectRatio(aspectRatio!!)
+                        .build()
+                } else {
+                    Preview.Builder().build()
+                }
 
                 useCaseGroupBuilder.addUseCase(preview)
                 previews!!.add(preview)
@@ -263,7 +260,6 @@ data class CameraXState(
                     videoCaptures[sensor] = videoCapture
                 }
                 if (isFirst && enableImageStream && imageAnalysisBuilder != null) {
-                    imageAnalysisBuilder!!.aeTargetFpsRange = aeFpsRange
                     imageAnalysis = imageAnalysisBuilder!!.build()
                     useCaseGroupBuilder.addUseCase(imageAnalysis!!)
                 } else {
@@ -294,20 +290,16 @@ data class CameraXState(
             // Handle single camera
             val cameraSelector =
                 if (sensors.first().position == PigeonSensorPosition.FRONT) CameraSelector.DEFAULT_FRONT_CAMERA else backCameraSelector()
-            // Cap the exposure AE may choose, so the preview stays smooth and
-            // hand-held captures stay sharp in shop lighting (MIN-3577).
-            val aeFpsRange = CameraCapabilities.pickAeTargetFpsRange(
-                cameraSelector, cameraProvider, activity.applicationContext
-            )
             // Preview
             if (currentCaptureMode != CaptureModes.ANALYSIS_ONLY) {
                 previews!!.add(
-                    Preview.Builder().apply {
-                        if (aspectRatio != null) {
-                            setResolutionSelector(resolutionSelector)
-                        }
-                        CameraCapabilities.applyAeTargetFpsRange(this, aeFpsRange)
-                    }.build()
+                    if (aspectRatio != null) {
+                        Preview.Builder()
+                            .setResolutionSelector(resolutionSelector)
+                            .build()
+                    } else {
+                        Preview.Builder().build()
+                    }
                 )
 
                 // Single-sensor preview renders into the native PreviewView when
@@ -362,7 +354,6 @@ data class CameraXState(
                         "Trying to bind too many use cases for this device (level $cameraLevel), ignoring image analysis"
                     )
                 } else {
-                    imageAnalysisBuilder!!.aeTargetFpsRange = aeFpsRange
                     imageAnalysis = imageAnalysisBuilder!!.build()
                     useCaseGroupBuilder.addUseCase(imageAnalysis!!)
 

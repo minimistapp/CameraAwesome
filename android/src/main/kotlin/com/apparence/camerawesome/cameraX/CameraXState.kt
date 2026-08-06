@@ -543,7 +543,7 @@ data class CameraXState(
     }
 
     override fun onOrientationChanged(orientation: Int) {
-        imageAnalysis?.targetRotation = when (orientation) {
+        val rotation = when (orientation) {
             in 225 until 315 -> {
                 Surface.ROTATION_90
             }
@@ -559,6 +559,14 @@ data class CameraXState(
             else -> {
                 Surface.ROTATION_0
             }
+        }
+        // Assigning targetRotation is not free — it reconfigures the analysis use
+        // case — and four orientation buckets mean most callbacks resolve to the
+        // rotation already in effect. Second line of defence behind the dedupe in
+        // OrientationStreamListener (MIN-3577).
+        val analysis = imageAnalysis ?: return
+        if (analysis.targetRotation != rotation) {
+            analysis.targetRotation = rotation
         }
     }
 

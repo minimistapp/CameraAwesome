@@ -6,8 +6,10 @@ import 'package:camerawesome/pigeon.dart';
 import 'package:camerawesome/src/widgets/preview/awesome_preview_fit.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart' show OneSequenceGestureRecognizer;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show PlatformViewHitTestBehavior;
+import 'package:flutter/services.dart' show AndroidViewController, PlatformViewsService, StandardMessageCodec;
 
 enum CameraPreviewFit {
   fitWidth,
@@ -328,15 +330,58 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> with Widgets
               viewType: 'camerawesome/preview',
               hitTestBehavior: PlatformViewHitTestBehavior.transparent,
             )
-          : AndroidView(
-              key: _nativePreviewKey,
-              viewType: 'camerawesome/preview',
-              hitTestBehavior: PlatformViewHitTestBehavior.transparent,
-            );
+          : _buildAndroidNativePreview();
     }
     // The preview is kept fixed (not rotated with the device), like the native
     // iOS Camera app — so no RotatedBox here.
     return _textures.first;
+  }
+
+  /// Android native preview, mounted with **hybrid composition** rather than the
+  /// plain `AndroidView` widget.
+  ///
+  /// `AndroidView` selects Flutter's legacy VirtualDisplay mode, which renders
+  /// the platform view into an offscreen `VirtualDisplay` and copies the result
+  /// back into the Flutter scene each frame. On a Lenovo TB-X606F that showed up
+  /// in `dumpsys SurfaceFlinger` as a second, app-owned display
+  /// (`virtual:st.mnm.minimist,...,flutter-vd#0`) at 1800x2400 — ~1.9x the
+  /// 1200x1920 panel — whose layers were the only `composition=CLIENT` (GPU)
+  /// layers on the device, while every primary-display layer sat on a hardware
+  /// overlay. SurfaceFlinger was compositing twice per frame, and the GPU pass
+  /// was the preview's (MIN-3577).
+  ///
+  /// `initSurfaceAndroidView` asks for a texture layer and falls back to true
+  /// hybrid composition when the platform view can't render into a supplied
+  /// Surface — which is the case here, because the CameraX `PreviewView` runs in
+  /// `ImplementationMode.PERFORMANCE` and is therefore backed by a SurfaceView.
+  /// The fallback is the outcome we want: the SurfaceView joins the real view
+  /// hierarchy and gets its own overlay plane, with no VirtualDisplay at all.
+  Widget _buildAndroidNativePreview() {
+    return PlatformViewLink(
+      // Stable key, for the same reparenting reason as the iOS path above.
+      key: _nativePreviewKey,
+      viewType: 'camerawesome/preview',
+      surfaceFactory: (context, controller) {
+        return AndroidViewSurface(
+          controller: controller as AndroidViewController,
+          // Empty: the native view is non-interactive and the ancestor
+          // AwesomeCameraGestureDetector owns tap-to-focus / pinch-to-zoom.
+          gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+          hitTestBehavior: PlatformViewHitTestBehavior.transparent,
+        );
+      },
+      onCreatePlatformView: (params) {
+        return PlatformViewsService.initSurfaceAndroidView(
+          id: params.id,
+          viewType: params.viewType,
+          layoutDirection: TextDirection.ltr,
+          creationParamsCodec: const StandardMessageCodec(),
+          onFocus: () => params.onFocusChanged(true),
+        )
+          ..addOnPlatformViewCreatedListener(params.onPlatformViewCreated)
+          ..create();
+      },
+    );
   }
 
   List<Widget> _buildPreviewTextures() {

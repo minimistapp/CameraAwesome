@@ -10,6 +10,7 @@ class OrientationStreamListener(
     private var listeners: List<SensorOrientation>
 ) {
     var currentOrientation: Int = 0
+    private var lastNotifiedOrientation: Int? = null
     val surfaceOrientation
         get() = when (currentOrientation) {
             in 225 until 315 -> {
@@ -38,8 +39,22 @@ class OrientationStreamListener(
                     if (i == ORIENTATION_UNKNOWN) {
                         return
                     }
-                    currentOrientation = (i + 45) / 90 * 90
-                    if (currentOrientation == 360) currentOrientation = 0
+                    var snapped = (i + 45) / 90 * 90
+                    if (snapped == 360) snapped = 0
+                    // The sensor fires continuously while the device moves, but
+                    // snapping to 90° increments means almost every sample maps to
+                    // the value we already published. Notifying regardless put ~75
+                    // messages/second on the platform thread just from carrying the
+                    // tablet around while scanning (MIN-3577).
+                    //
+                    // Compared against a nullable sentinel rather than
+                    // currentOrientation, so the very first sample still publishes
+                    // even when the device is already at 0°.
+                    if (snapped == lastNotifiedOrientation) {
+                        return
+                    }
+                    lastNotifiedOrientation = snapped
+                    currentOrientation = snapped
                     for (listener in listeners) {
                         listener.onOrientationChanged(currentOrientation)
                     }

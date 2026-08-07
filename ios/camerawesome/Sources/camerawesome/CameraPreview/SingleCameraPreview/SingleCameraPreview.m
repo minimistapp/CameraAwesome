@@ -591,6 +591,36 @@ static BOOL SCPFormatIsLowerPower(AVCaptureDeviceFormat *a, AVCaptureDeviceForma
   return aMaxFps < bMaxFps;
 }
 
+/// YES when [format] is one of the 10-bit biplanar encodings ('x420'/'x422'/
+/// 'x444' and their full-range 'xf..' twins).
+///
+/// These starve the analysis stream. An AVCaptureVideoDataOutput running on a
+/// 10-bit active format does not offer 32BGRA in
+/// -availableVideoCVPixelFormatTypes, so -applyAnalysisPixelFormatWithWidth
+/// finds none of its candidates and leaves videoSettings untouched; the output
+/// then delivers 10-bit buffers, which ImageStreamController drops as an
+/// unsupported pixel format. Every frame is discarded before it reaches Dart, so
+/// onImageForAnalysis never fires and MLKit sees nothing — the field scanners
+/// (storage slot / security box / gift aid) can never decode a code, while the
+/// capture screen is unaffected because iOS reads QR there via the hardware
+/// AVCaptureMetadataOutput rather than the analysis stream (MIN-3475 follow-up).
+///
+/// Only devices whose best 4:3 format is 10-bit are affected, which is why this
+/// reproduced on an iPhone 16 Pro and not across the fleet.
+static BOOL SCPFormatIsTenBitBiPlanar(AVCaptureDeviceFormat *format) {
+  switch (CMFormatDescriptionGetMediaSubType(format.formatDescription)) {
+    case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange:
+    case kCVPixelFormatType_420YpCbCr10BiPlanarFullRange:
+    case kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange:
+    case kCVPixelFormatType_422YpCbCr10BiPlanarFullRange:
+    case kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange:
+    case kCVPixelFormatType_444YpCbCr10BiPlanarFullRange:
+      return YES;
+    default:
+      return NO;
+  }
+}
+
 /// The widest still photo the format can capture, in pixels. Full-sensor stills
 /// come from formats whose photo pipeline reaches the sensor's native size;
 /// binned / low-power streaming formats cap it well below (e.g. ~2016 wide).
@@ -616,6 +646,9 @@ static int32_t SCPFormatMaxPhotoWidth(AVCaptureDeviceFormat *format) {
 }
 
 /// The 4:3 device format that drives the streaming preview + analysis. Ranked:
+///   0. 8-bit encodings only (a hard filter, not a tiebreak) — a 10-bit format
+///      silently starves the analysis stream, see [SCPFormatIsTenBitBiPlanar];
+///      relaxed only when the device offers no 8-bit 4:3 format at all,
 ///   1. largest still-capture width — so the still isn't capped below the
 ///      sensor while this format is active (MIN-3066); binned/low-power formats
 ///      lose here because they can't reach full sensor,
@@ -629,6 +662,22 @@ static int32_t SCPFormatMaxPhotoWidth(AVCaptureDeviceFormat *format) {
 /// exposes no 4:3 format in range, in which case the caller falls back to the
 /// 640x480 preset.
 - (AVCaptureDeviceFormat *)bestStreamingFourThreeFormat {
+  // 8-bit first: a 10-bit format silently kills the analysis stream
+  // (SCPFormatIsTenBitBiPlanar). Fall back to allowing 10-bit only if the device
+  // exposes no 8-bit 4:3 format in range — a sharp preview with broken analysis
+  // still beats dropping to the 640x480 preset, and image analysis is optional
+  // for most callers.
+  AVCaptureDeviceFormat *best = [self bestStreamingFourThreeFormatExcludingTenBit:YES];
+  if (best == nil) {
+    best = [self bestStreamingFourThreeFormatExcludingTenBit:NO];
+    if (best != nil) {
+      NSLog(@"bestStreamingFourThreeFormat: no 8-bit 4:3 format available, falling back to a 10-bit format — image analysis will not receive frames on this device");
+    }
+  }
+  return best;
+}
+
+- (AVCaptureDeviceFormat *)bestStreamingFourThreeFormatExcludingTenBit:(BOOL)excludeTenBit {
   AVCaptureDeviceFormat *best = nil;
   int32_t bestVideoWidth = 0;
   int32_t bestStillWidth = 0;
@@ -636,6 +685,7 @@ static int32_t SCPFormatMaxPhotoWidth(AVCaptureDeviceFormat *format) {
     CMVideoDimensions dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
     if (dims.width * 3 != dims.height * 4) continue;                       // 4:3 only
     if (dims.width <= 640 || dims.width > kPreviewFourThreeMaxWidth) continue;
+    if (excludeTenBit && SCPFormatIsTenBitBiPlanar(format)) continue;
 
     int32_t stillWidth = SCPFormatMaxPhotoWidth(format);
     BOOL better;
@@ -895,7 +945,51 @@ static const int32_t kStreamingMaxFps = 30;
       break;
     }
   }
+
+  // Safety net for the case that killed the field scanners: the requested format
+  // is not offered by this output (a 10-bit activeFormat offers no 32BGRA). The
+  // old behaviour was to leave videoSettings untouched, so the output kept
+  // delivering a format ImageStreamController must drop — analysis died with no
+  // frames and no error. Instead, take ANY format the controller can actually
+  // consume and let AVFoundation convert into it; that is what videoSettings is
+  // for. The Dart side stays correct by construction because
+  // ImageStreamController emits the dict shape matching the buffer it really
+  // received, not the one that was requested.
+  //
+  // Deliberately not hand-decoding 10-bit luma here: the bit alignment of
+  // Apple's 'x420'/'x422' planes is easy to get subtly wrong, and unverified
+  // pixel math on a per-frame hot path is worse than letting AVFoundation do a
+  // conversion it already implements. See [SCPFormatIsTenBitBiPlanar] for the
+  // primary fix that keeps us off those formats in the first place.
   if (chosen == nil) {
+    NSArray<NSNumber *> *consumable = @[
+      @(kCVPixelFormatType_32BGRA),
+      @(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange),
+      @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+    ];
+    for (NSNumber *fallback in consumable) {
+      if ([available containsObject:fallback]) {
+        chosen = fallback;
+        break;
+      }
+    }
+    if (chosen != nil) {
+      NSLog(@"applyAnalysisPixelFormat: requested format is not offered by this output (activeFormat is likely 10-bit); falling back to %@ so analysis keeps receiving frames", chosen);
+    }
+  }
+
+  if (chosen == nil) {
+    // Leaving videoSettings untouched means the output keeps delivering whatever
+    // its active format defaults to, and ImageStreamController drops anything
+    // that is not BGRA / 420f / 420v — i.e. analysis goes silently dead. This
+    // used to be an unlogged early return, which is precisely why a 10-bit 4:3
+    // format starving the field scanners went undiagnosed. Never silent again.
+    // activeFormat is read defensively: this method only guards _captureVideoOutput
+    // on entry, and CMFormatDescriptionGetMediaSubType(NULL) is not a safe call.
+    CMFormatDescriptionRef activeDesc = _captureDevice.activeFormat.formatDescription;
+    NSLog(@"applyAnalysisPixelFormat: none of the requested formats are offered by this output (available=%@, activeFormat subtype=%u) — analysis frames will be dropped",
+          _captureVideoOutput.availableVideoCVPixelFormatTypes,
+          activeDesc != NULL ? (unsigned int)CMFormatDescriptionGetMediaSubType(activeDesc) : 0);
     return;
   }
   if (candidates.count > 1 && ![chosen isEqualToNumber:candidates.firstObject]) {
@@ -928,6 +1022,12 @@ static const int32_t kStreamingMaxFps = 30;
           @{(NSString *)kCVPixelBufferPixelFormatTypeKey : chosen};
     } @catch (NSException *inner) {
       // Leave videoSettings untouched; analysis frames stay at the format size.
+      // Logged because "videoSettings was never applied" is the same failure
+      // shape that silently killed the field scanners: the output keeps emitting
+      // whatever its activeFormat defaults to, which ImageStreamController may
+      // not be able to consume.
+      NSLog(@"applyAnalysisPixelFormat: could not apply pixel format %@ (%@) — the output keeps its previous settings and analysis frames may be dropped",
+            chosen, inner.reason);
     }
   }
 }

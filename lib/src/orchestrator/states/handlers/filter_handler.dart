@@ -52,6 +52,9 @@ Future<CaptureRequest> applyFilter(PhotoFilterModel model) async {
       height: image.height,
       bytes: pixels.buffer,
     );
+    // fromBytes builds a bare image — carry the source EXIF (orientation,
+    // capture metadata) across the rebuild or the bake strips it.
+    out.exif = image.exif;
 
     final List<int>? encodedImage = img.encodeNamedImage(f.path, out);
     if (encodedImage == null) {

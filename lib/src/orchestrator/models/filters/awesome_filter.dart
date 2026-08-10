@@ -5,6 +5,8 @@ import 'dart:ui';
 import 'package:colorfilter_generator/addons.dart';
 import 'package:colorfilter_generator/colorfilter_generator.dart';
 import 'package:colorfilter_generator/presets.dart';
+import 'package:flutter/foundation.dart';
+import 'package:camerawesome/src/photofilters/filters/color_matrix_filter.dart';
 import 'package:camerawesome/src/photofilters/filters/filters.dart'
     as photofilters;
 import 'package:camerawesome/src/photofilters/filters/preset_filters.dart'
@@ -23,6 +25,35 @@ class AwesomeFilter {
     required this.matrix,
   })  : _name = name,
         _outputFilter = outputFilter;
+
+  /// A filter defined purely by a 4×5 row-major colour matrix (Flutter's
+  /// `ColorFilter.matrix` layout, offsets in the 0–255 domain) — for
+  /// app-computed adjustments rather than the named presets (MIN-3655).
+  /// The same matrix drives the live preview ([preview]) and, through
+  /// [ColorMatrixFilter], the iOS capture bake; Android bakes it natively
+  /// from `setFilterMatrix`.
+  factory AwesomeFilter.custom({
+    required String name,
+    required List<double> matrix,
+  }) =>
+      AwesomeFilter(
+        name: name,
+        outputFilter: ColorMatrixFilter(name: name, matrix: matrix),
+        matrix: matrix,
+      );
+
+  /// The 4×5 identity matrix — [None]'s matrix.
+  static const List<double> identityMatrix = [
+    1, 0, 0, 0, 0, //
+    0, 1, 0, 0, 0, //
+    0, 0, 1, 0, 0, //
+    0, 0, 0, 1, 0, //
+  ];
+
+  /// Whether this filter leaves pixels untouched. Compare filters through
+  /// this (or [id]) — `filter != AwesomeFilter.None` is an *identity*
+  /// comparison against a freshly built instance and is always true.
+  bool get isIdentity => listEquals(matrix, identityMatrix);
 
   ColorFilter get preview => ColorFilter.matrix(matrix);
 

@@ -291,6 +291,11 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
 
     override fun setFilter(matrix: List<Double>) {
         colorMatrix = matrix
+        // MIN-3655: preview routing follows the filter — Dart's ColorFiltered
+        // needs the Flutter texture on screen while a real matrix is active;
+        // identity restores the native PreviewView. Pigeon calls arrive on the
+        // main thread, which is where CameraX wants setSurfaceProvider.
+        activity?.let { cameraState.routePreviewForFilter(noneFilter != matrix, it) }
     }
 
     override fun isVideoRecordingAndImageAnalysisSupported(

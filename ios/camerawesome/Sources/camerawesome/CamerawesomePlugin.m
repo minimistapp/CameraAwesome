@@ -1000,8 +1000,24 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
 
 #pragma mark - Filter methods
 
+/// MIN-3655: iOS doesn't bake the matrix natively (FilterHandler does that in
+/// Dart), but the *preview* needs native help — while a non-identity filter is
+/// active, Dart displays the Flutter Texture (ColorFiltered can't tint the
+/// native PlatformView), so the camera must feed that texture again.
 - (void)setFilterMatrix:(NSArray<NSNumber *> *)matrix error:(FlutterError *_Nullable *_Nonnull)error {
-  // TODO: try to use CIFilter when taking a picture
+  BOOL identity = YES;
+  if (matrix.count == 20) {
+    for (NSUInteger i = 0; i < 20; i++) {
+      // Diagonal entries of a 4×5 row-major matrix sit at 0, 6, 12, 18.
+      double expected = (i % 6 == 0) ? 1.0 : 0.0;
+      if (fabs(matrix[i].doubleValue - expected) > 1e-9) {
+        identity = NO;
+        break;
+      }
+    }
+  }
+  // Single-sensor only: the multicam path already displays Flutter textures.
+  [self.camera setColorFilterActive:!identity];
 }
 
 #pragma mark - Multi camera methods

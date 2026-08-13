@@ -67,6 +67,17 @@ AVCaptureMetadataOutputObjectsDelegate>
 @property(readonly, copy) void (^completion)(NSNumber * _Nullable, FlutterError * _Nullable);
 @property(nonatomic, copy) void (^onPreviewFrameAvailable)(void);
 
+/// MIN-3655: while a non-identity colour filter is active, Dart renders the
+/// preview through the Flutter Texture (ColorFiltered can't tint the native
+/// PlatformView), so the texture must be fed again — the exception to the
+/// MIN-2406 "texture stays unfed" rule. Toggled from
+/// [CamerawesomePlugin setFilterMatrix:]; also forces the video-data
+/// connection on so frames flow even when nothing else consumes them.
+@property(nonatomic, assign) BOOL feedPreviewTexture;
+
+/// Sets [feedPreviewTexture] and re-evaluates the analysis connection state.
+- (void)setColorFilterActive:(BOOL)active;
+
 /// When non-nil, overrides [motionController.deviceOrientation] at picture-
 /// capture time so the JPEG's EXIF Orientation is tagged for the requested
 /// orientation regardless of how the user is physically holding the device.

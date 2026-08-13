@@ -67,6 +67,10 @@ data class CameraXState(
     /// Null → the Preview use case keeps rendering into the Flutter Texture.
     var previewView: PreviewView? = null
 
+    /// MIN-3655: whether the colour filter currently routes the preview into
+    /// the Flutter texture instead of [previewView] — see [routePreviewForFilter].
+    var filterPreviewToTexture = false
+
     private val mainCameraInfos: CameraInfo
         @SuppressLint("RestrictedApi") get() {
             if (previewCamera == null && concurrentCamera == null) {
@@ -306,8 +310,10 @@ data class CameraXState(
                 // available (MIN-2406); otherwise fall back to the Flutter
                 // Texture-backed SurfaceTexture. PreviewView.getSurfaceProvider()
                 // is itself a Preview.SurfaceProvider, so it's a drop-in.
+                // filterPreviewToTexture (MIN-3655): an active colour filter
+                // needs the texture path — keep honouring it across rebinds.
                 val nativePreview = previewView
-                if (sensors.size <= 1 && nativePreview != null) {
+                if (sensors.size <= 1 && nativePreview != null && !filterPreviewToTexture) {
                     previews!!.first().setSurfaceProvider(nativePreview.surfaceProvider)
                 } else {
                     previews!!.first().setSurfaceProvider(
@@ -425,6 +431,27 @@ data class CameraXState(
         return VideoCapture.Builder<Recorder>(recorder)
             .setMirrorMode(if (mirrorFrontCamera) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
             .build()
+    }
+
+    /**
+     * MIN-3655: while a non-identity colour filter is active, Dart displays the
+     * Flutter Texture (ColorFiltered can't tint the native PreviewView), so the
+     * Preview use case must render into the texture; identity restores the
+     * native PreviewView and its MIN-3577 overlay-plane wins. Runtime-safe:
+     * Preview.setSurfaceProvider re-plumbs the stream without a rebind. No-op
+     * when there is no native PreviewView (multi-sensor / ANALYSIS_ONLY already
+     * render through the texture).
+     */
+    fun routePreviewForFilter(toTexture: Boolean, activity: Activity) {
+        if (filterPreviewToTexture == toTexture) return
+        filterPreviewToTexture = toTexture
+        val nativePreview = previewView ?: return
+        val preview = previews?.firstOrNull() ?: return
+        if (toTexture) {
+            preview.setSurfaceProvider(surfaceProvider(executor(activity), sensors.first().deviceId ?: "0"))
+        } else {
+            preview.setSurfaceProvider(nativePreview.surfaceProvider)
+        }
     }
 
     @SuppressLint("RestrictedApi")

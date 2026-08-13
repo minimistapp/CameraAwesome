@@ -891,10 +891,24 @@ static const int32_t kStreamingMaxFps = 30;
 /// output; disabling the connection makes our idle session behave the same. The
 /// preview layer has its own connection (_previewConnection) and is unaffected.
 - (void)updateAnalysisConnectionState {
-  BOOL shouldFeed = _imageStreamController.streamImages || _videoController.isRecording;
+  // feedPreviewTexture (MIN-3655): while a colour filter is active the Flutter
+  // Texture is the display path, so the data output must keep producing frames
+  // even when neither analysis nor recording consumes them.
+  BOOL shouldFeed = _imageStreamController.streamImages || _videoController.isRecording || self.feedPreviewTexture;
   if (_captureConnection != nil && _captureConnection.isEnabled != shouldFeed) {
     _captureConnection.enabled = shouldFeed;
   }
+}
+
+/// MIN-3655: flips the texture-feeding mode when Dart's colour filter turns
+/// on/off. Kicking the frame-available callback once on disable lets the
+/// Texture surrender its (now stale) last frame promptly.
+- (void)setColorFilterActive:(BOOL)active {
+  if (self.feedPreviewTexture == active) {
+    return;
+  }
+  self.feedPreviewTexture = active;
+  [self updateAnalysisConnectionState];
 }
 
 /// Applies the analysis pixel format to the analysis data output, optionally
@@ -2253,6 +2267,18 @@ static const int32_t kStillLongEdgeTarget = 4032;
     // capture queue — which on iPad contributes to memory-pressure crashes.
     // The texture stays *registered* (readiness gate / filter thumbnail) but
     // unfed; the GPU preview layer is the display path.
+    //
+    // MIN-3655 exception: while a colour filter is active, Dart swaps the
+    // display path back to the Texture (ColorFiltered can't tint a
+    // PlatformView), so the second pipeline is deliberately re-enabled for
+    // exactly that window. Preview sharpness follows the analysis output's
+    // downscaled buffer size while filtered.
+    if (self.feedPreviewTexture) {
+      [self.previewTexture updateBuffer:sampleBuffer];
+      if (self.onPreviewFrameAvailable) {
+        self.onPreviewFrameAvailable();
+      }
+    }
 
     // Send to image stream controller if enabled
     if (_imageStreamController.streamImages) {

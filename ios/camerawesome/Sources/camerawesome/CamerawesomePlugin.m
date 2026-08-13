@@ -37,6 +37,9 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
 @property NSMutableArray<NSNumber *> *texturesIds;
 @property SingleCameraPreview *camera;
 @property MultiCameraPreview *multiCamera;
+/// MIN-3655: the mounted preview container, weakly held so a filter toggle
+/// can request the layout pass that (de)attaches the filtered overlay.
+@property(nonatomic, weak, nullable) UIView *previewContainerView;
 /// Survives camera (re)setup: storing the override here means a fresh
 /// SingleCameraPreview / MultiCameraPreview created by setupCamera can be
 /// initialised with the most recently requested value rather than starting
@@ -1001,9 +1004,9 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
 #pragma mark - Filter methods
 
 /// MIN-3655: iOS doesn't bake the matrix natively (FilterHandler does that in
-/// Dart), but the *preview* needs native help — while a non-identity filter is
-/// active, Dart displays the Flutter Texture (ColorFiltered can't tint the
-/// native PlatformView), so the camera must feed that texture again.
+/// Dart), but the *preview* is filtered natively — the platform view overlays
+/// an AVSampleBufferDisplayLayer showing CIColorMatrix-filtered frames while a
+/// non-identity matrix is active, so the display never leaves the native path.
 - (void)setFilterMatrix:(NSArray<NSNumber *> *)matrix error:(FlutterError *_Nullable *_Nonnull)error {
   BOOL identity = YES;
   if (matrix.count == 20) {
@@ -1016,8 +1019,20 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
       }
     }
   }
-  // Single-sensor only: the multicam path already displays Flutter textures.
-  [self.camera setColorFilterActive:!identity];
+  // Single-sensor only: the multicam path already displays Flutter textures,
+  // which Dart's ColorFiltered tints directly.
+  [self.camera setPreviewColorMatrix:identity ? nil : matrix];
+  // Attachment happens in the container's layoutSubviews; a filter toggle on
+  // its own triggers no layout, so request one.
+  [self.previewContainerView setNeedsLayout];
+}
+
+- (nullable AVSampleBufferDisplayLayer *)currentFilteredPreviewLayer {
+  return self.camera.previewFilterActive ? self.camera.filteredPreviewLayer : nil;
+}
+
+- (void)registerPreviewContainerView:(UIView *)containerView {
+  self.previewContainerView = containerView;
 }
 
 #pragma mark - Multi camera methods

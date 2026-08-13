@@ -57,6 +57,17 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // preview layer never auto-connects — we wire it explicitly and rebuild it
   // on every sensor switch (initCameraPreview:), parallel to _captureConnection.
   AVCaptureConnection *_previewConnection;
+  // Preview colour filter (MIN-3655): CIColorMatrix pipeline rendering
+  // filtered frames into _filteredPreviewLayer, which the platform view
+  // composites over the untouched preview layer. All nil/inactive unless a
+  // non-identity matrix is set. _filterCIContext is sRGB-pinned so the tint
+  // matches Flutter's ColorFiltered and the capture bakes.
+  CIFilter *_previewColorFilter;
+  CIContext *_filterCIContext;
+  CVPixelBufferPoolRef _filteredPixelBufferPool;
+  size_t _filteredPoolWidth;
+  size_t _filteredPoolHeight;
+  CMVideoFormatDescriptionRef _filteredFormatDescription;
   // Hardware QR reader (MIN-3077). AVFoundation's ISP-accelerated
   // machine-readable-code detector, added alongside the photo output in
   // initCameraPreview: and torn down / recreated on every sensor switch. Lets
@@ -558,6 +569,13 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // — so every camera teardown leaked a permanent 5 Hz device-motion (gyro)
   // subscription. Stopping releases the handler and breaks that retain cycle.
   [self.motionController stopMotionDetection];
+  // Filtered-preview pipeline (MIN-3655): CF objects need manual release.
+  if (_filteredPixelBufferPool != nil) {
+    CVPixelBufferPoolRelease(_filteredPixelBufferPool);
+  }
+  if (_filteredFormatDescription != nil) {
+    CFRelease(_filteredFormatDescription);
+  }
 }
 
 /// Ceiling (sensor-native width, px) for the 4:3 preview device format.
@@ -891,24 +909,128 @@ static const int32_t kStreamingMaxFps = 30;
 /// output; disabling the connection makes our idle session behave the same. The
 /// preview layer has its own connection (_previewConnection) and is unaffected.
 - (void)updateAnalysisConnectionState {
-  // feedPreviewTexture (MIN-3655): while a colour filter is active the Flutter
-  // Texture is the display path, so the data output must keep producing frames
-  // even when neither analysis nor recording consumes them.
-  BOOL shouldFeed = _imageStreamController.streamImages || _videoController.isRecording || self.feedPreviewTexture;
+  // previewFilterActive (MIN-3655): while a colour filter is active the
+  // filtered display layer consumes these frames, so the data output must
+  // keep producing them even when neither analysis nor recording does.
+  BOOL shouldFeed = _imageStreamController.streamImages || _videoController.isRecording || self.previewFilterActive;
   if (_captureConnection != nil && _captureConnection.isEnabled != shouldFeed) {
     _captureConnection.enabled = shouldFeed;
   }
 }
 
-/// MIN-3655: flips the texture-feeding mode when Dart's colour filter turns
-/// on/off. Kicking the frame-available callback once on disable lets the
-/// Texture surrender its (now stale) last frame promptly.
-- (void)setColorFilterActive:(BOOL)active {
-  if (self.feedPreviewTexture == active) {
+/// MIN-3655: builds/tears down the filtered-preview pipeline. Main thread only
+/// (pigeon delivers setFilterMatrix there); the render itself runs on the
+/// capture queue.
+- (void)setPreviewColorMatrix:(nullable NSArray<NSNumber *> *)matrix {
+  if (matrix == nil || matrix.count != 20) {
+    _previewColorFilter = nil;
+    _previewFilterActive = NO;
+    [_filteredPreviewLayer flushAndRemoveImage];
+    _filteredPreviewLayer = nil;
+    [self updateAnalysisConnectionState];
     return;
   }
-  self.feedPreviewTexture = active;
+  CIFilter *filter = [CIFilter filterWithName:@"CIColorMatrix"];
+  [filter setValue:[CIVector vectorWithX:matrix[0].doubleValue Y:matrix[1].doubleValue Z:matrix[2].doubleValue W:matrix[3].doubleValue]
+            forKey:@"inputRVector"];
+  [filter setValue:[CIVector vectorWithX:matrix[5].doubleValue Y:matrix[6].doubleValue Z:matrix[7].doubleValue W:matrix[8].doubleValue]
+            forKey:@"inputGVector"];
+  [filter setValue:[CIVector vectorWithX:matrix[10].doubleValue Y:matrix[11].doubleValue Z:matrix[12].doubleValue W:matrix[13].doubleValue]
+            forKey:@"inputBVector"];
+  [filter setValue:[CIVector vectorWithX:matrix[15].doubleValue Y:matrix[16].doubleValue Z:matrix[17].doubleValue W:matrix[18].doubleValue]
+            forKey:@"inputAVector"];
+  // CoreImage works on normalized 0–1 components — the 0–255 offset column
+  // becomes the bias vector ÷255 (same convention as the uvc_camera bake).
+  [filter setValue:[CIVector vectorWithX:matrix[4].doubleValue / 255.0
+                                       Y:matrix[9].doubleValue / 255.0
+                                       Z:matrix[14].doubleValue / 255.0
+                                       W:matrix[19].doubleValue / 255.0]
+            forKey:@"inputBiasVector"];
+  _previewColorFilter = filter;
+  if (_filterCIContext == nil) {
+    CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    _filterCIContext = [CIContext contextWithOptions:@{kCIContextWorkingColorSpace : (__bridge id)srgb}];
+    CGColorSpaceRelease(srgb);
+  }
+  if (_filteredPreviewLayer == nil) {
+    _filteredPreviewLayer = [AVSampleBufferDisplayLayer layer];
+    _filteredPreviewLayer.videoGravity = AVLayerVideoGravityResizeAspect;
+  }
+  _previewFilterActive = YES;
   [self updateAnalysisConnectionState];
+}
+
+/// Capture-queue half of the filtered preview (MIN-3655): filter the frame on
+/// the GPU and enqueue it on the display layer. Every allocation is pooled or
+/// cached; a dimension change (mode renegotiation) rebuilds the pool.
+- (void)renderFilteredPreviewFrame:(CMSampleBufferRef)sampleBuffer {
+  CIFilter *filter = _previewColorFilter;
+  AVSampleBufferDisplayLayer *layer = _filteredPreviewLayer;
+  if (filter == nil || layer == nil || !layer.readyForMoreMediaData) {
+    return;
+  }
+  CVPixelBufferRef inputBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+  if (inputBuffer == nil) {
+    return;
+  }
+  size_t width = CVPixelBufferGetWidth(inputBuffer);
+  size_t height = CVPixelBufferGetHeight(inputBuffer);
+  if (_filteredPixelBufferPool == nil || _filteredPoolWidth != width || _filteredPoolHeight != height) {
+    if (_filteredPixelBufferPool != nil) {
+      CVPixelBufferPoolRelease(_filteredPixelBufferPool);
+      _filteredPixelBufferPool = nil;
+    }
+    if (_filteredFormatDescription != nil) {
+      CFRelease(_filteredFormatDescription);
+      _filteredFormatDescription = nil;
+    }
+    NSDictionary *poolAttributes = @{
+      (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
+      (id)kCVPixelBufferWidthKey : @(width),
+      (id)kCVPixelBufferHeightKey : @(height),
+      (id)kCVPixelBufferIOSurfacePropertiesKey : @{},
+    };
+    if (CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, (__bridge CFDictionaryRef)poolAttributes, &_filteredPixelBufferPool) != kCVReturnSuccess) {
+      return;
+    }
+    _filteredPoolWidth = width;
+    _filteredPoolHeight = height;
+  }
+  CVPixelBufferRef outputBuffer = nil;
+  if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, _filteredPixelBufferPool, &outputBuffer) != kCVReturnSuccess || outputBuffer == nil) {
+    return;
+  }
+  CIImage *source = [CIImage imageWithCVPixelBuffer:inputBuffer];
+  [filter setValue:source forKey:kCIInputImageKey];
+  // A non-zero bias extends the extent to infinity — crop back to the frame.
+  CIImage *filtered = [filter.outputImage imageByCroppingToRect:source.extent];
+  [filter setValue:nil forKey:kCIInputImageKey];
+  if (filtered == nil) {
+    CVPixelBufferRelease(outputBuffer);
+    return;
+  }
+  [_filterCIContext render:filtered toCVPixelBuffer:outputBuffer];
+  if (_filteredFormatDescription == nil &&
+      CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, outputBuffer, &_filteredFormatDescription) != noErr) {
+    CVPixelBufferRelease(outputBuffer);
+    return;
+  }
+  CMSampleTimingInfo timing;
+  timing.duration = CMSampleBufferGetDuration(sampleBuffer);
+  timing.presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+  timing.decodeTimeStamp = kCMTimeInvalid;
+  CMSampleBufferRef outputSample = nil;
+  OSStatus status = CMSampleBufferCreateReadyWithImageBuffer(
+      kCFAllocatorDefault, outputBuffer, _filteredFormatDescription, &timing, &outputSample);
+  CVPixelBufferRelease(outputBuffer);
+  if (status != noErr || outputSample == nil) {
+    return;
+  }
+  if (layer.status == AVQueuedSampleBufferRenderingStatusFailed) {
+    [layer flush];
+  }
+  [layer enqueueSampleBuffer:outputSample];
+  CFRelease(outputSample);
 }
 
 /// Applies the analysis pixel format to the analysis data output, optionally
@@ -2268,16 +2390,13 @@ static const int32_t kStillLongEdgeTarget = 4032;
     // The texture stays *registered* (readiness gate / filter thumbnail) but
     // unfed; the GPU preview layer is the display path.
     //
-    // MIN-3655 exception: while a colour filter is active, Dart swaps the
-    // display path back to the Texture (ColorFiltered can't tint a
-    // PlatformView), so the second pipeline is deliberately re-enabled for
-    // exactly that window. Preview sharpness follows the analysis output's
-    // downscaled buffer size while filtered.
-    if (self.feedPreviewTexture) {
-      [self.previewTexture updateBuffer:sampleBuffer];
-      if (self.onPreviewFrameAvailable) {
-        self.onPreviewFrameAvailable();
-      }
+    // MIN-3655 exception: while a colour filter is active, these frames also
+    // drive the filtered display layer the platform view composites over the
+    // (untouched) preview layer — the preview itself never leaves the native
+    // path. Sharpness follows the analysis output's downscaled buffer size
+    // while filtered.
+    if (self.previewFilterActive) {
+      [self renderFilteredPreviewFrame:sampleBuffer];
     }
 
     // Send to image stream controller if enabled

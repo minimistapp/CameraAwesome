@@ -18,4 +18,11 @@ interface PreviewViewProvider {
     /// so the preview isn't stuck at the bind-time (display-less, portrait)
     /// rotation. (MIN-2437)
     fun onPreviewViewAttached() {}
+
+    /// MIN-3655: registers a main-thread callback fired whenever the provider
+    /// swaps to a NEW PreviewView instance at runtime (colour-filter toggles
+    /// recreate it in the matching implementation mode), so the mounted
+    /// container can re-attach. Single-slot — the single-camera path mounts one
+    /// preview platform view at a time; pass null to unregister.
+    fun setOnPreviewViewRecreated(listener: (() -> Unit)?) {}
 }

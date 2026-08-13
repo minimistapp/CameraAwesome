@@ -67,16 +67,21 @@ AVCaptureMetadataOutputObjectsDelegate>
 @property(readonly, copy) void (^completion)(NSNumber * _Nullable, FlutterError * _Nullable);
 @property(nonatomic, copy) void (^onPreviewFrameAvailable)(void);
 
-/// MIN-3655: while a non-identity colour filter is active, Dart renders the
-/// preview through the Flutter Texture (ColorFiltered can't tint the native
-/// PlatformView), so the texture must be fed again — the exception to the
-/// MIN-2406 "texture stays unfed" rule. Toggled from
-/// [CamerawesomePlugin setFilterMatrix:]; also forces the video-data
-/// connection on so frames flow even when nothing else consumes them.
-@property(nonatomic, assign) BOOL feedPreviewTexture;
+/// MIN-3655: while a non-identity colour filter is active the preview stays
+/// fully native — the container view overlays [filteredPreviewLayer] (an
+/// AVSampleBufferDisplayLayer showing GPU-filtered frames from the video-data
+/// output) on top of the untouched AVCaptureVideoPreviewLayer. Nil while no
+/// filter is active. Toggled from [CamerawesomePlugin setFilterMatrix:], which
+/// also forces the video-data connection on so frames flow even when nothing
+/// else consumes them.
+@property(nonatomic, strong, nullable, readonly) AVSampleBufferDisplayLayer *filteredPreviewLayer;
 
-/// Sets [feedPreviewTexture] and re-evaluates the analysis connection state.
-- (void)setColorFilterActive:(BOOL)active;
+/// Whether a non-identity preview colour filter is active.
+@property(nonatomic, assign, readonly) BOOL previewFilterActive;
+
+/// Applies (or, with nil, clears) the 4×5 row-major colour matrix used to
+/// filter the on-screen preview. Main thread only.
+- (void)setPreviewColorMatrix:(nullable NSArray<NSNumber *> *)matrix;
 
 /// When non-nil, overrides [motionController.deviceOrientation] at picture-
 /// capture time so the JPEG's EXIF Orientation is tagged for the requested

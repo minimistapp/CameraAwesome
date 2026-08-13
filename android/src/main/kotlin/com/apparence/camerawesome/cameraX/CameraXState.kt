@@ -3,12 +3,15 @@ package com.apparence.camerawesome.cameraX
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.res.Configuration
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
 import android.hardware.camera2.CameraCharacteristics
 import android.os.Build
 import android.util.Log
 import android.util.Rational
 import android.util.Size
 import android.view.Surface
+import android.view.View
 import androidx.camera.camera2.internal.compat.CameraCharacteristicsCompat
 import androidx.camera.camera2.internal.compat.quirk.CamcorderProfileResolutionQuirk
 import androidx.camera.camera2.interop.Camera2CameraInfo
@@ -67,9 +70,10 @@ data class CameraXState(
     /// Null → the Preview use case keeps rendering into the Flutter Texture.
     var previewView: PreviewView? = null
 
-    /// MIN-3655: whether the colour filter currently routes the preview into
-    /// the Flutter texture instead of [previewView] — see [routePreviewForFilter].
-    var filterPreviewToTexture = false
+    /// MIN-3655: the active preview colour matrix, or null for identity. Held
+    /// here so [buildPreviewView] can honour it across recreations (setup,
+    /// filter toggles) — see [applyPreviewColorFilter].
+    var previewColorMatrix: List<Double>? = null
 
     private val mainCameraInfos: CameraInfo
         @SuppressLint("RestrictedApi") get() {
@@ -310,10 +314,8 @@ data class CameraXState(
                 // available (MIN-2406); otherwise fall back to the Flutter
                 // Texture-backed SurfaceTexture. PreviewView.getSurfaceProvider()
                 // is itself a Preview.SurfaceProvider, so it's a drop-in.
-                // filterPreviewToTexture (MIN-3655): an active colour filter
-                // needs the texture path — keep honouring it across rebinds.
                 val nativePreview = previewView
-                if (sensors.size <= 1 && nativePreview != null && !filterPreviewToTexture) {
+                if (sensors.size <= 1 && nativePreview != null) {
                     previews!!.first().setSurfaceProvider(nativePreview.surfaceProvider)
                 } else {
                     previews!!.first().setSurfaceProvider(
@@ -434,24 +436,52 @@ data class CameraXState(
     }
 
     /**
-     * MIN-3655: while a non-identity colour filter is active, Dart displays the
-     * Flutter Texture (ColorFiltered can't tint the native PreviewView), so the
-     * Preview use case must render into the texture; identity restores the
-     * native PreviewView and its MIN-3577 overlay-plane wins. Runtime-safe:
-     * Preview.setSurfaceProvider re-plumbs the stream without a rebind. No-op
-     * when there is no native PreviewView (multi-sensor / ANALYSIS_ONLY already
-     * render through the texture).
+     * MIN-3655: builds the native preview surface, honouring the active colour
+     * filter. A filtered preview needs a TextureView (COMPATIBLE) so a
+     * hardware-layer [ColorMatrixColorFilter] paint can tint it — a SurfaceView
+     * composites on its own hardware plane, out of any paint's reach. Identity
+     * keeps PERFORMANCE and its MIN-3577 overlay-plane wins.
      */
-    fun routePreviewForFilter(toTexture: Boolean, activity: Activity) {
-        if (filterPreviewToTexture == toTexture) return
-        filterPreviewToTexture = toTexture
-        val nativePreview = previewView ?: return
-        val preview = previews?.firstOrNull() ?: return
-        if (toTexture) {
-            preview.setSurfaceProvider(surfaceProvider(executor(activity), sensors.first().deviceId ?: "0"))
-        } else {
-            preview.setSurfaceProvider(nativePreview.surfaceProvider)
+    fun buildPreviewView(activity: Activity): PreviewView {
+        val matrix = previewColorMatrix
+        return PreviewView(activity).apply {
+            implementationMode =
+                if (matrix != null) PreviewView.ImplementationMode.COMPATIBLE else PreviewView.ImplementationMode.PERFORMANCE
+            if (matrix != null) setLayerType(View.LAYER_TYPE_HARDWARE, colorMatrixPaint(matrix))
+            scaleType = PreviewView.ScaleType.FIT_CENTER
+            isClickable = false
+            isFocusable = false
+            isFocusableInTouchMode = false
         }
+    }
+
+    /**
+     * MIN-3655: applies (or clears, with null) the preview colour filter on the
+     * native preview. Retunes within an already-filtered preview just swap the
+     * paint; crossing the identity boundary recreates the PreviewView in the
+     * right implementation mode and re-plumbs the Preview use case onto it.
+     * Returns true when the PreviewView instance was replaced (the platform
+     * view must re-attach). No-op (false) on the texture path (multi-sensor /
+     * ANALYSIS_ONLY), where Dart's ColorFiltered tints the texture directly.
+     */
+    fun applyPreviewColorFilter(matrix: List<Double>?, activity: Activity): Boolean {
+        previewColorMatrix = matrix
+        val current = previewView ?: return false
+        val wantFiltered = matrix != null
+        val isFiltered = current.implementationMode == PreviewView.ImplementationMode.COMPATIBLE
+        if (wantFiltered && isFiltered) {
+            current.setLayerType(View.LAYER_TYPE_HARDWARE, colorMatrixPaint(matrix!!))
+            return false
+        }
+        if (!wantFiltered && !isFiltered) return false
+        val replacement = buildPreviewView(activity)
+        previewView = replacement
+        previews?.firstOrNull()?.setSurfaceProvider(replacement.surfaceProvider)
+        return true
+    }
+
+    private fun colorMatrixPaint(matrix: List<Double>) = Paint().apply {
+        colorFilter = ColorMatrixColorFilter(FloatArray(20) { matrix[it].toFloat() })
     }
 
     @SuppressLint("RestrictedApi")

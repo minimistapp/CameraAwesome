@@ -197,13 +197,10 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
         // the Flutter overlays drawn on top flicker/jank under HC, switching to
         // COMPATIBLE (TextureView) is the documented one-line fallback.
         if (mode != CaptureModes.ANALYSIS_ONLY && sensors.size <= 1) {
-            cameraState.previewView = PreviewView(activity!!).apply {
-                implementationMode = PreviewView.ImplementationMode.PERFORMANCE
-                scaleType = PreviewView.ScaleType.FIT_CENTER
-                isClickable = false
-                isFocusable = false
-                isFocusableInTouchMode = false
-            }
+            // buildPreviewView honours any active colour filter (MIN-3655);
+            // a fresh CameraXState starts unfiltered and Dart re-asserts the
+            // filter on start, which recreates the view if needed.
+            cameraState.previewView = cameraState.buildPreviewView(activity!!)
             // Tablets render the preview full-screen following the window; rebind
             // once the PreviewView attaches so it isn't stuck at the bind-time
             // portrait rotation. Phones stay portrait-locked, so skip. (MIN-2437)
@@ -291,11 +288,15 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
 
     override fun setFilter(matrix: List<Double>) {
         colorMatrix = matrix
-        // MIN-3655: preview routing follows the filter — Dart's ColorFiltered
-        // needs the Flutter texture on screen while a real matrix is active;
-        // identity restores the native PreviewView. Pigeon calls arrive on the
-        // main thread, which is where CameraX wants setSurfaceProvider.
-        activity?.let { cameraState.routePreviewForFilter(noneFilter != matrix, it) }
+        // MIN-3655: the preview is tinted natively — a filtered PreviewView
+        // (TextureView + hardware-layer colour-filter paint) replaces the
+        // PERFORMANCE one while a real matrix is active; identity restores it.
+        // Pigeon calls arrive on the main thread, where CameraX wants both
+        // setSurfaceProvider and view creation.
+        val act = activity ?: return
+        if (!::cameraState.isInitialized) return
+        val recreated = cameraState.applyPreviewColorFilter(if (noneFilter != matrix) matrix else null, act)
+        if (recreated) onPreviewViewRecreated?.invoke()
     }
 
     override fun isVideoRecordingAndImageAnalysisSupported(
@@ -374,6 +375,13 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
     /// which case the Dart side falls back to the Flutter Texture.
     override fun currentPreviewView(): PreviewView? {
         return if (::cameraState.isInitialized) cameraState.previewView else null
+    }
+
+    /// MIN-3655: single-slot re-attach hook — see [PreviewViewProvider].
+    private var onPreviewViewRecreated: (() -> Unit)? = null
+
+    override fun setOnPreviewViewRecreated(listener: (() -> Unit)?) {
+        onPreviewViewRecreated = listener
     }
 
     override fun onPreviewViewAttached() {

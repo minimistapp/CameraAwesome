@@ -23,6 +23,19 @@ NS_ASSUME_NONNULL_BEGIN
 @protocol CameraPreviewLayerProvider <NSObject>
 - (nullable AVCaptureVideoPreviewLayer *)currentPreviewLayer;
 
+/// MIN-3655: the filtered-preview overlay while a colour filter is active
+/// (an AVSampleBufferDisplayLayer fed CIColorMatrix-filtered frames), or nil
+/// when no filter is applied. The container composites it over — and hides —
+/// the raw preview layer so the on-screen image carries the filter without
+/// ever leaving the native display path.
+- (nullable AVSampleBufferDisplayLayer *)currentFilteredPreviewLayer;
+
+/// MIN-3655: lets the provider poke the mounted container (setNeedsLayout)
+/// when the filter toggles — attachment happens in layoutSubviews, and a
+/// filter change on its own triggers no layout. Weakly held; the container
+/// registers itself on creation.
+- (void)registerPreviewContainerView:(UIView *)containerView;
+
 /// When non-nil (a boxed AVCaptureVideoOrientation), the preview connection is
 /// pinned to this orientation instead of following the window's interface
 /// orientation. Driven by the app's camera orientation lock: native controllers

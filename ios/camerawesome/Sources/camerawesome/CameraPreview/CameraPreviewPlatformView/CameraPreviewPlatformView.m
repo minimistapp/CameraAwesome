@@ -109,10 +109,13 @@ static AVCaptureVideoOrientation CAMVideoOrientationFromInterface(UIInterfaceOri
   self.attachedLayer.hidden = YES;
 }
 
-/// The video-data output delivers sensor-oriented (landscape) buffers — unlike
-/// the preview layer, whose connection auto-rotates. Rotate the filtered layer
-/// to the interface orientation with the same mapping layoutSubviews applies
-/// to the preview connection.
+/// The video-data output delivers PORTRAIT-oriented buffers: its connection
+/// keeps the default portrait orientation (see initCameraPreview's "lock the
+/// preview to portrait like the data-output connection", MIN-2409) — verified
+/// on-device: an unrotated filtered layer matches the raw preview in
+/// portrait. So no transform is needed while the interface is portrait; the
+/// landscape cases (tablets — phones are portrait-locked, MIN-2967) rotate by
+/// the device's physical rotation from portrait.
 - (void)layoutFilteredLayer {
   AVSampleBufferDisplayLayer *layer = self.attachedFilteredLayer;
   if (layer == nil) {
@@ -128,19 +131,21 @@ static AVCaptureVideoOrientation CAMVideoOrientationFromInterface(UIInterfaceOri
   CGFloat angle;
   BOOL quarterTurn;
   switch (orientation) {
-    case AVCaptureVideoOrientationPortrait:
-      angle = M_PI_2;
-      quarterTurn = YES;
-      break;
-    case AVCaptureVideoOrientationPortraitUpsideDown:
+    case AVCaptureVideoOrientationLandscapeRight:
+      // Interface LandscapeRight = device rotated 90° counter-clockwise from
+      // portrait; the portrait-oriented buffer content counter-rotates.
       angle = -M_PI_2;
       quarterTurn = YES;
       break;
     case AVCaptureVideoOrientationLandscapeLeft:
+      angle = M_PI_2;
+      quarterTurn = YES;
+      break;
+    case AVCaptureVideoOrientationPortraitUpsideDown:
       angle = M_PI;
       quarterTurn = NO;
       break;
-    case AVCaptureVideoOrientationLandscapeRight:
+    case AVCaptureVideoOrientationPortrait:
     default:
       angle = 0;
       quarterTurn = NO;

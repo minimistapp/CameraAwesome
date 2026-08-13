@@ -1007,7 +1007,11 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
 /// Dart), but the *preview* is filtered natively — the platform view overlays
 /// an AVSampleBufferDisplayLayer showing CIColorMatrix-filtered frames while a
 /// non-identity matrix is active, so the display never leaves the native path.
-- (void)setFilterMatrix:(NSArray<NSNumber *> *)matrix error:(FlutterError *_Nullable *_Nonnull)error {
+///
+/// `bakeCaptures` is therefore unused here — on iOS it is Dart's FilterHandler
+/// that decides whether to bake, and it reads the flag off the filter object.
+/// Only Android needs it natively. (MIN-3655)
+- (void)setFilterMatrix:(NSArray<NSNumber *> *)matrix bakeCaptures:(NSNumber *)bakeCaptures error:(FlutterError *_Nullable *_Nonnull)error {
   BOOL identity = YES;
   if (matrix.count == 20) {
     for (NSUInteger i = 0; i < 20; i++) {

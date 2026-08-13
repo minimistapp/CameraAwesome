@@ -9,11 +9,22 @@ import 'package:camerawesome/camerawesome_plugin.dart';
 class FilterHandler {
   Isolate? photoFilterIsolate;
 
+  /// Whether [filter] has to be baked into the captured file by [apply].
+  ///
+  /// A preview-only filter (`bakeCaptures == false`, MIN-3655) is left to the
+  /// caller to apply elsewhere: the bake is a full-resolution
+  /// decode/apply/re-encode that runs between the shutter and
+  /// `MediaCapture.success` and stalls the capture. [AwesomeFilter.None]
+  /// never bakes. Platform-independent — [apply] only bakes on iOS, where
+  /// nothing native does it (Android bakes in `CameraAwesomeX`).
+  static bool shouldBake(AwesomeFilter filter) =>
+      filter.bakeCaptures && filter.id != AwesomeFilter.None.id;
+
   Future<void> apply({
     required CaptureRequest captureRequest,
     required AwesomeFilter filter,
   }) async {
-    if (Platform.isIOS && filter.id != AwesomeFilter.None.id) {
+    if (Platform.isIOS && shouldBake(filter)) {
       photoFilterIsolate?.kill(priority: Isolate.immediate);
 
       ReceivePort port = ReceivePort();

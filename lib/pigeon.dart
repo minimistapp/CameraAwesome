@@ -1649,12 +1649,13 @@ class CameraInterface {
     }
   }
 
-  Future<void> setFilter(List<double?> arg_matrix) async {
+  Future<void> setFilter(List<double?> arg_matrix, bool arg_bakeCaptures) async {
     final BasicMessageChannel<Object?> channel = BasicMessageChannel<Object?>(
         'dev.flutter.pigeon.CameraInterface.setFilter', codec,
         binaryMessenger: _binaryMessenger);
     final List<Object?>? replyList =
-        await channel.send(<Object?>[arg_matrix]) as List<Object?>?;
+        await channel.send(<Object?>[arg_matrix, arg_bakeCaptures])
+            as List<Object?>?;
     if (replyList == null) {
       throw PlatformException(
         code: 'channel-error',

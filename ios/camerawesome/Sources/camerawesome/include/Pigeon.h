@@ -339,7 +339,7 @@ NSObject<FlutterMessageCodec> *CameraInterfaceGetCodec(void);
 - (void)setExifPreferencesExifPreferences:(ExifPreferences *)exifPreferences completion:(void (^)(NSNumber *_Nullable, FlutterError *_Nullable))completion;
 - (void)startAnalysisWithError:(FlutterError *_Nullable *_Nonnull)error;
 - (void)stopAnalysisWithError:(FlutterError *_Nullable *_Nonnull)error;
-- (void)setFilterMatrix:(NSArray<NSNumber *> *)matrix error:(FlutterError *_Nullable *_Nonnull)error;
+- (void)setFilterMatrix:(NSArray<NSNumber *> *)matrix bakeCaptures:(NSNumber *)bakeCaptures error:(FlutterError *_Nullable *_Nonnull)error;
 - (void)isVideoRecordingAndImageAnalysisSupportedSensor:(PigeonSensorPosition)sensor completion:(void (^)(NSNumber *_Nullable, FlutterError *_Nullable))completion;
 /// @return `nil` only when `error != nil`.
 - (nullable NSNumber *)isMultiCamSupportedWithError:(FlutterError *_Nullable *_Nonnull)error;

@@ -445,7 +445,9 @@ abstract class CameraInterface {
 
   void stopAnalysis();
 
-  void setFilter(List<double> matrix);
+  /// MIN-3655: [bakeCaptures] false keeps the preview filtered but leaves
+  /// captured photos untouched (Android only — iOS bakes in Dart).
+  void setFilter(List<double> matrix, bool bakeCaptures);
 
   @async
   bool isVideoRecordingAndImageAnalysisSupported(PigeonSensorPosition sensor);

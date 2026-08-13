@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:camerawesome/src/orchestrator/models/filters/awesome_filter.dart';
+import 'package:camerawesome/src/orchestrator/states/handlers/filter_handler.dart';
 import 'package:camerawesome/src/photofilters/filters/color_matrix_filter.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -63,6 +64,49 @@ void main() {
       expect(custom.output, isA<ColorMatrixFilter>());
       expect((custom.output as ColorMatrixFilter).matrix, matrix);
       expect(custom.matrix, matrix);
+    });
+  });
+
+  group('bakeCaptures (MIN-3655)', () {
+    const matrix = [
+      1.2, 0.0, 0.0, 0.0, 0.0, //
+      0.0, 1.0, 0.0, 0.0, 0.0, //
+      0.0, 0.0, 0.9, 0.0, 0.0, //
+      0.0, 0.0, 0.0, 1.0, 0.0, //
+    ];
+
+    test('custom defaults to baking captures, presets too', () {
+      expect(AwesomeFilter.custom(name: 'Station profile', matrix: matrix).bakeCaptures, isTrue);
+      expect(AwesomeFilter.None.bakeCaptures, isTrue);
+      expect(AwesomeFilter.Sierra.bakeCaptures, isTrue);
+    });
+
+    test('custom can opt out for a preview-only filter', () {
+      final previewOnly = AwesomeFilter.custom(
+        name: 'Station profile',
+        matrix: matrix,
+        bakeCaptures: false,
+      );
+      expect(previewOnly.bakeCaptures, isFalse);
+      // Opting out changes nothing else: the preview still gets the matrix.
+      expect(previewOnly.matrix, matrix);
+      expect(previewOnly.isIdentity, isFalse);
+      expect(previewOnly.output, isA<ColorMatrixFilter>());
+    });
+
+    test('FilterHandler bakes by default and skips preview-only filters', () {
+      expect(
+        FilterHandler.shouldBake(AwesomeFilter.custom(name: 'Station profile', matrix: matrix)),
+        isTrue,
+      );
+      expect(
+        FilterHandler.shouldBake(
+          AwesomeFilter.custom(name: 'Station profile', matrix: matrix, bakeCaptures: false),
+        ),
+        isFalse,
+      );
+      // None never baked, with or without the flag.
+      expect(FilterHandler.shouldBake(AwesomeFilter.None), isFalse);
     });
   });
 }

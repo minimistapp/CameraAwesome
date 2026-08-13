@@ -1378,12 +1378,13 @@ void CameraInterfaceSetup(id<FlutterBinaryMessenger> binaryMessenger, NSObject<C
         binaryMessenger:binaryMessenger
         codec:CameraInterfaceGetCodec()];
     if (api) {
-      NSCAssert([api respondsToSelector:@selector(setFilterMatrix:error:)], @"CameraInterface api (%@) doesn't respond to @selector(setFilterMatrix:error:)", api);
+      NSCAssert([api respondsToSelector:@selector(setFilterMatrix:bakeCaptures:error:)], @"CameraInterface api (%@) doesn't respond to @selector(setFilterMatrix:bakeCaptures:error:)", api);
       [channel setMessageHandler:^(id _Nullable message, FlutterReply callback) {
         NSArray *args = message;
         NSArray<NSNumber *> *arg_matrix = GetNullableObjectAtIndex(args, 0);
+        NSNumber *arg_bakeCaptures = GetNullableObjectAtIndex(args, 1);
         FlutterError *error;
-        [api setFilterMatrix:arg_matrix error:&error];
+        [api setFilterMatrix:arg_matrix bakeCaptures:arg_bakeCaptures error:&error];
         callback(wrapResult(nil, error));
       }];
     } else {

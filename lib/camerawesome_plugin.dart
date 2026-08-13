@@ -615,7 +615,9 @@ class CamerawesomePlugin {
   }
 
   static Future<void> setFilter(AwesomeFilter filter) {
-    return CameraInterface().setFilter(filter.matrix);
+    // MIN-3655: bakeCaptures crosses to Android, where the capture bake is
+    // native. iOS bakes in Dart ([FilterHandler]) and ignores the flag.
+    return CameraInterface().setFilter(filter.matrix, filter.bakeCaptures);
   }
 
   static Future<void> setMirrorFrontCamera(bool mirrorFrontCamera) {

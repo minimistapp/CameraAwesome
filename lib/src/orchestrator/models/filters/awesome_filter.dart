@@ -19,27 +19,45 @@ class AwesomeFilter {
   final photofilters.Filter _outputFilter;
   final List<double> matrix;
 
+  /// Whether the matrix is baked into captured photos (MIN-3655).
+  ///
+  /// `true` (the default, and what every preset uses) keeps the historical
+  /// behaviour: iOS re-encodes the JPEG in a Dart isolate before the capture
+  /// succeeds, Android re-encodes it natively in `CameraAwesomeX`.
+  ///
+  /// `false` makes the filter **preview-only**: the live preview is still
+  /// tinted natively on both platforms, but captures are written untouched —
+  /// the caller is expected to apply the same matrix elsewhere (server-side,
+  /// in Minimist's case). Both bakes are full-resolution per-pixel passes that
+  /// sit between the shutter and `MediaCapture.success`, so opting out is what
+  /// removes the shutter hang.
+  final bool bakeCaptures;
+
   AwesomeFilter({
     required String name,
     required photofilters.Filter outputFilter,
     required this.matrix,
+    this.bakeCaptures = true,
   })  : _name = name,
         _outputFilter = outputFilter;
 
   /// A filter defined purely by a 4×5 row-major colour matrix (Flutter's
   /// `ColorFilter.matrix` layout, offsets in the 0–255 domain) — for
   /// app-computed adjustments rather than the named presets (MIN-3655).
-  /// The same matrix drives the live preview ([preview]) and, through
-  /// [ColorMatrixFilter], the iOS capture bake; Android bakes it natively
-  /// from `setFilterMatrix`.
+  /// The same matrix drives the live preview ([preview]) and, when
+  /// [bakeCaptures] is left at `true`, the capture bake: through
+  /// [ColorMatrixFilter] on iOS, natively from `setFilter` on Android.
+  /// Pass `bakeCaptures: false` for a preview-only filter.
   factory AwesomeFilter.custom({
     required String name,
     required List<double> matrix,
+    bool bakeCaptures = true,
   }) =>
       AwesomeFilter(
         name: name,
         outputFilter: ColorMatrixFilter(name: name, matrix: matrix),
         matrix: matrix,
+        bakeCaptures: bakeCaptures,
       );
 
   /// The 4×5 identity matrix — [None]'s matrix.

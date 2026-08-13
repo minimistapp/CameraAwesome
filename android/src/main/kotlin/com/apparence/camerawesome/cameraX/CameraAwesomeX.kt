@@ -97,6 +97,13 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
     private var lastRecordedVideoSubscriptions: MutableList<Disposable>? = null
     private var colorMatrix: List<Double>? = null
 
+    // MIN-3655: whether the active colour matrix is baked into captured
+    // photos. False makes the filter preview-only — the bake is a
+    // full-resolution decode + re-encode on the main executor that delays the
+    // capture callback, and the caller applies the matrix elsewhere (server
+    // side, for Minimist). Defaults to true, the historical behaviour.
+    private var bakeCaptures: Boolean = true
+
     private val noneFilter: List<Double> = listOf(
         1.0,
         0.0,
@@ -286,8 +293,9 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
         }
     }
 
-    override fun setFilter(matrix: List<Double>) {
+    override fun setFilter(matrix: List<Double>, bakeCaptures: Boolean) {
         colorMatrix = matrix
+        this.bakeCaptures = bakeCaptures
         // MIN-3655: the preview is tinted natively — a filtered PreviewView
         // (TextureView + hardware-layer colour-filter paint) replaces the
         // PERFORMANCE one while a real matrix is active; identity restores it.
@@ -468,7 +476,9 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
             ContextCompat.getMainExecutor(activity!!),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                    if (colorMatrix != null && noneFilter != colorMatrix) {
+                    // MIN-3655: preview-only filters (bakeCaptures == false)
+                    // skip the bake — the photo is saved as captured.
+                    if (bakeCaptures && colorMatrix != null && noneFilter != colorMatrix) {
                         val exif = ExifInterface(outputFileResults.savedUri!!.path!!)
 
                         val originalBitmap = BitmapFactory.decodeFile(

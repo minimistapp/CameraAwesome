@@ -5,6 +5,8 @@ import android.app.Activity
 import android.content.res.Configuration
 import android.hardware.camera2.CameraCharacteristics
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.util.Rational
 import android.util.Size
@@ -25,6 +27,7 @@ import com.apparence.camerawesome.CamerawesomePlugin
 import com.apparence.camerawesome.models.FlashMode
 import com.apparence.camerawesome.sensors.SensorOrientation
 import com.apparence.camerawesome.utils.isMultiCamSupported
+import com.google.common.util.concurrent.ListenableFuture
 import io.flutter.plugin.common.EventChannel
 import io.flutter.view.TextureRegistry
 import java.util.concurrent.Executor
@@ -59,6 +62,33 @@ data class CameraXState(
 
     var imageAnalysisBuilder: ImageAnalysisBuilder? = null
     private var imageAnalysis: ImageAnalysis? = null
+
+    /// MIN-3655: camera-control values a rebind silently throws away.
+    ///
+    /// [updateLifecycle] unbinds every use case before rebinding, and while
+    /// nothing is attached CameraX drops the camera control to inactive
+    /// (`Camera2CameraImpl.detachUseCases` → `CameraControlInternal.setActive(false)`),
+    /// which resets `ZoomControl` to 1.0x, `ExposureControl` to index 0 and the
+    /// torch to off. The Flutter widgets keep showing whatever the user dialled
+    /// in, so the UI and the sensor silently disagree.
+    ///
+    /// Every rebind path is affected (aspect ratio, capture mode, analysis
+    /// start/stop, display rotation, MIN-2437's first-attach rebind), but a
+    /// colour profile crossing the identity boundary made it easy to hit: pick a
+    /// profile at 2x and the preview jumps back to 1x under an unchanged zoom
+    /// pill. Remember what was last asked for and re-assert it on the new
+    /// control after each bind.
+    private var lastLinearZoom: Float? = null
+    private var lastExposureIndex: Int? = null
+
+    /// The rotation last pushed to the analysis use case. A rebind builds a fresh
+    /// [ImageAnalysis], which starts at the default target rotation — and
+    /// [onOrientationChanged] only re-asserts when the device actually moves, so
+    /// without this the analysis stream silently reverts to the bind-time
+    /// rotation and stays there. (Alongside MIN-3577's config re-assertion.)
+    private var lastAnalysisRotation: Int? = null
+
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     /// Native preview surface (Android port of iOS SingleCameraPreview's
     /// AVCaptureVideoPreviewLayer, MIN-2406). Owned here; set by
@@ -280,7 +310,7 @@ data class CameraXState(
                     videoCaptures[sensor] = videoCapture
                 }
                 if (isFirst && enableImageStream && imageAnalysisBuilder != null) {
-                    imageAnalysis = imageAnalysisBuilder!!.build()
+                    imageAnalysis = buildAnalysisUseCase()
                     useCaseGroupBuilder.addUseCase(imageAnalysis!!)
                 } else {
                     imageAnalysis = null
@@ -303,8 +333,9 @@ data class CameraXState(
             concurrentCamera = cameraProvider.bindToLifecycle(
                 singleCameraConfigs
             )
-            // Only set flash to the main camera (the first one)
-            concurrentCamera!!.cameras.first().cameraControl.enableTorch(flashMode == FlashMode.ALWAYS)
+            // Torch, zoom and exposure all reset with the unbind above, and only
+            // the main camera (the first one) carries them. (MIN-3655)
+            restoreCameraControlState(activity)
         } else {
             val useCaseGroupBuilder = UseCaseGroup.Builder()
             // Handle single camera
@@ -382,7 +413,7 @@ data class CameraXState(
                         "Trying to bind too many use cases for this device (level $cameraLevel), ignoring image analysis"
                     )
                 } else {
-                    imageAnalysis = imageAnalysisBuilder!!.build()
+                    imageAnalysis = buildAnalysisUseCase()
                     useCaseGroupBuilder.addUseCase(imageAnalysis!!)
 
                 }
@@ -401,9 +432,55 @@ data class CameraXState(
                 cameraSelector,
                 useCaseGroupBuilder.build(),
             )
-            previewCamera!!.cameraControl.enableTorch(flashMode == FlashMode.ALWAYS)
+            // Torch, zoom and exposure all reset with the unbind above. (MIN-3655)
+            restoreCameraControlState(activity)
         }
     }
+
+    /**
+     * MIN-3655: re-asserts the camera-control state that the rebind dropped —
+     * torch, zoom and exposure compensation — on the freshly bound control.
+     *
+     * Retried because `bindToLifecycle` returns before CameraX has attached the
+     * use cases: `setActive(true)` happens later, on the camera executor, and a
+     * control call that lands first is rejected outright
+     * (`ZoomControl.submitCameraZoomRatio` completes with
+     * `OperationCanceledException("Camera is not active.")` — and, worse, resets
+     * the zoom state again on its way out). Each attempt re-reads the fields, so
+     * a retry that overlaps a user gesture applies the *current* target, never a
+     * stale one.
+     */
+    private fun restoreCameraControlState(activity: Activity, attempt: Int = 0) {
+        val cameraControl = previewCamera?.cameraControl
+            ?: concurrentCamera?.cameras?.firstOrNull()?.cameraControl
+            ?: return
+        val futures = mutableListOf<ListenableFuture<*>>()
+        futures.add(cameraControl.enableTorch(flashMode == FlashMode.ALWAYS))
+        lastLinearZoom?.let { futures.add(cameraControl.setLinearZoom(it)) }
+        lastExposureIndex?.let { futures.add(cameraControl.setExposureCompensationIndex(it)) }
+        if (attempt >= MAX_CONTROL_RESTORE_ATTEMPTS) return
+        // Watching one of them is enough: they fail together, for the same
+        // reason (the control isn't active yet), and a single retry chain keeps
+        // this from fanning out.
+        val probe = futures.first()
+        probe.addListener({
+            if (runCatching { probe.get() }.isFailure) {
+                mainHandler.postDelayed(
+                    { restoreCameraControlState(activity, attempt + 1) },
+                    CONTROL_RESTORE_RETRY_MS,
+                )
+            }
+        }, executor(activity))
+    }
+
+    /// Builds the analysis use case for a (re)bind, carrying the rotation the
+    /// stream was last configured with — a fresh [ImageAnalysis] would otherwise
+    /// start at the default one. Assigned before binding, so it costs no
+    /// reconfiguration (MIN-3577).
+    private fun buildAnalysisUseCase(): ImageAnalysis =
+        imageAnalysisBuilder!!.build().apply {
+            lastAnalysisRotation?.let { if (targetRotation != it) targetRotation = it }
+        }
 
     private fun getResolutionSelector(aspectRatio: Int): ResolutionSelector {
         val resolutionStrategy = when (aspectRatio) {
@@ -557,7 +634,18 @@ data class CameraXState(
     }
 
     fun setLinearZoom(zoom: Float) {
+        // Remembered so the next rebind can put it back — see
+        // [restoreCameraControlState]. (MIN-3655)
+        lastLinearZoom = zoom
         mainCameraControl.setLinearZoom(zoom)
+    }
+
+    /// Exposure compensation, in device index steps (MIN-2312 maps the app's
+    /// normalised brightness onto them). Remembered for the same reason as the
+    /// zoom: an unbind resets `ExposureControl` to index 0. (MIN-3655)
+    fun setExposureCompensationIndex(index: Int) {
+        lastExposureIndex = index
+        mainCameraControl.setExposureCompensationIndex(index)
     }
 
     fun startFocusAndMetering(autoFocusAction: FocusMeteringAction) {
@@ -677,6 +765,10 @@ data class CameraXState(
                 Surface.ROTATION_0
             }
         }
+        // Recorded even when there is no analysis use case right now, so the next
+        // (re)bind starts at the current rotation instead of the default one.
+        // (MIN-3655)
+        lastAnalysisRotation = rotation
         // Assigning targetRotation is not free — it reconfigures the analysis use
         // case — and four orientation buckets mean most callbacks resolve to the
         // rotation already in effect. Second line of defence behind the dedupe in
@@ -687,6 +779,16 @@ data class CameraXState(
         }
     }
 
+    /// Drops the remembered zoom/exposure so the next bind starts neutral.
+    /// Called when the *physical* camera changes (a sensor switch already resets
+    /// flash and aspect ratio) — carrying a 5x zoom over to the front camera
+    /// would be the surprising behaviour, unlike carrying it across a rebind of
+    /// the same sensor. (MIN-3655)
+    fun resetCameraControlState() {
+        lastLinearZoom = null
+        lastExposureIndex = null
+    }
+
     fun updateAspectRatio(newAspectRatio: String) {
         // In CameraX, aspect ratio is an Int. RATIO_4_3 = 0 (default), RATIO_16_9 = 1
         aspectRatio = if (newAspectRatio == "RATIO_16_9") 1 else 0
@@ -695,5 +797,14 @@ data class CameraXState(
             "RATIO_1_1" -> Rational(1, 1)
             else -> Rational(3, 4)
         }
+    }
+
+    companion object {
+        /// How many times [restoreCameraControlState] retries while CameraX is
+        /// still attaching the use cases. Three attempts over ~360ms comfortably
+        /// covers the gap the pre-existing 200ms `postDelayed` in
+        /// `setupCamera`'s initial zoom was guessing at.
+        private const val MAX_CONTROL_RESTORE_ATTEMPTS = 3
+        private const val CONTROL_RESTORE_RETRY_MS = 120L
     }
 }

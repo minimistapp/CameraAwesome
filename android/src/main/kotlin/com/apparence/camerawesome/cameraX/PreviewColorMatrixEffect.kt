@@ -162,7 +162,10 @@ class ColorMatrixSurfaceProcessor(matrix: List<Double>) : SurfaceProcessor {
     private var colorOffsetLoc = 0
 
     private var inputTexture: SurfaceTexture? = null
-    private val outputs = LinkedHashMap<SurfaceOutput, EGLSurface>()
+    private val outputs = LinkedHashMap<SurfaceOutput, OutputTarget>()
+
+    /// Scratch for [querySurface] — the GL thread is the only caller.
+    private val queried = IntArray(1)
 
     private val textureTransform = FloatArray(16)
     private val outputTransform = FloatArray(16)
@@ -216,7 +219,17 @@ class ColorMatrixSurfaceProcessor(matrix: List<Double>) : SurfaceProcessor {
             return
         }
         val surface = surfaceOutput.getSurface(glExecutor) { event -> removeOutput(event.surfaceOutput) }
-        val eglSurface = EGL14.eglCreateWindowSurface(
+        // One EGL surface per *window*, not per SurfaceOutput. A rebind at an
+        // unchanged preview resolution hands us the SAME Surface again under a new
+        // SurfaceOutput — `PreviewView` reuses its SurfaceView when the resolution
+        // doesn't change, so `provideSurface` re-offers the identical instance —
+        // and EGL refuses a second window surface for a window that is already
+        // connected to a context (EGL_BAD_ALLOC). Sharing it instead keeps the
+        // preview alive across those rebinds; the entry is destroyed once the last
+        // SurfaceOutput holding it is closed. CameraX's own renderer keys its
+        // surfaces by Surface for the same reason (OpenGlRenderer.mOutputSurfaceMap).
+        val shared = outputs.values.firstOrNull { it.surface === surface }?.eglSurface
+        val eglSurface = shared ?: EGL14.eglCreateWindowSurface(
             eglDisplay, eglConfig, surface, intArrayOf(EGL14.EGL_NONE), 0,
         )
         if (eglSurface == null || eglSurface == EGL14.EGL_NO_SURFACE) {
@@ -224,15 +237,15 @@ class ColorMatrixSurfaceProcessor(matrix: List<Double>) : SurfaceProcessor {
             surfaceOutput.close()
             return
         }
-        outputs[surfaceOutput] = eglSurface
+        outputs[surfaceOutput] = OutputTarget(surface, eglSurface)
     }
 
     private fun removeOutput(surfaceOutput: SurfaceOutput) {
-        val eglSurface = outputs.remove(surfaceOutput)
-        if (eglSurface != null) {
+        val target = outputs.remove(surfaceOutput)
+        if (target != null && outputs.values.none { it.eglSurface == target.eglSurface }) {
             // Never destroy a surface that is still current.
             makeCurrent(tempSurface)
-            EGL14.eglDestroySurface(eglDisplay, eglSurface)
+            EGL14.eglDestroySurface(eglDisplay, target.eglSurface)
         }
         surfaceOutput.close()
     }
@@ -249,21 +262,47 @@ class ColorMatrixSurfaceProcessor(matrix: List<Double>) : SurfaceProcessor {
         }
         surfaceTexture.getTransformMatrix(textureTransform)
         val matrix = colorMatrix
-        for ((surfaceOutput, eglSurface) in outputs) {
+        for ((surfaceOutput, target) in outputs) {
             surfaceOutput.updateTransformMatrix(outputTransform, textureTransform)
-            drawFrame(eglSurface, surfaceOutput, matrix, surfaceTexture.timestamp)
+            drawFrame(target.eglSurface, matrix, surfaceTexture.timestamp)
         }
     }
 
     private fun drawFrame(
         eglSurface: EGLSurface,
-        surfaceOutput: SurfaceOutput,
         matrix: ColorMatrixUniforms,
         timestampNs: Long,
     ) {
         if (!makeCurrent(eglSurface)) return
-        val size = surfaceOutput.size
-        GLES20.glViewport(0, 0, size.width, size.height)
+        // MIN-3655: the viewport comes from the window we are actually rendering
+        // into, re-read every frame — NOT from [SurfaceOutput.size].
+        //
+        // SurfaceOutput.size is the pipeline's *nominal* output resolution (the
+        // output SurfaceEdge's StreamSpec), decided before the app's
+        // SurfaceProvider ever touched a window. The two agree only once the
+        // surface handshake has settled: installing the effect changes the
+        // resolution PreviewView is asked for (the effect pre-applies crop and
+        // rotation, so a sensor-landscape buffer becomes a portrait one), and
+        // while that renegotiation is in flight the window we hold can still
+        // carry the previous geometry. Rendering a portrait viewport into a
+        // landscape window puts the image in the bottom-left ~56% of the surface
+        // and stretches it — which is exactly what the preview did when a colour
+        // profile was already selected as the camera opened, and why anything
+        // that recreated the surface (backgrounding, a mode switch, turning the
+        // filter off) "fixed" it.
+        //
+        // Querying the surface makes the number impossible to get wrong on any
+        // of the paths: SurfaceView reused or replaced across a rebind, a
+        // TextureView (AwesomeFilter.compatiblePreview, or a device quirk that
+        // forces COMPATIBLE) whose onSizeChanged resets the SurfaceTexture's
+        // default buffer size to the *view* size, all of them. CameraX's own
+        // renderer does the same (OpenGlRenderer.createOutputSurfaceInternal →
+        // eglQuerySurface); reading EGL_WIDTH/EGL_HEIGHT is a local ANativeWindow
+        // query, not an IPC, so per frame is affordable.
+        val width = querySurface(eglSurface, EGL14.EGL_WIDTH)
+        val height = querySurface(eglSurface, EGL14.EGL_HEIGHT)
+        if (width <= 0 || height <= 0) return
+        GLES20.glViewport(0, 0, width, height)
         GLES20.glUniformMatrix4fv(texMatrixLoc, 1, false, outputTransform, 0)
         GLES20.glUniformMatrix4fv(colorMatrixLoc, 1, false, matrix.coefficients, 0)
         GLES20.glUniform4fv(colorOffsetLoc, 1, matrix.offsets, 0)
@@ -271,6 +310,11 @@ class ColorMatrixSurfaceProcessor(matrix: List<Double>) : SurfaceProcessor {
         EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, timestampNs)
         EGL14.eglSwapBuffers(eglDisplay, eglSurface)
     }
+
+    /// One [EGL14.EGL_WIDTH]/[EGL14.EGL_HEIGHT]-style query on an EGL surface;
+    /// 0 (i.e. "don't draw") if the driver refuses to answer.
+    private fun querySurface(eglSurface: EGLSurface, attribute: Int): Int =
+        if (EGL14.eglQuerySurface(eglDisplay, eglSurface, attribute, queried, 0)) queried[0] else 0
 
     private fun makeCurrent(eglSurface: EGLSurface): Boolean {
         if (!glReady || eglSurface == EGL14.EGL_NO_SURFACE) return false
@@ -404,9 +448,12 @@ class ColorMatrixSurfaceProcessor(matrix: List<Double>) : SurfaceProcessor {
         glHandler.post {
             if (released) return@post
             released = true
-            for ((surfaceOutput, eglSurface) in outputs) {
-                makeCurrent(tempSurface)
+            makeCurrent(tempSurface)
+            // Distinct: several SurfaceOutputs can share one window surface.
+            for (eglSurface in outputs.values.map { it.eglSurface }.distinct()) {
                 EGL14.eglDestroySurface(eglDisplay, eglSurface)
+            }
+            for (surfaceOutput in outputs.keys) {
                 surfaceOutput.close()
             }
             outputs.clear()
@@ -434,6 +481,12 @@ class ColorMatrixSurfaceProcessor(matrix: List<Double>) : SurfaceProcessor {
                 put(values)
                 position(0)
             }
+
+    /// A CameraX output and the EGL window surface we render it into. Held
+    /// together because the mapping is not one-to-one: consecutive
+    /// [SurfaceOutput]s can share a single [Surface] (and therefore a single
+    /// [EGLSurface]) across a rebind — see [onOutputSurface].
+    private class OutputTarget(val surface: Surface, val eglSurface: EGLSurface)
 
     companion object {
         private val VERTEX_SHADER = """

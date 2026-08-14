@@ -223,9 +223,10 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
             // Zoom should be set after updateLifeCycle
             if (zoom > 0) {
                 // TODO Find a better way to set initial zoom than using a postDelayed
+                // Goes through cameraState so the value is remembered and put back
+                // after any later rebind (MIN-3655).
                 Handler(Looper.getMainLooper()).postDelayed({
-                    (cameraState.concurrentCamera?.cameras?.firstOrNull()
-                        ?: cameraState.previewCamera)?.cameraControl?.setLinearZoom(zoom.toFloat())
+                    runCatching { cameraState.setLinearZoom(zoom.toFloat()) }
                 }, 200)
             }
         }
@@ -739,6 +740,10 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
             this.flashMode = FlashMode.NONE
             this.aspectRatio = null
             this.rational = Rational(3, 4)
+            // ...and the zoom/exposure carried across rebinds of the *same*
+            // sensor, which shouldn't follow the user to a different one.
+            // (MIN-3655)
+            resetCameraControlState()
             updateLifecycle(activity!!)
         }
     }
@@ -760,9 +765,9 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
         val targetEv = (brightness - 0.5) * 2.0 * brightnessEvWindow
         // Convert EV -> exposure-compensation index, then clamp to the device range.
         val index = if (step > 0.0) (targetEv / step).roundToInt() else 0
-        cameraState.previewCamera?.cameraControl?.setExposureCompensationIndex(
-            index.coerceIn(range.lower, range.upper)
-        )
+        // Through cameraState so it survives the next rebind, which would
+        // otherwise reset the compensation index to 0 (MIN-3655).
+        runCatching { cameraState.setExposureCompensationIndex(index.coerceIn(range.lower, range.upper)) }
     }
 
     /**

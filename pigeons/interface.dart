@@ -447,7 +447,9 @@ abstract class CameraInterface {
 
   /// MIN-3655: [bakeCaptures] false keeps the preview filtered but leaves
   /// captured photos untouched (Android only — iOS bakes in Dart).
-  void setFilter(List<double> matrix, bool bakeCaptures);
+  /// [compatiblePreview] forces Android's preview onto a TextureView so Flutter
+  /// widget transforms apply to it; independent of the matrix, ignored on iOS.
+  void setFilter(List<double> matrix, bool bakeCaptures, bool compatiblePreview);
 
   @async
   bool isVideoRecordingAndImageAnalysisSupported(PigeonSensorPosition sensor);

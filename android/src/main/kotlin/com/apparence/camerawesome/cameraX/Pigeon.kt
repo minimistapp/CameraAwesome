@@ -843,7 +843,7 @@ interface CameraInterface {
   fun setExifPreferences(exifPreferences: ExifPreferences, callback: (Result<Boolean>) -> Unit)
   fun startAnalysis()
   fun stopAnalysis()
-  fun setFilter(matrix: List<Double>, bakeCaptures: Boolean)
+  fun setFilter(matrix: List<Double>, bakeCaptures: Boolean, compatiblePreview: Boolean)
   fun isVideoRecordingAndImageAnalysisSupported(sensor: PigeonSensorPosition, callback: (Result<Boolean>) -> Unit)
   fun isMultiCamSupported(): Boolean
   fun setCaptureOrientationOverride(orientation: String?)
@@ -1512,9 +1512,10 @@ interface CameraInterface {
             val args = message as List<Any?>
             val matrixArg = args[0] as List<Double>
             val bakeCapturesArg = args[1] as Boolean
+            val compatiblePreviewArg = args[2] as Boolean
             var wrapped: List<Any?>
             try {
-              api.setFilter(matrixArg, bakeCapturesArg)
+              api.setFilter(matrixArg, bakeCapturesArg, compatiblePreviewArg)
               wrapped = listOf<Any?>(null)
             } catch (exception: Throwable) {
               wrapped = wrapError(exception)

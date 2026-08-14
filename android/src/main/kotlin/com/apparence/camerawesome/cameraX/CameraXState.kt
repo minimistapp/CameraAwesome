@@ -3,15 +3,12 @@ package com.apparence.camerawesome.cameraX
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.res.Configuration
-import android.graphics.ColorMatrixColorFilter
-import android.graphics.Paint
 import android.hardware.camera2.CameraCharacteristics
 import android.os.Build
 import android.util.Log
 import android.util.Rational
 import android.util.Size
 import android.view.Surface
-import android.view.View
 import androidx.camera.camera2.internal.compat.CameraCharacteristicsCompat
 import androidx.camera.camera2.internal.compat.quirk.CamcorderProfileResolutionQuirk
 import androidx.camera.camera2.interop.Camera2CameraInfo
@@ -71,9 +68,24 @@ data class CameraXState(
     var previewView: PreviewView? = null
 
     /// MIN-3655: the active preview colour matrix, or null for identity. Held
-    /// here so [buildPreviewView] can honour it across recreations (setup,
-    /// filter toggles) — see [applyPreviewColorFilter].
+    /// here so [updateLifecycle] can install the matching [PreviewColorMatrixEffect]
+    /// across rebinds — see [applyPreviewColorFilter].
     var previewColorMatrix: List<Double>? = null
+
+    /// MIN-3655: the GPU effect carrying [previewColorMatrix] on the PREVIEW
+    /// stream. Null while the matrix is identity — an unfiltered preview has
+    /// nothing in the pipeline at all.
+    private var previewColorEffect: PreviewColorMatrixEffect? = null
+
+    /// MIN-3655: forces the preview onto `COMPATIBLE` (TextureView) instead of
+    /// `PERFORMANCE` (SurfaceView). Deliberately **independent of the colour
+    /// matrix**: a SurfaceView lives on its own hardware-composer overlay plane
+    /// and therefore ignores the scale/slide mutators Flutter applies to a
+    /// platform view, so a caller animating the preview widget (the colour-profile
+    /// editor's shrink animation) has to ask for a TextureView explicitly. Costs
+    /// a per-frame round trip through Flutter's compositor, so it is opt-in and
+    /// off by default.
+    var previewCompatibilityMode: Boolean = false
 
     private val mainCameraInfos: CameraInfo
         @SuppressLint("RestrictedApi") get() {
@@ -323,6 +335,14 @@ data class CameraXState(
                     )
                 }
                 useCaseGroupBuilder.addUseCase(previews!!.first())
+                // MIN-3655: tint the preview on the GPU, inside the pipeline, so
+                // the display surface can stay a SurfaceView. PREVIEW only —
+                // captures must reach the backend unbaked. At identity nothing is
+                // added, so an unfiltered preview is bit-for-bit the old path.
+                // Only ever on the single-camera branch: CameraX does not support
+                // effects on a concurrent (multi-sensor) session, which keeps the
+                // Flutter texture + Dart ColorFiltered anyway.
+                previewColorEffect()?.let { useCaseGroupBuilder.addEffect(it) }
             }
 
             if (currentCaptureMode == CaptureModes.PHOTO) {
@@ -436,18 +456,20 @@ data class CameraXState(
     }
 
     /**
-     * MIN-3655: builds the native preview surface, honouring the active colour
-     * filter. A filtered preview needs a TextureView (COMPATIBLE) so a
-     * hardware-layer [ColorMatrixColorFilter] paint can tint it — a SurfaceView
-     * composites on its own hardware plane, out of any paint's reach. Identity
-     * keeps PERFORMANCE and its MIN-3577 overlay-plane wins.
+     * MIN-3655: builds the native preview surface. The colour filter is *not* a
+     * factor here any more — it is applied inside the CameraX pipeline by
+     * [PreviewColorMatrixEffect] — so the preview stays on `PERFORMANCE` (a
+     * SurfaceView on its own hardware-composer overlay plane) whether or not a
+     * matrix is active. Only an explicit [previewCompatibilityMode] request
+     * moves it to `COMPATIBLE`.
      */
     fun buildPreviewView(activity: Activity): PreviewView {
-        val matrix = previewColorMatrix
         return PreviewView(activity).apply {
-            implementationMode =
-                if (matrix != null) PreviewView.ImplementationMode.COMPATIBLE else PreviewView.ImplementationMode.PERFORMANCE
-            if (matrix != null) setLayerType(View.LAYER_TYPE_HARDWARE, colorMatrixPaint(matrix))
+            implementationMode = if (previewCompatibilityMode) {
+                PreviewView.ImplementationMode.COMPATIBLE
+            } else {
+                PreviewView.ImplementationMode.PERFORMANCE
+            }
             scaleType = PreviewView.ScaleType.FIT_CENTER
             isClickable = false
             isFocusable = false
@@ -456,32 +478,66 @@ data class CameraXState(
     }
 
     /**
-     * MIN-3655: applies (or clears, with null) the preview colour filter on the
-     * native preview. Retunes within an already-filtered preview just swap the
-     * paint; crossing the identity boundary recreates the PreviewView in the
-     * right implementation mode and re-plumbs the Preview use case onto it.
-     * Returns true when the PreviewView instance was replaced (the platform
-     * view must re-attach). No-op (false) on the texture path (multi-sensor /
-     * ANALYSIS_ONLY), where Dart's ColorFiltered tints the texture directly.
+     * MIN-3655: the effect carrying the current matrix, or null at identity.
+     * Reuses the live instance across rebinds so the GL thread/context is set up
+     * once per filtered session.
      */
-    fun applyPreviewColorFilter(matrix: List<Double>?, activity: Activity): Boolean {
-        previewColorMatrix = matrix
-        val current = previewView ?: return false
-        val wantFiltered = matrix != null
-        val isFiltered = current.implementationMode == PreviewView.ImplementationMode.COMPATIBLE
-        if (wantFiltered && isFiltered) {
-            current.setLayerType(View.LAYER_TYPE_HARDWARE, colorMatrixPaint(matrix!!))
-            return false
+    private fun previewColorEffect(): PreviewColorMatrixEffect? {
+        val matrix = previewColorMatrix ?: return null
+        previewColorEffect?.let {
+            it.updateMatrix(matrix)
+            return it
         }
-        if (!wantFiltered && !isFiltered) return false
-        val replacement = buildPreviewView(activity)
-        previewView = replacement
-        previews?.firstOrNull()?.setSurfaceProvider(replacement.surfaceProvider)
-        return true
+        return PreviewColorMatrixEffect(matrix).also { previewColorEffect = it }
     }
 
-    private fun colorMatrixPaint(matrix: List<Double>) = Paint().apply {
-        colorFilter = ColorMatrixColorFilter(FloatArray(20) { matrix[it].toFloat() })
+    /**
+     * MIN-3655: applies (or clears, with null) the preview colour matrix, and
+     * sets whether the preview must be a TextureView ([previewCompatibilityMode]).
+     *
+     * Three cases, cheapest first:
+     * - **Retune** (matrix values change, still non-identity): nothing rebinds
+     *   and nothing is recreated — the effect reads the new matrix on its next
+     *   frame. This is the slider-drag path.
+     * - **Implementation-mode change**: the PreviewView is recreated and the
+     *   Preview use case re-pointed at it, no rebind.
+     * - **Crossing the identity boundary**: the effect has to enter or leave the
+     *   UseCaseGroup, so [updateLifecycle] rebinds. That rebuilds every use case
+     *   from this state, so the analysis-stream configuration (MIN-3577) is
+     *   re-asserted by construction.
+     *
+     * Returns true when the PreviewView instance was replaced (the platform view
+     * must re-attach). No-op (false) on the texture path (multi-sensor /
+     * ANALYSIS_ONLY), where Dart's ColorFiltered tints the texture directly.
+     */
+    fun applyPreviewColorFilter(
+        matrix: List<Double>?,
+        compatiblePreview: Boolean,
+        activity: Activity,
+    ): Boolean {
+        val filterednessChanged = (previewColorMatrix != null) != (matrix != null)
+        val modeChanged = previewCompatibilityMode != compatiblePreview
+        previewColorMatrix = matrix
+        previewCompatibilityMode = compatiblePreview
+        if (previewView == null) return false
+        var recreated = false
+        if (modeChanged) {
+            previewView = buildPreviewView(activity)
+            recreated = true
+        }
+        if (filterednessChanged) {
+            updateLifecycle(activity)
+            if (matrix == null) {
+                // Unbound above, so the effect is out of the pipeline and its GL
+                // thread can go.
+                previewColorEffect?.release()
+                previewColorEffect = null
+            }
+        } else {
+            if (matrix != null) previewColorEffect?.updateMatrix(matrix)
+            if (recreated) previews?.firstOrNull()?.setSurfaceProvider(previewView!!.surfaceProvider)
+        }
+        return recreated
     }
 
     @SuppressLint("RestrictedApi")
@@ -584,6 +640,10 @@ data class CameraXState(
 
     fun stop() {
         cameraProvider.unbindAll()
+        // MIN-3655: after the unbind, so CameraX has already asked the effect's
+        // surfaces to close.
+        previewColorEffect?.release()
+        previewColorEffect = null
     }
 
     override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {

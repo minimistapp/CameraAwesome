@@ -72,7 +72,7 @@ AVCaptureMetadataOutputObjectsDelegate>
 /// AVSampleBufferDisplayLayer showing GPU-filtered frames from the video-data
 /// output) on top of the untouched AVCaptureVideoPreviewLayer. Nil while no
 /// filter is active. Toggled from [CamerawesomePlugin
-/// setFilterMatrix:bakeCaptures:error:], which
+/// setFilterMatrix:bakeCaptures:compatiblePreview:error:], which
 /// also forces the video-data connection on so frames flow even when nothing
 /// else consumes them.
 @property(nonatomic, strong, nullable, readonly) AVSampleBufferDisplayLayer *filteredPreviewLayer;

@@ -33,11 +33,28 @@ class AwesomeFilter {
   /// removes the shutter hang.
   final bool bakeCaptures;
 
+  /// Android only: force the preview onto a `TextureView` instead of the
+  /// default `SurfaceView` (MIN-3655).
+  ///
+  /// A `SurfaceView` is composited by the OS on its own overlay plane, which is
+  /// what makes it cheap — but also means Flutter's scale/slide mutators do
+  /// **not** apply to it. Set this while animating the preview widget itself
+  /// (shrinking it into an editor sheet, sliding it, …) so the preview follows
+  /// the animation; clear it as soon as the animation is done.
+  ///
+  /// Deliberately independent of [matrix]: the colour filter is applied by a
+  /// GPU effect inside the CameraX pipeline and no longer needs a `TextureView`.
+  /// Costs a per-frame round trip through Flutter's compositor, so leave it
+  /// `false` unless the preview is actually being transformed. Ignored on iOS,
+  /// where the preview is a `CALayer` that Flutter can transform either way.
+  final bool compatiblePreview;
+
   AwesomeFilter({
     required String name,
     required photofilters.Filter outputFilter,
     required this.matrix,
     this.bakeCaptures = true,
+    this.compatiblePreview = false,
   })  : _name = name,
         _outputFilter = outputFilter;
 
@@ -47,17 +64,20 @@ class AwesomeFilter {
   /// The same matrix drives the live preview ([preview]) and, when
   /// [bakeCaptures] is left at `true`, the capture bake: through
   /// [ColorMatrixFilter] on iOS, natively from `setFilter` on Android.
-  /// Pass `bakeCaptures: false` for a preview-only filter.
+  /// Pass `bakeCaptures: false` for a preview-only filter, and
+  /// `compatiblePreview: true` while the preview widget is being animated.
   factory AwesomeFilter.custom({
     required String name,
     required List<double> matrix,
     bool bakeCaptures = true,
+    bool compatiblePreview = false,
   }) =>
       AwesomeFilter(
         name: name,
         outputFilter: ColorMatrixFilter(name: name, matrix: matrix),
         matrix: matrix,
         bakeCaptures: bakeCaptures,
+        compatiblePreview: compatiblePreview,
       );
 
   /// The 4×5 identity matrix — [None]'s matrix.

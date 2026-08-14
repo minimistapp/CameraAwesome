@@ -256,10 +256,11 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> with Widgets
                         final preview = _buildMainPreview();
                         // ColorFiltered can't tint a PlatformView — on the
                         // native-preview path the filter is rendered natively
-                        // instead (iOS: filtered display layer; Android:
-                        // TextureView + colour-filter paint — MIN-3655), so
-                        // the wrapper applies only when the on-screen preview
-                        // IS the Flutter Texture (multicam / analysis-only).
+                        // instead (iOS: filtered display layer; Android: a GPU
+                        // CameraEffect inside the CameraX pipeline —
+                        // MIN-3655), so the wrapper applies only when the
+                        // on-screen preview IS the Flutter Texture (multicam /
+                        // analysis-only).
                         return filterActive && !_usesNativePreview
                             ? ColorFiltered(
                                 colorFilter: filter.preview,
@@ -371,6 +372,12 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> with Widgets
   /// `ImplementationMode.PERFORMANCE` and is therefore backed by a SurfaceView.
   /// The fallback is the outcome we want: the SurfaceView joins the real view
   /// hierarchy and gets its own overlay plane, with no VirtualDisplay at all.
+  ///
+  /// The corollary (MIN-3655): asking for `AwesomeFilter.compatiblePreview`
+  /// swaps in a TextureView, which *can* render into the supplied Surface — so
+  /// the preview opts back into Flutter's compositor and pays a full-surface
+  /// copy per frame. That is the price of having Flutter transforms apply to the
+  /// preview, and it is why a colour filter alone no longer asks for it.
   Widget _buildAndroidNativePreview() {
     return PlatformViewLink(
       // Stable key, for the same reparenting reason as the iOS path above.

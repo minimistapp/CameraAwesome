@@ -1010,8 +1010,11 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
 ///
 /// `bakeCaptures` is therefore unused here — on iOS it is Dart's FilterHandler
 /// that decides whether to bake, and it reads the flag off the filter object.
-/// Only Android needs it natively. (MIN-3655)
-- (void)setFilterMatrix:(NSArray<NSNumber *> *)matrix bakeCaptures:(NSNumber *)bakeCaptures error:(FlutterError *_Nullable *_Nonnull)error {
+/// Only Android needs it natively. `compatiblePreview` is likewise Android-only:
+/// it picks between a SurfaceView and a TextureView for the preview, a choice
+/// iOS doesn't have (the preview is a CALayer inside the platform view, which
+/// Flutter can transform either way). (MIN-3655)
+- (void)setFilterMatrix:(NSArray<NSNumber *> *)matrix bakeCaptures:(NSNumber *)bakeCaptures compatiblePreview:(NSNumber *)compatiblePreview error:(FlutterError *_Nullable *_Nonnull)error {
   BOOL identity = YES;
   if (matrix.count == 20) {
     for (NSUInteger i = 0; i < 20; i++) {

@@ -109,4 +109,49 @@ void main() {
       expect(FilterHandler.shouldBake(AwesomeFilter.None), isFalse);
     });
   });
+
+  group('compatiblePreview (MIN-3655)', () {
+    const matrix = [
+      1.2, 0.0, 0.0, 0.0, 0.0, //
+      0.0, 1.0, 0.0, 0.0, 0.0, //
+      0.0, 0.0, 0.9, 0.0, 0.0, //
+      0.0, 0.0, 0.0, 1.0, 0.0, //
+    ];
+
+    test('defaults off — a filter alone no longer forces a TextureView', () {
+      expect(AwesomeFilter.custom(name: 'Station profile', matrix: matrix).compatiblePreview, isFalse);
+      expect(AwesomeFilter.None.compatiblePreview, isFalse);
+      expect(AwesomeFilter.Sierra.compatiblePreview, isFalse);
+    });
+
+    test('is independent of the matrix — identity can request it, a filter can decline', () {
+      final animatedIdentity = AwesomeFilter.custom(
+        name: 'Original',
+        matrix: AwesomeFilter.identityMatrix,
+        compatiblePreview: true,
+      );
+      expect(animatedIdentity.isIdentity, isTrue);
+      expect(animatedIdentity.compatiblePreview, isTrue);
+
+      final filtered = AwesomeFilter.custom(
+        name: 'Station profile',
+        matrix: matrix,
+        compatiblePreview: false,
+      );
+      expect(filtered.isIdentity, isFalse);
+      expect(filtered.compatiblePreview, isFalse);
+    });
+
+    test('composes with bakeCaptures without disturbing it', () {
+      final filter = AwesomeFilter.custom(
+        name: 'Station profile',
+        matrix: matrix,
+        bakeCaptures: false,
+        compatiblePreview: true,
+      );
+      expect(filter.bakeCaptures, isFalse);
+      expect(filter.compatiblePreview, isTrue);
+      expect(FilterHandler.shouldBake(filter), isFalse);
+    });
+  });
 }

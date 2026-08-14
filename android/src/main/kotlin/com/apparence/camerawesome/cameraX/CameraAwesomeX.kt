@@ -293,17 +293,23 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
         }
     }
 
-    override fun setFilter(matrix: List<Double>, bakeCaptures: Boolean) {
+    override fun setFilter(matrix: List<Double>, bakeCaptures: Boolean, compatiblePreview: Boolean) {
         colorMatrix = matrix
         this.bakeCaptures = bakeCaptures
-        // MIN-3655: the preview is tinted natively — a filtered PreviewView
-        // (TextureView + hardware-layer colour-filter paint) replaces the
-        // PERFORMANCE one while a real matrix is active; identity restores it.
-        // Pigeon calls arrive on the main thread, where CameraX wants both
-        // setSurfaceProvider and view creation.
+        // MIN-3655: the preview is tinted natively, by a GPU CameraEffect on the
+        // PREVIEW stream, so the preview surface stays a SurfaceView while
+        // filtered. [compatiblePreview] is the separate, explicit request for a
+        // TextureView — the caller needs one when Flutter transforms have to
+        // apply to the preview widget (the colour-profile editor's shrink
+        // animation). Pigeon calls arrive on the main thread, where CameraX
+        // wants both setSurfaceProvider and view creation.
         val act = activity ?: return
         if (!::cameraState.isInitialized) return
-        val recreated = cameraState.applyPreviewColorFilter(if (noneFilter != matrix) matrix else null, act)
+        val recreated = cameraState.applyPreviewColorFilter(
+            if (noneFilter != matrix) matrix else null,
+            compatiblePreview,
+            act,
+        )
         if (recreated) onPreviewViewRecreated?.invoke()
     }
 

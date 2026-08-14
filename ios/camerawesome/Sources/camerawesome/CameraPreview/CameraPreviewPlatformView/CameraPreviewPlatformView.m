@@ -38,6 +38,7 @@ static AVCaptureVideoOrientation CAMVideoOrientationFromInterface(UIInterfaceOri
 @interface CameraPreviewContainerView : UIView
 @property(nonatomic, weak) id<CameraPreviewLayerProvider> provider;
 @property(nonatomic, weak) AVCaptureVideoPreviewLayer *attachedLayer;
+@property(nonatomic, weak) AVSampleBufferDisplayLayer *attachedFilteredLayer;
 @end
 
 @implementation CameraPreviewContainerView
@@ -86,9 +87,80 @@ static AVCaptureVideoOrientation CAMVideoOrientationFromInterface(UIInterfaceOri
   self.attachedLayer = layer;
 }
 
+/// MIN-3655: (de)composites the filtered-preview overlay. Attached above the
+/// raw preview layer — which is hidden while filtered so unfiltered pixels
+/// can't bleed through the letterbox — and detached (raw preview restored)
+/// the moment the provider reports no filter.
+- (void)attachFilteredLayerIfNeeded {
+  AVSampleBufferDisplayLayer *layer = [self.provider currentFilteredPreviewLayer];
+  if (layer == self.attachedFilteredLayer) {
+    return;
+  }
+  if (self.attachedFilteredLayer != nil && self.attachedFilteredLayer.superlayer == self.layer) {
+    [self.attachedFilteredLayer removeFromSuperlayer];
+  }
+  self.attachedFilteredLayer = layer;
+  if (layer == nil) {
+    self.attachedLayer.hidden = NO;
+    return;
+  }
+  [layer removeFromSuperlayer];
+  [self.layer addSublayer:layer];
+  self.attachedLayer.hidden = YES;
+}
+
+/// The video-data output delivers PORTRAIT-oriented buffers: its connection
+/// keeps the default portrait orientation (see initCameraPreview's "lock the
+/// preview to portrait like the data-output connection", MIN-2409) — verified
+/// on-device: an unrotated filtered layer matches the raw preview in
+/// portrait. So no transform is needed while the interface is portrait; the
+/// landscape cases (tablets — phones are portrait-locked, MIN-2967) rotate by
+/// the device's physical rotation from portrait.
+- (void)layoutFilteredLayer {
+  AVSampleBufferDisplayLayer *layer = self.attachedFilteredLayer;
+  if (layer == nil) {
+    return;
+  }
+  AVCaptureVideoOrientation orientation = AVCaptureVideoOrientationPortrait;
+  NSNumber *forced = [self.provider previewOrientationOverride];
+  if (forced != nil) {
+    orientation = (AVCaptureVideoOrientation)forced.integerValue;
+  } else if (self.window.windowScene != nil) {
+    orientation = CAMVideoOrientationFromInterface(self.window.windowScene.interfaceOrientation);
+  }
+  CGFloat angle;
+  BOOL quarterTurn;
+  switch (orientation) {
+    case AVCaptureVideoOrientationLandscapeRight:
+      // Interface LandscapeRight = device rotated 90° counter-clockwise from
+      // portrait; the portrait-oriented buffer content counter-rotates.
+      angle = -M_PI_2;
+      quarterTurn = YES;
+      break;
+    case AVCaptureVideoOrientationLandscapeLeft:
+      angle = M_PI_2;
+      quarterTurn = YES;
+      break;
+    case AVCaptureVideoOrientationPortraitUpsideDown:
+      angle = M_PI;
+      quarterTurn = NO;
+      break;
+    case AVCaptureVideoOrientationPortrait:
+    default:
+      angle = 0;
+      quarterTurn = NO;
+      break;
+  }
+  CGRect bounds = self.bounds;
+  layer.bounds = quarterTurn ? CGRectMake(0, 0, bounds.size.height, bounds.size.width) : bounds;
+  layer.position = CGPointMake(CGRectGetMidX(bounds), CGRectGetMidY(bounds));
+  [layer setAffineTransform:CGAffineTransformMakeRotation(angle)];
+}
+
 - (void)layoutSubviews {
   [super layoutSubviews];
   [self attachPreviewLayerIfNeeded];
+  [self attachFilteredLayerIfNeeded];
   if (self.attachedLayer != nil) {
     // Keep the preview layer pinned to our bounds across resize/rotation, with
     // the implicit CALayer animation disabled so it tracks layout instantly.
@@ -114,6 +186,9 @@ static AVCaptureVideoOrientation CAMVideoOrientationFromInterface(UIInterfaceOri
         connection.videoOrientation = CAMVideoOrientationFromInterface(self.window.windowScene.interfaceOrientation);
       }
     }
+    // Pin + rotate the filtered overlay inside the same no-animation
+    // transaction so it tracks resize/rotation in lockstep (MIN-3655).
+    [self layoutFilteredLayer];
     [CATransaction commit];
   }
 }
@@ -123,6 +198,9 @@ static AVCaptureVideoOrientation CAMVideoOrientationFromInterface(UIInterfaceOri
   // itself is owned by SingleCameraPreview and torn down with the session.
   if (_attachedLayer != nil && _attachedLayer.superlayer == self.layer) {
     [_attachedLayer removeFromSuperlayer];
+  }
+  if (_attachedFilteredLayer != nil && _attachedFilteredLayer.superlayer == self.layer) {
+    [_attachedFilteredLayer removeFromSuperlayer];
   }
 }
 
@@ -143,6 +221,9 @@ static AVCaptureVideoOrientation CAMVideoOrientationFromInterface(UIInterfaceOri
   if (self) {
     _view = [[CameraPreviewContainerView alloc] initWithFrame:CGRectZero];
     _view.provider = provider;
+    // Filter toggles re-attach layers via layoutSubviews — register so the
+    // provider can request that layout when nothing else triggers one.
+    [provider registerPreviewContainerView:_view];
   }
   return self;
 }

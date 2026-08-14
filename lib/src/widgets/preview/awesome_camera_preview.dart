@@ -246,14 +246,24 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> with Widgets
                       //FIX performances
                       stream: widget.state.filter$,
                       builder: (context, snapshot) {
+                        // Matrix-identity check, NOT `!= AwesomeFilter.None`:
+                        // None is a getter returning a fresh instance with no
+                        // operator==, so the instance comparison is always
+                        // true and would wrap the preview unconditionally.
+                        final filter = snapshot.data;
+                        final filterActive =
+                            filter != null && !filter.isIdentity;
                         final preview = _buildMainPreview();
-                        // ColorFiltered can't apply to an iOS PlatformView, but
-                        // the main camera doesn't use filters (filter$ defaults
-                        // to None), so this only ever wraps the Texture path.
-                        return snapshot.hasData &&
-                                snapshot.data != AwesomeFilter.None
+                        // ColorFiltered can't tint a PlatformView — on the
+                        // native-preview path the filter is rendered natively
+                        // instead (iOS: filtered display layer; Android: a GPU
+                        // CameraEffect inside the CameraX pipeline —
+                        // MIN-3655), so the wrapper applies only when the
+                        // on-screen preview IS the Flutter Texture (multicam /
+                        // analysis-only).
+                        return filterActive && !_usesNativePreview
                             ? ColorFiltered(
-                                colorFilter: snapshot.data!.preview,
+                                colorFilter: filter.preview,
                                 child: preview,
                               )
                             : preview;
@@ -300,19 +310,25 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> with Widgets
   /// On both, the Flutter Texture is still registered (used for the filter
   /// thumbnail, floating/multicam previews and as a readiness gate) but no
   /// longer drives the on-screen preview.
-  Widget _buildMainPreview() {
-    // The native preview is wired only for the single-camera path. Multi-camera
-    // sessions (e.g. simultaneous front+back PiP) still render through Flutter
-    // textures, so fall back to the Texture there — the platform view would have
-    // no native surface to show. Single-sensor is the common case (and the only
-    // one this app uses).
+  ///
+  /// While a colour filter is active the native preview stays on screen and
+  /// carries the filter natively (MIN-3655) — never route the display through
+  /// the Texture here: it is unfed on this path, so forcing it just shows an
+  /// empty surface.
+  ///
+  /// Whether the on-screen preview is the native PlatformView. Multi-camera
+  /// sessions (simultaneous front+back PiP) still render through Flutter
+  /// textures — the platform view would have no native surface to show — and
+  /// analysis-only sessions bind no Preview use case at all (Android creates
+  /// no PreviewView for ANALYSIS_ONLY — see CameraAwesomeX.setupCamera).
+  bool get _usesNativePreview {
     final isSingleSensor = widget.state.sensorConfig.sensors.length <= 1;
-    // Analysis-only sessions bind no Preview use case, so there's no native
-    // preview surface (Android creates no PreviewView for ANALYSIS_ONLY — see
-    // CameraAwesomeX.setupCamera). Fall back to the Texture there, mirroring the
-    // Kotlin `mode != ANALYSIS_ONLY` guard, so the PlatformView is never empty.
     final isAnalysisOnly = widget.state.captureMode == CaptureMode.analysis_only;
-    if (isSingleSensor && !isAnalysisOnly && (Platform.isIOS || Platform.isAndroid)) {
+    return isSingleSensor && !isAnalysisOnly && (Platform.isIOS || Platform.isAndroid);
+  }
+
+  Widget _buildMainPreview() {
+    if (_usesNativePreview) {
       // Stable key — keeps this platform view alive across ancestor rebuilds
       // (see _nativePreviewKey) so the preview doesn't flash black.
       //
@@ -356,6 +372,12 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> with Widgets
   /// `ImplementationMode.PERFORMANCE` and is therefore backed by a SurfaceView.
   /// The fallback is the outcome we want: the SurfaceView joins the real view
   /// hierarchy and gets its own overlay plane, with no VirtualDisplay at all.
+  ///
+  /// The corollary (MIN-3655): asking for `AwesomeFilter.compatiblePreview`
+  /// swaps in a TextureView, which *can* render into the supplied Surface — so
+  /// the preview opts back into Flutter's compositor and pays a full-surface
+  /// copy per frame. That is the price of having Flutter transforms apply to the
+  /// preview, and it is why a colour filter alone no longer asks for it.
   Widget _buildAndroidNativePreview() {
     return PlatformViewLink(
       // Stable key, for the same reparenting reason as the iOS path above.

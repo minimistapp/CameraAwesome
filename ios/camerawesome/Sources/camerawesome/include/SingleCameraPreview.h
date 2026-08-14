@@ -67,6 +67,23 @@ AVCaptureMetadataOutputObjectsDelegate>
 @property(readonly, copy) void (^completion)(NSNumber * _Nullable, FlutterError * _Nullable);
 @property(nonatomic, copy) void (^onPreviewFrameAvailable)(void);
 
+/// MIN-3655: while a non-identity colour filter is active the preview stays
+/// fully native — the container view overlays [filteredPreviewLayer] (an
+/// AVSampleBufferDisplayLayer showing GPU-filtered frames from the video-data
+/// output) on top of the untouched AVCaptureVideoPreviewLayer. Nil while no
+/// filter is active. Toggled from [CamerawesomePlugin
+/// setFilterMatrix:bakeCaptures:compatiblePreview:error:], which
+/// also forces the video-data connection on so frames flow even when nothing
+/// else consumes them.
+@property(nonatomic, strong, nullable, readonly) AVSampleBufferDisplayLayer *filteredPreviewLayer;
+
+/// Whether a non-identity preview colour filter is active.
+@property(nonatomic, assign, readonly) BOOL previewFilterActive;
+
+/// Applies (or, with nil, clears) the 4×5 row-major colour matrix used to
+/// filter the on-screen preview. Main thread only.
+- (void)setPreviewColorMatrix:(nullable NSArray<NSNumber *> *)matrix;
+
 /// When non-nil, overrides [motionController.deviceOrientation] at picture-
 /// capture time so the JPEG's EXIF Orientation is tagged for the requested
 /// orientation regardless of how the user is physically holding the device.

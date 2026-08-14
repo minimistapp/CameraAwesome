@@ -48,6 +48,10 @@ class CameraPreviewPlatformView(
 
     init {
         attachPreviewViewIfNeeded()
+        // MIN-3655: colour-filter toggles recreate the PreviewView at runtime
+        // (TextureView while filtered, SurfaceView otherwise) — re-attach the
+        // fresh instance when that happens.
+        provider.setOnPreviewViewRecreated { attachPreviewViewIfNeeded() }
     }
 
     private fun attachPreviewViewIfNeeded() {
@@ -80,6 +84,7 @@ class CameraPreviewPlatformView(
     }
 
     override fun dispose() {
+        provider.setOnPreviewViewRecreated(null)
         // Detach the shared PreviewView so it isn't held by a dead container; it
         // is owned by CameraXState and torn down with the camera session.
         val previewView = provider.currentPreviewView()

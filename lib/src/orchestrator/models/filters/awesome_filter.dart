@@ -5,6 +5,8 @@ import 'dart:ui';
 import 'package:colorfilter_generator/addons.dart';
 import 'package:colorfilter_generator/colorfilter_generator.dart';
 import 'package:colorfilter_generator/presets.dart';
+import 'package:flutter/foundation.dart';
+import 'package:camerawesome/src/photofilters/filters/color_matrix_filter.dart';
 import 'package:camerawesome/src/photofilters/filters/filters.dart'
     as photofilters;
 import 'package:camerawesome/src/photofilters/filters/preset_filters.dart'
@@ -17,12 +19,79 @@ class AwesomeFilter {
   final photofilters.Filter _outputFilter;
   final List<double> matrix;
 
+  /// Whether the matrix is baked into captured photos (MIN-3655).
+  ///
+  /// `true` (the default, and what every preset uses) keeps the historical
+  /// behaviour: iOS re-encodes the JPEG in a Dart isolate before the capture
+  /// succeeds, Android re-encodes it natively in `CameraAwesomeX`.
+  ///
+  /// `false` makes the filter **preview-only**: the live preview is still
+  /// tinted natively on both platforms, but captures are written untouched —
+  /// the caller is expected to apply the same matrix elsewhere (server-side,
+  /// in Minimist's case). Both bakes are full-resolution per-pixel passes that
+  /// sit between the shutter and `MediaCapture.success`, so opting out is what
+  /// removes the shutter hang.
+  final bool bakeCaptures;
+
+  /// Android only: force the preview onto a `TextureView` instead of the
+  /// default `SurfaceView` (MIN-3655).
+  ///
+  /// A `SurfaceView` is composited by the OS on its own overlay plane, which is
+  /// what makes it cheap — but also means Flutter's scale/slide mutators do
+  /// **not** apply to it. Set this while animating the preview widget itself
+  /// (shrinking it into an editor sheet, sliding it, …) so the preview follows
+  /// the animation; clear it as soon as the animation is done.
+  ///
+  /// Deliberately independent of [matrix]: the colour filter is applied by a
+  /// GPU effect inside the CameraX pipeline and no longer needs a `TextureView`.
+  /// Costs a per-frame round trip through Flutter's compositor, so leave it
+  /// `false` unless the preview is actually being transformed. Ignored on iOS,
+  /// where the preview is a `CALayer` that Flutter can transform either way.
+  final bool compatiblePreview;
+
   AwesomeFilter({
     required String name,
     required photofilters.Filter outputFilter,
     required this.matrix,
+    this.bakeCaptures = true,
+    this.compatiblePreview = false,
   })  : _name = name,
         _outputFilter = outputFilter;
+
+  /// A filter defined purely by a 4×5 row-major colour matrix (Flutter's
+  /// `ColorFilter.matrix` layout, offsets in the 0–255 domain) — for
+  /// app-computed adjustments rather than the named presets (MIN-3655).
+  /// The same matrix drives the live preview ([preview]) and, when
+  /// [bakeCaptures] is left at `true`, the capture bake: through
+  /// [ColorMatrixFilter] on iOS, natively from `setFilter` on Android.
+  /// Pass `bakeCaptures: false` for a preview-only filter, and
+  /// `compatiblePreview: true` while the preview widget is being animated.
+  factory AwesomeFilter.custom({
+    required String name,
+    required List<double> matrix,
+    bool bakeCaptures = true,
+    bool compatiblePreview = false,
+  }) =>
+      AwesomeFilter(
+        name: name,
+        outputFilter: ColorMatrixFilter(name: name, matrix: matrix),
+        matrix: matrix,
+        bakeCaptures: bakeCaptures,
+        compatiblePreview: compatiblePreview,
+      );
+
+  /// The 4×5 identity matrix — [None]'s matrix.
+  static const List<double> identityMatrix = [
+    1, 0, 0, 0, 0, //
+    0, 1, 0, 0, 0, //
+    0, 0, 1, 0, 0, //
+    0, 0, 0, 1, 0, //
+  ];
+
+  /// Whether this filter leaves pixels untouched. Compare filters through
+  /// this (or [id]) — `filter != AwesomeFilter.None` is an *identity*
+  /// comparison against a freshly built instance and is always true.
+  bool get isIdentity => listEquals(matrix, identityMatrix);
 
   ColorFilter get preview => ColorFilter.matrix(matrix);
 

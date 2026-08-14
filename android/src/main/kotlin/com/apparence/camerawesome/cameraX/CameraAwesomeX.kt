@@ -97,6 +97,13 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
     private var lastRecordedVideoSubscriptions: MutableList<Disposable>? = null
     private var colorMatrix: List<Double>? = null
 
+    // MIN-3655: whether the active colour matrix is baked into captured
+    // photos. False makes the filter preview-only — the bake is a
+    // full-resolution decode + re-encode on the main executor that delays the
+    // capture callback, and the caller applies the matrix elsewhere (server
+    // side, for Minimist). Defaults to true, the historical behaviour.
+    private var bakeCaptures: Boolean = true
+
     private val noneFilter: List<Double> = listOf(
         1.0,
         0.0,
@@ -197,13 +204,10 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
         // the Flutter overlays drawn on top flicker/jank under HC, switching to
         // COMPATIBLE (TextureView) is the documented one-line fallback.
         if (mode != CaptureModes.ANALYSIS_ONLY && sensors.size <= 1) {
-            cameraState.previewView = PreviewView(activity!!).apply {
-                implementationMode = PreviewView.ImplementationMode.PERFORMANCE
-                scaleType = PreviewView.ScaleType.FIT_CENTER
-                isClickable = false
-                isFocusable = false
-                isFocusableInTouchMode = false
-            }
+            // buildPreviewView honours any active colour filter (MIN-3655);
+            // a fresh CameraXState starts unfiltered and Dart re-asserts the
+            // filter on start, which recreates the view if needed.
+            cameraState.previewView = cameraState.buildPreviewView(activity!!)
             // Tablets render the preview full-screen following the window; rebind
             // once the PreviewView attaches so it isn't stuck at the bind-time
             // portrait rotation. Phones stay portrait-locked, so skip. (MIN-2437)
@@ -219,9 +223,10 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
             // Zoom should be set after updateLifeCycle
             if (zoom > 0) {
                 // TODO Find a better way to set initial zoom than using a postDelayed
+                // Goes through cameraState so the value is remembered and put back
+                // after any later rebind (MIN-3655).
                 Handler(Looper.getMainLooper()).postDelayed({
-                    (cameraState.concurrentCamera?.cameras?.firstOrNull()
-                        ?: cameraState.previewCamera)?.cameraControl?.setLinearZoom(zoom.toFloat())
+                    runCatching { cameraState.setLinearZoom(zoom.toFloat()) }
                 }, 200)
             }
         }
@@ -289,8 +294,24 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
         }
     }
 
-    override fun setFilter(matrix: List<Double>) {
+    override fun setFilter(matrix: List<Double>, bakeCaptures: Boolean, compatiblePreview: Boolean) {
         colorMatrix = matrix
+        this.bakeCaptures = bakeCaptures
+        // MIN-3655: the preview is tinted natively, by a GPU CameraEffect on the
+        // PREVIEW stream, so the preview surface stays a SurfaceView while
+        // filtered. [compatiblePreview] is the separate, explicit request for a
+        // TextureView — the caller needs one when Flutter transforms have to
+        // apply to the preview widget (the colour-profile editor's shrink
+        // animation). Pigeon calls arrive on the main thread, where CameraX
+        // wants both setSurfaceProvider and view creation.
+        val act = activity ?: return
+        if (!::cameraState.isInitialized) return
+        val recreated = cameraState.applyPreviewColorFilter(
+            if (noneFilter != matrix) matrix else null,
+            compatiblePreview,
+            act,
+        )
+        if (recreated) onPreviewViewRecreated?.invoke()
     }
 
     override fun isVideoRecordingAndImageAnalysisSupported(
@@ -369,6 +390,13 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
     /// which case the Dart side falls back to the Flutter Texture.
     override fun currentPreviewView(): PreviewView? {
         return if (::cameraState.isInitialized) cameraState.previewView else null
+    }
+
+    /// MIN-3655: single-slot re-attach hook — see [PreviewViewProvider].
+    private var onPreviewViewRecreated: (() -> Unit)? = null
+
+    override fun setOnPreviewViewRecreated(listener: (() -> Unit)?) {
+        onPreviewViewRecreated = listener
     }
 
     override fun onPreviewViewAttached() {
@@ -455,7 +483,9 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
             ContextCompat.getMainExecutor(activity!!),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                    if (colorMatrix != null && noneFilter != colorMatrix) {
+                    // MIN-3655: preview-only filters (bakeCaptures == false)
+                    // skip the bake — the photo is saved as captured.
+                    if (bakeCaptures && colorMatrix != null && noneFilter != colorMatrix) {
                         val exif = ExifInterface(outputFileResults.savedUri!!.path!!)
 
                         val originalBitmap = BitmapFactory.decodeFile(
@@ -710,6 +740,10 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
             this.flashMode = FlashMode.NONE
             this.aspectRatio = null
             this.rational = Rational(3, 4)
+            // ...and the zoom/exposure carried across rebinds of the *same*
+            // sensor, which shouldn't follow the user to a different one.
+            // (MIN-3655)
+            resetCameraControlState()
             updateLifecycle(activity!!)
         }
     }
@@ -731,9 +765,9 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
         val targetEv = (brightness - 0.5) * 2.0 * brightnessEvWindow
         // Convert EV -> exposure-compensation index, then clamp to the device range.
         val index = if (step > 0.0) (targetEv / step).roundToInt() else 0
-        cameraState.previewCamera?.cameraControl?.setExposureCompensationIndex(
-            index.coerceIn(range.lower, range.upper)
-        )
+        // Through cameraState so it survives the next rebind, which would
+        // otherwise reset the compensation index to 0 (MIN-3655).
+        runCatching { cameraState.setExposureCompensationIndex(index.coerceIn(range.lower, range.upper)) }
     }
 
     /**

@@ -30,6 +30,12 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
 /// focusMode to the format default — otherwise the scan preview loses AF
 /// (MIN-3316). See the implementation.
 - (void)applyContinuousAutoFocusPolicy;
+/// Re-latches the zoom bounds and re-applies the last requested zoom. Must run
+/// after every -activeFormat/preset change, which resets videoZoomFactor to 1.0
+/// — on a dual-wide/triple iPhone that is the ultra-wide ("0.5×"), so without
+/// this an aspect-ratio switch silently drops the preview to ultra-wide. See
+/// the implementation.
+- (void)applyZoomPolicy;
 @end
 
 @implementation SingleCameraPreview {
@@ -52,6 +58,12 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // constituent is the wide-angle; ~0.5 when the ultra-wide is the widest
   // constituent (dual-wide / triple).
   CGFloat _displayRatioConversion;
+  // Last zoom Dart asked for, in display ratios. Every -activeFormat/preset
+  // change resets the device's videoZoomFactor to 1.0 (the ultra-wide on a
+  // dual-wide/triple device), so -setCameraPreset: re-applies this via
+  // -applyZoomPolicy instead of leaving the session at whatever floor the new
+  // format lands on.
+  CGFloat _requestedDisplayZoom;
   // Connection feeding the native AVCaptureVideoPreviewLayer (MIN-2406). The
   // session adds inputs/outputs with -addOutputWithNoConnections, so the
   // preview layer never auto-connects — we wire it explicitly and rebuild it
@@ -114,6 +126,9 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   
   _cameraSensorPosition = sensor;
   _aspectRatio = aspectRatioMode;
+  // Matches -setZoom:'s "no zoom requested" snap: the wide lens, not the
+  // device's zoom floor.
+  _requestedDisplayZoom = 1.0;
   _mirrorFrontCamera = mirrorFrontCamera;
   _videoOptions = videoOptions;
   _recordingQuality = recordingQuality;
@@ -1512,6 +1527,40 @@ static const int32_t kStillLongEdgeTarget = 4032;
   // Setting -activeFormat above reset focusMode to the format default — re-assert
   // smooth continuous autofocus so the preview keeps focusing (MIN-3316).
   [self applyContinuousAutoFocusPolicy];
+
+  // ...and it reset videoZoomFactor to 1.0, which on a dual-wide/triple device
+  // is the ultra-wide ("0.5×"). Re-apply the requested zoom last, against the
+  // new format's bounds.
+  [self applyZoomPolicy];
+}
+
+/// Restore the zoom the session was at before a format/preset change.
+///
+/// AVFoundation resets `videoZoomFactor` to 1.0 whenever `-activeFormat` or
+/// the session preset changes. On a single-sensor iPhone that is harmless (1.0
+/// is the wide lens), but on a BuiltInDualWide/Triple device videoZoomFactor
+/// 1.0 is the *ultra-wide* constituent — Apple's "0.5×". So an aspect-ratio
+/// switch (4:3 ⇄ 16:9, each with its own session config — MIN-3098) silently
+/// yanked the preview out to ultra-wide while the Flutter chip row still read
+/// 1×.
+///
+/// The bounds have to be re-latched first: `videoMaxZoomFactor` is a property
+/// of the *active format*, so the range cached at device-bind time no longer
+/// describes the session after a format swap.
+- (void)applyZoomPolicy {
+  if (_captureDevice == nil) {
+    return;
+  }
+  [self cacheDeviceZoomBounds];
+  FlutterError *zoomError = nil;
+  [self setZoom:(float)_requestedDisplayZoom error:&zoomError];
+  if (zoomError != nil) {
+    // Best-effort: the session is otherwise healthy, so log rather than fail
+    // the format change. Without a line here a preview stuck at ultra-wide
+    // after a ratio switch has no trace at all.
+    NSLog(@"CamerAwesome: could not restore zoom %.2fx after format change: %@",
+          _requestedDisplayZoom, zoomError.message);
+  }
 }
 
 /// Get current video prewiew size
@@ -1726,6 +1775,11 @@ static const int32_t kStillLongEdgeTarget = 4032;
 /// camera at ultra-wide instead of the normal wide view.
 - (void)setZoom:(float)value error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
   CGFloat displayRatio = value > 0 ? (CGFloat)value : 1.0;
+  // Remember the *display ratio*, not the native factor: the conversion and
+  // the clamp bounds are both format-dependent, so -applyZoomPolicy has to
+  // re-derive them against the new format rather than replay a stale
+  // videoZoomFactor.
+  _requestedDisplayZoom = displayRatio;
   CGFloat conversion = _displayRatioConversion > 0 ? _displayRatioConversion : 1.0;
   CGFloat nativeRequest = displayRatio / conversion;
   CGFloat nativeMin = _captureDevice.minAvailableVideoZoomFactor;

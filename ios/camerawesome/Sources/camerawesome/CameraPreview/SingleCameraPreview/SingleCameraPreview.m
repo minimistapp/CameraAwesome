@@ -11,6 +11,24 @@
 // flags (used to know when AF/AE have settled).
 static void * const FocusStableContext = (void *)&FocusStableContext;
 
+// KVO context for the always-on adjustingFocus watch that drives the adaptive
+// macro window (MIN-4878). Deliberately separate from FocusStableContext,
+// whose registration comes and goes with each -whenFocusStableWithTimeout:
+// waiter — this one lives as long as the bound device.
+static void * const CloseRangeFocusContext = (void *)&CloseRangeFocusContext;
+
+/// How long continuous AF may hunt without settling before we treat the
+/// subject as closer than the wide lens can focus and open the macro window
+/// (MIN-4878). Long enough that an ordinary rack across the room doesn't trip
+/// it, short enough that the user hasn't given up and moved on.
+static const NSTimeInterval kCloseRangeFocusHuntSeconds = 1.0;
+
+/// A settled lens at or below this -lensPosition has run out of near travel:
+/// AF converged as close as the optics allow, which is what happens when the
+/// subject sits inside the wide lens's minimum focus distance (MIN-4878).
+/// 0.0 is the shortest focus distance the lens can reach, 1.0 the furthest.
+static const float kCloseRangeLensNearLimit = 0.05f;
+
 @interface SingleCameraPreview ()
 /// Safely applies the analysis pixel format (optionally at a fixed
 /// width/height) to the analysis data output — 32BGRA by default, or the
@@ -30,6 +48,30 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
 /// focusMode to the format default — otherwise the scan preview loses AF
 /// (MIN-3316). See the implementation.
 - (void)applyContinuousAutoFocusPolicy;
+/// Whether the bound device is a virtual multi-camera whose primary
+/// constituent AVFoundation can switch on its own (MIN-4878).
+- (BOOL)supportsConstituentSwitching;
+/// Opens the macro window from the AF detector, taking the configuration lock
+/// itself and re-running AF so the hop happens now (MIN-4878). On
+/// _dispatchQueue.
+- (void)openCloseRangeFocusWindowFromDetector;
+/// KVO-driven: AF started or stopped adjusting. On _dispatchQueue (MIN-4878).
+- (void)handleFocusActivityChange;
+/// Whether the focus-driven hop to the ultra-wide (macro) constituent is
+/// allowed right now — scan mode, or an open close-range window (MIN-4878).
+- (BOOL)macroConstituentSwitchingAllowed;
+/// Applies both consequences of the current macro decision — smooth AF and
+/// the primary-constituent switching behaviour. Caller must already hold
+/// -lockForConfiguration.
+- (void)applyMacroFocusBiasLocked;
+/// Opens/closes the close-range macro window (MIN-4878). Caller must already
+/// hold -lockForConfiguration.
+- (void)openCloseRangeFocusWindowLocked;
+- (void)closeCloseRangeFocusWindowLocked;
+/// Registers/removes the always-on adjustingFocus watch that decides when AF
+/// has failed to converge (MIN-4878). Both run on _dispatchQueue.
+- (void)setupCloseRangeFocusObservation;
+- (void)teardownCloseRangeFocusObservation;
 /// Re-latches the zoom bounds and re-applies the last requested zoom. Must run
 /// after every -activeFormat/preset change, which resets videoZoomFactor to 1.0
 /// — on a dual-wide/triple iPhone that is the ultra-wide ("0.5×"), so without
@@ -105,6 +147,22 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // Long edge (px) the Dart analysis stream requested (MIN-3475); 0 means
   // "no request" and keeps applyAnalysisOutputDownscale's built-in 1024 cap.
   int32_t _requestedAnalysisLongEdge;
+  // Close-range macro window (MIN-4878). While open, the MIN-3071 `.restricted`
+  // constituent-switching policy is lifted so AVFoundation may do its
+  // focus-driven hop to the ultra-wide (macro) constituent — the capture
+  // screen's equivalent of what _closeRangeScanMode gives the field scanners,
+  // but scoped to the moments a close-up is actually being framed. Two things
+  // open it: a tap-to-focus, and AF failing to converge (see
+  // -handleFocusActivityChange). subjectAreaDidChange: closes it.
+  //
+  // Atomic because -focusOnPoint: opens it from the pigeon thread while the
+  // KVO-driven detector reads and writes it on _dispatchQueue.
+  _Atomic(BOOL) _closeRangeFocusWindow;
+  // Whether we hold the always-on adjustingFocus KVO registration, and when the
+  // current uninterrupted AF hunt began (0 = not hunting). Both mutated only on
+  // _dispatchQueue.
+  BOOL _observingCloseRangeFocus;
+  CFAbsoluteTime _focusHuntStartedAt;
 }
 
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
@@ -306,6 +364,12 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   dispatch_sync(_dispatchQueue, ^{
     [self teardownFocusStableObservation];
     [self->_focusStableCompletions removeAllObjects];
+    // The macro window belongs to the outgoing device (the front camera has no
+    // constituents at all), so a sensor switch starts from restricted again
+    // (MIN-4878).
+    [self teardownCloseRangeFocusObservation];
+    self->_closeRangeFocusWindow = NO;
+    self->_focusHuntStartedAt = 0;
   });
 
   NSError *error;
@@ -387,6 +451,13 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // default, so this policy must be re-applied after every format/preset change
   // — otherwise the scan preview can't focus on a QR/barcode (MIN-3316).
   [self applyContinuousAutoFocusPolicy];
+
+  // Watch AF on the new device so a hunt that never converges can open the
+  // macro window (MIN-4878). Async: nothing below depends on it, and the
+  // registration only has to be in place before the user frames something.
+  dispatch_async(_dispatchQueue, ^{
+    [self setupCloseRangeFocusObservation];
+  });
 
   [self cacheDeviceZoomBounds];
 
@@ -1330,12 +1401,6 @@ static const int32_t kStillLongEdgeTarget = 4032;
   if ([_captureDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
     [_captureDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
   }
-  if ([_captureDevice isSmoothAutoFocusSupported]) {
-    // Smooth AF trades convergence speed for cinematic lens moves — right for
-    // the capture preview, wrong for a scanner racing to sharpen a held-up
-    // code, so scan mode takes the fast racks (MIN-3475).
-    [_captureDevice setSmoothAutoFocusEnabled:_closeRangeScanMode ? NO : YES];
-  }
   if ([_captureDevice isAutoFocusRangeRestrictionSupported]) {
     // Codes are always held near the device; keeping AF out of the far range
     // halves the hunt. Written in both directions so toggling scan mode off
@@ -1348,35 +1413,200 @@ static const int32_t kStillLongEdgeTarget = 4032;
                                                      : AVCaptureAutoFocusRangeRestrictionNone];
   }
 
-  // MIN-3071: restrict automatic primary-constituent switching to zoom changes
-  // only. On a virtual multi-camera back device the default `.auto` behavior lets
-  // AVFoundation do a focus/exposure-driven "fallback" switch — e.g. hop wide ->
-  // ultra-wide when continuous AF meets a subject closer than the wide's minimum
-  // focus distance — a visible FOV jump at a constant 1x zoom. `.restricted` with
-  // only `.videoZoomChanged` keeps the explicit zoom presets switching while
-  // suppressing the focus/exposure-driven fallbacks. The setter throws on devices
-  // without constituent switching, so gate on the behavior not being `.unsupported`.
-  //
-  // Close-range scan mode (MIN-3475) is the deliberate exception: that fallback
-  // hop IS the macro mode a triple-camera device needs to focus a code held
-  // closer than the wide lens's ~20cm minimum — and a scanner screen has no
-  // framing to protect from the FOV jump. `.auto` requires the conditions
-  // argument to be `.none` (the API contract when not `.restricted`).
+  [self applyMacroFocusBiasLocked];
+
+  [_captureDevice unlockForConfiguration];
+}
+
+#pragma mark - Close-range macro window (MIN-4878)
+
+/// Whether AVFoundation may currently do its focus-driven hop to the
+/// ultra-wide (macro) constituent.
+///
+/// MIN-3071 turned that hop off wholesale because at a constant 1x zoom it
+/// reads as an unexplained FOV jump mid-framing. The cost only became visible
+/// later: on a triple-camera iPhone the wide constituent cannot focus closer
+/// than ~20cm, so with the hop suppressed a close-up never sharpens at all —
+/// the lens just hunts. MIN-3475 gave the field scanners an escape hatch;
+/// MIN-4878 is the same problem on the capture screen, reported as "the camera
+/// freezes when I try to take a close up". So the hop is allowed exactly when
+/// it is the only way to focus: in scan mode, or inside a close-range window.
+- (BOOL)macroConstituentSwitchingAllowed {
+  return _closeRangeScanMode || _closeRangeFocusWindow;
+}
+
+- (BOOL)supportsConstituentSwitching {
+  if (_captureDevice == nil) {
+    return NO;
+  }
   if (@available(iOS 15.0, *)) {
-    if (_captureDevice.activePrimaryConstituentDeviceSwitchingBehavior !=
-        AVCapturePrimaryConstituentDeviceSwitchingBehaviorUnsupported) {
-      if (_closeRangeScanMode) {
-        [_captureDevice
-            setPrimaryConstituentDeviceSwitchingBehavior:AVCapturePrimaryConstituentDeviceSwitchingBehaviorAuto
-                   restrictedSwitchingBehaviorConditions:AVCapturePrimaryConstituentDeviceRestrictedSwitchingBehaviorConditionNone];
-      } else {
-        [_captureDevice
-            setPrimaryConstituentDeviceSwitchingBehavior:AVCapturePrimaryConstituentDeviceSwitchingBehaviorRestricted
-                   restrictedSwitchingBehaviorConditions:AVCapturePrimaryConstituentDeviceRestrictedSwitchingBehaviorConditionVideoZoomChanged];
-      }
+    // There is no -isPrimaryConstituentDeviceSwitchingBehaviorSupported; the
+    // documented probe is the current behaviour reading back as unsupported,
+    // and the setter throws NSInvalidArgumentException on a single-lens or
+    // front camera (MIN-3071).
+    return _captureDevice.activePrimaryConstituentDeviceSwitchingBehavior !=
+           AVCapturePrimaryConstituentDeviceSwitchingBehaviorUnsupported;
+  }
+  return NO;
+}
+
+/// Everything that follows from "is a close-up being framed right now?", in
+/// one place so opening and closing the window are exact inverses — the smooth
+/// AF flag drifting out of step with the switching behaviour is otherwise very
+/// easy to write.
+///
+/// Smooth AF trades convergence speed for cinematic lens moves: right for the
+/// capture preview, wrong for a scanner racing to sharpen a held-up code
+/// (MIN-3475) and wrong for a close-up the user is holding still and waiting
+/// on — the gradual racks are what make that wait read as a stall (MIN-4878).
+///
+/// Switching behaviour is MIN-3071's restriction: on a virtual multi-camera
+/// back device the default `.auto` lets AVFoundation do a focus/exposure-driven
+/// "fallback" switch — e.g. hop wide -> ultra-wide when continuous AF meets a
+/// subject closer than the wide's minimum focus distance — a visible FOV jump
+/// at a constant 1x zoom. `.restricted` with only `.videoZoomChanged` keeps the
+/// explicit zoom presets switching while suppressing those fallbacks. Scan mode
+/// and the close-range window are the deliberate exceptions: that fallback hop
+/// IS the macro mode a triple-camera device needs to focus something held
+/// closer than the wide lens's ~20cm minimum. `.auto` requires the conditions
+/// argument to be `.none` (the API contract when not `.restricted`).
+///
+/// Caller must hold -lockForConfiguration.
+- (void)applyMacroFocusBiasLocked {
+  const BOOL closeRange = [self macroConstituentSwitchingAllowed];
+  if ([_captureDevice isSmoothAutoFocusSupported]) {
+    [_captureDevice setSmoothAutoFocusEnabled:closeRange ? NO : YES];
+  }
+  if (![self supportsConstituentSwitching]) {
+    return;
+  }
+  if (@available(iOS 15.0, *)) {
+    if (closeRange) {
+      [_captureDevice
+          setPrimaryConstituentDeviceSwitchingBehavior:AVCapturePrimaryConstituentDeviceSwitchingBehaviorAuto
+                 restrictedSwitchingBehaviorConditions:AVCapturePrimaryConstituentDeviceRestrictedSwitchingBehaviorConditionNone];
+    } else {
+      [_captureDevice
+          setPrimaryConstituentDeviceSwitchingBehavior:AVCapturePrimaryConstituentDeviceSwitchingBehaviorRestricted
+                 restrictedSwitchingBehaviorConditions:AVCapturePrimaryConstituentDeviceRestrictedSwitchingBehaviorConditionVideoZoomChanged];
     }
   }
+}
 
+/// Lift the MIN-3071 restriction until the framing changes.
+///
+/// Subject-area monitoring is switched on here because it is the window's only
+/// closer: -subjectAreaDidChange: fires when the scene at the point of interest
+/// changes significantly — i.e. the user has moved on to another item — and
+/// that is precisely when the FOV jump becomes unwanted again. A tap-to-focus
+/// enables it anyway; a window opened by the AF detector has no tap behind it,
+/// so without this the notification would never arrive and the restriction
+/// would never come back.
+///
+/// Caller must hold -lockForConfiguration.
+- (void)openCloseRangeFocusWindowLocked {
+  if (_closeRangeFocusWindow || ![self supportsConstituentSwitching]) {
+    return;
+  }
+  _closeRangeFocusWindow = YES;
+  [self applyMacroFocusBiasLocked];
+  [_captureDevice setSubjectAreaChangeMonitoringEnabled:YES];
+  NSLog(@"CamerAwesome: close-range focus window opened - macro hop allowed (MIN-4878)");
+}
+
+/// Caller must hold -lockForConfiguration.
+- (void)closeCloseRangeFocusWindowLocked {
+  if (!_closeRangeFocusWindow) {
+    return;
+  }
+  _closeRangeFocusWindow = NO;
+  _focusHuntStartedAt = 0;
+  [self applyMacroFocusBiasLocked];
+  NSLog(@"CamerAwesome: close-range focus window closed - macro hop restricted again (MIN-4878)");
+}
+
+/// Watch AF for the life of the bound device so we can tell a normal rack from
+/// a subject the wide lens simply cannot reach. Only worth registering on a
+/// device that has another constituent to hop to.
+- (void)setupCloseRangeFocusObservation {
+  if (_observingCloseRangeFocus || _captureDevice == nil || ![self supportsConstituentSwitching]) {
+    return;
+  }
+  _observingCloseRangeFocus = YES;
+  _focusHuntStartedAt = 0;
+  [_captureDevice addObserver:self forKeyPath:@"adjustingFocus" options:0 context:CloseRangeFocusContext];
+}
+
+/// Must run before _captureDevice is reassigned (sensor switch / dispose) so we
+/// never removeObserver: from the wrong device.
+- (void)teardownCloseRangeFocusObservation {
+  if (!_observingCloseRangeFocus) {
+    return;
+  }
+  _observingCloseRangeFocus = NO;
+  _focusHuntStartedAt = 0;
+  @try {
+    [_captureDevice removeObserver:self forKeyPath:@"adjustingFocus" context:CloseRangeFocusContext];
+  } @catch (NSException *exception) { /* already removed */ }
+}
+
+/// The adaptive half of MIN-4878: notice that AF cannot get there and lift the
+/// restriction, which is what the native Camera app effectively does when it
+/// drops into macro on its own.
+///
+/// Two signals, because a too-close subject shows up as either:
+///   * AF hunting for longer than kCloseRangeFocusHuntSeconds without settling
+///     — the lens racking back and forth, never finding contrast; or
+///   * AF settling with -lensPosition at the near limit — it converged as close
+///     as the optics allow and the subject is still nearer than that.
+- (void)handleFocusActivityChange {
+  if (_captureDevice == nil || !_observingCloseRangeFocus || _closeRangeScanMode) {
+    return;
+  }
+  if (_captureDevice.isAdjustingFocus) {
+    if (_focusHuntStartedAt != 0) {
+      return;  // already timing this hunt
+    }
+    _focusHuntStartedAt = CFAbsoluteTimeGetCurrent();
+    const CFAbsoluteTime huntStartedAt = _focusHuntStartedAt;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kCloseRangeFocusHuntSeconds * NSEC_PER_SEC)),
+                   _dispatchQueue, ^{
+      // Same hunt, and it still hasn't landed: nothing in the near range is
+      // going to sharpen without the other lens.
+      if (self->_focusHuntStartedAt != huntStartedAt || !self->_captureDevice.isAdjustingFocus) {
+        return;
+      }
+      [self openCloseRangeFocusWindowFromDetector];
+    });
+    return;
+  }
+
+  _focusHuntStartedAt = 0;
+  if (_closeRangeFocusWindow) {
+    return;
+  }
+  if (_captureDevice.lensPosition <= kCloseRangeLensNearLimit) {
+    [self openCloseRangeFocusWindowFromDetector];
+  }
+}
+
+- (void)openCloseRangeFocusWindowFromDetector {
+  if (_closeRangeFocusWindow) {
+    return;
+  }
+  NSError *lockError = nil;
+  if (![_captureDevice lockForConfiguration:&lockError]) {
+    NSLog(@"openCloseRangeFocusWindowFromDetector: lockForConfiguration failed: %@", lockError.localizedDescription);
+    return;
+  }
+  [self openCloseRangeFocusWindowLocked];
+  // Re-issue continuous AF so the system re-evaluates the scene now that the
+  // hop is permitted, instead of waiting for the next thing to move. Skipped
+  // for a locked lens — a long-press AE/AF lock must stay pinned.
+  if (_captureDevice.focusMode != AVCaptureFocusModeLocked &&
+      [_captureDevice isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
+    [_captureDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
+  }
   [_captureDevice unlockForConfiguration];
 }
 
@@ -1593,6 +1823,7 @@ static const int32_t kStillLongEdgeTarget = 4032;
   dispatch_sync(_dispatchQueue, ^{
     [self teardownFocusStableObservation];
     [self->_focusStableCompletions removeAllObjects];
+    [self teardownCloseRangeFocusObservation];
   });
   // Drops the subject-area observation and the MIN-3440 session-health
   // observers in one go — self observes nothing else via NSNotificationCenter
@@ -1961,6 +2192,14 @@ static const int32_t kStillLongEdgeTarget = 4032;
                       ofObject:(id)object
                         change:(NSDictionary<NSKeyValueChangeKey,id> *)change
                        context:(void *)context {
+  if (context == CloseRangeFocusContext) {
+    // KVO fires on AVFoundation's internal thread; the macro-window state is
+    // owned by _dispatchQueue (MIN-4878).
+    dispatch_async(_dispatchQueue, ^{
+      [self handleFocusActivityChange];
+    });
+    return;
+  }
   if (context != FocusStableContext) {
     [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
     return;
@@ -2012,12 +2251,21 @@ static const int32_t kStillLongEdgeTarget = 4032;
       [_captureDevice setFocusPointOfInterest:poi];
     }
 
+    // Tap-to-focus IS the request to focus on that thing, so it is also the
+    // moment to allow the macro hop that the MIN-3071 restriction otherwise
+    // blocks: tapping something held close is the gesture people already reach
+    // for when the preview won't sharpen, and scoping the lift to a tap keeps
+    // the restriction — and its framing protection — everywhere else
+    // (MIN-4878). Closed again by -subjectAreaDidChange:.
+    [self openCloseRangeFocusWindowLocked];
+
     // Smooth (gradual) autofocus so continuous AF makes small corrections
     // instead of full lens racks — stops the visible "pumping" on re-taps and
-    // matches the native Camera app. Only affects continuous AF.
-    if ([_captureDevice isSmoothAutoFocusSupported]) {
-      [_captureDevice setSmoothAutoFocusEnabled:YES];
-    }
+    // matches the native Camera app. Deferred to the shared bias helper because
+    // the tap above may have just opened the close-range window, which wants
+    // the fast racks instead; on a device with nothing to hop to the window
+    // never opened and this keeps the historical smooth-AF-on behaviour.
+    [self applyMacroFocusBiasLocked];
 
     // Native tap-to-focus has two flavours, selected by IOSFocusSettings:
     //   lockFocus == YES  → one-shot AF + AE that we pin once it settles
@@ -2124,6 +2372,11 @@ static const int32_t kStillLongEdgeTarget = 4032;
       if ([self->_captureDevice isExposureModeSupported:AVCaptureExposureModeContinuousAutoExposure]) {
         [self->_captureDevice setExposureMode:AVCaptureExposureModeContinuousAutoExposure];
       }
+      // The scene at the point of interest changed, so whatever close-up the
+      // macro window was opened for is no longer being framed — restore
+      // MIN-3071's restriction before an unasked-for FOV jump can happen
+      // (MIN-4878).
+      [self closeCloseRangeFocusWindowLocked];
       [self->_captureDevice setSubjectAreaChangeMonitoringEnabled:NO];
       [self->_captureDevice unlockForConfiguration];
     }

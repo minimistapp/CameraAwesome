@@ -95,12 +95,14 @@ didFinishProcessingPhoto:(AVCapturePhoto *)photo
     ExifContainer *container = [[ExifContainer alloc] init];
     [container addCreationDate:[NSDate date]];
 
+#if CAMERAWESOME_ENABLE_LOCATION
     // Save GPS location only if provided
     if (_saveGPSLocation) {
       CLLocationManager *locationManager = [CLLocationManager new];
       CLLocation *location = [locationManager location];
       [container addLocation:location];
     }
+#endif
 
     // Finalized bytes from the modern photo pipeline — this is the image after
     // Smart HDR / Deep Fusion processing. Replaces the deprecated JPEG

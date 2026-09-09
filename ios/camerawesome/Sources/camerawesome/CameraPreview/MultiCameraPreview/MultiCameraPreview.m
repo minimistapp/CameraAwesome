@@ -192,7 +192,7 @@
   _saveGPSLocation = gpsLocation;
   
   if (_saveGPSLocation) {
-    [_locationController requestWhenInUseAuthorizationOnGranted:^{
+    [_locationController requestLocationAuthorizationOnGranted:^{
       completion(@(YES), nil);
     } declined:^{
       completion(@(NO), nil);

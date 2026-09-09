@@ -267,7 +267,7 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   _saveGPSLocation = gpsLocation;
   
   if (_saveGPSLocation) {
-    [_locationController requestWhenInUseAuthorizationOnGranted:^{
+    [_locationController requestLocationAuthorizationOnGranted:^{
       completion(@(YES), nil);
     } declined:^{
       completion(@(NO), nil);

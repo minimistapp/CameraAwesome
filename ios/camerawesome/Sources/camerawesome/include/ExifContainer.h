@@ -7,13 +7,19 @@
 
 #import <Foundation/Foundation.h>
 
+#import "CamerawesomeLocation.h"
+
 NS_ASSUME_NONNULL_BEGIN
 
+#if CAMERAWESOME_ENABLE_LOCATION
 @class CLLocation;
+#endif
 
 @interface ExifContainer : NSObject
 
+#if CAMERAWESOME_ENABLE_LOCATION
 - (void)addLocation:(CLLocation *)currentLocation;
+#endif
 - (void)addUserComment:(NSString *)comment;
 - (void)addCreationDate:(NSDate *)date;
 - (void)addDescription:(NSString *)description;

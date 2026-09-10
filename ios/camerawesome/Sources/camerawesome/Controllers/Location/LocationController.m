@@ -9,6 +9,8 @@
 
 @implementation LocationController
 
+#if CAMERAWESOME_ENABLE_LOCATION
+
 - (instancetype)init {
   if (self = [super init]) {
     self.locationManager = [[CLLocationManager alloc] init];
@@ -21,7 +23,7 @@
   return self;
 }
 
-- (void)requestWhenInUseAuthorizationOnGranted:(OnAuthorizationGranted)granted declined:(OnAuthorizationDeclined)declined {
+- (void)requestLocationAuthorizationOnGranted:(OnAuthorizationGranted)granted declined:(OnAuthorizationDeclined)declined {
   _grantedBlock = granted;
   _declinedBlock = declined;
   
@@ -49,5 +51,24 @@
     
   }
 }
+
+#else
+
+- (instancetype)init {
+  return [super init];
+}
+
+/// Location is compiled out (see CamerawesomeLocation.h), so there is nothing
+/// to ask for. Reporting "declined" is the same answer a user who refuses the
+/// prompt gives, and every caller already handles it by leaving
+/// saveGPSLocation false.
+- (void)requestLocationAuthorizationOnGranted:(OnAuthorizationGranted)granted declined:(OnAuthorizationDeclined)declined {
+  _grantedBlock = granted;
+  _declinedBlock = declined;
+  
+  declined();
+}
+
+#endif
 
 @end

@@ -445,7 +445,7 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
   bool needToSaveGPSLocation = [saveGpsLocation boolValue];
   if (needToSaveGPSLocation) {
     // TODO: move this to permissions object
-    [self.camera.locationController requestWhenInUseAuthorizationOnGranted:^{
+    [self.camera.locationController requestLocationAuthorizationOnGranted:^{
       [permissions addObject:@"location"];
       
       completion(permissions, nil);

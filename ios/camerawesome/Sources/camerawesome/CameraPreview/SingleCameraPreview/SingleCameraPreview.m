@@ -2002,9 +2002,25 @@ static const int32_t kStillLongEdgeTarget = 4032;
   }
 }
 
-/// Trigger focus on device at the specific point of the preview
+/// Trigger focus on device at the specific point of the preview.
+///
+/// Only the tap → point-of-interest conversion runs here, on the main thread
+/// (it reads the preview layer). The device configuration — a lock plus up to
+/// eight setters — hops to _dispatchQueue, as subjectAreaDidChange: already
+/// does and as Apple's AVCam does on its session queue (MIN-5520). A close-up
+/// that won't sharpen is exactly when people tap again and again, and with
+/// Flutter's merged platform/UI thread that work used to sit on the thread
+/// that also runs the app's UI. A failed lock is logged rather than returned:
+/// Dart fires this without awaiting it.
 - (void)focusOnPoint:(CGPoint)position preview:(CGSize)preview iosFocusSettings:(nullable IOSFocusSettings *)settings error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
   CGPoint poi = [self focusPointOfInterestForPreviewPoint:position];
+  dispatch_async(_dispatchQueue, ^{
+    [self applyFocusAtPointOfInterest:poi iosFocusSettings:settings];
+  });
+}
+
+/// Device half of -focusOnPoint:. Runs on _dispatchQueue.
+- (void)applyFocusAtPointOfInterest:(CGPoint)poi iosFocusSettings:(nullable IOSFocusSettings *)settings {
   NSError *lockError;
   if ([_captureDevice lockForConfiguration:&lockError]) {
     // Focus point
@@ -2096,7 +2112,7 @@ static const int32_t kStillLongEdgeTarget = 4032;
       }];
     }
   } else {
-    *error = [FlutterError errorWithCode:@"FOCUS_ERROR" message:@"impossible to set focus point" details:[lockError localizedDescription]];
+    NSLog(@"focusOnPoint: lockForConfiguration failed: %@", lockError.localizedDescription);
   }
 }
 

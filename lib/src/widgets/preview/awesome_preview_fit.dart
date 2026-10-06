@@ -8,6 +8,27 @@ final previewWidgetKey = GlobalKey();
 
 typedef OnPreviewCalculated = void Function(AnalysisPreview preview);
 
+/// The centred region of a preview [frame] that a [ratio] capture keeps — the
+/// same crop the still gets natively (iOS CameraPictureController
+/// -cropRectForWidth:): 16:9 trims the frame's short side, 1:1 its long side,
+/// and 4:3 — the sensor's own shape — nothing. A frame already in [ratio]'s
+/// shape (Android binds 16:9 natively) comes back whole.
+Size captureCropSize(Size frame, CameraAspectRatios? ratio) {
+  if (ratio == null || frame.isEmpty) {
+    return frame;
+  }
+  final target = switch (ratio) {
+    CameraAspectRatios.ratio_16_9 => 16 / 9,
+    CameraAspectRatios.ratio_4_3 => 4 / 3,
+    CameraAspectRatios.ratio_1_1 => 1.0,
+  };
+  final long = max(frame.width, frame.height);
+  final short = min(frame.width, frame.height);
+  final cropLong = min(long, short * target);
+  final cropShort = min(short, long / target);
+  return frame.width >= frame.height ? Size(cropLong, cropShort) : Size(cropShort, cropLong);
+}
+
 class AnimatedPreviewFit extends StatefulWidget {
   final Alignment alignment;
   final CameraPreviewFit previewFit;
@@ -17,6 +38,12 @@ class AnimatedPreviewFit extends StatefulWidget {
   final Widget child;
   final OnPreviewCalculated? onPreviewCalculated;
   final Sensor sensor;
+
+  /// The capture ratio. [CameraPreviewFit.contain] fits the region this ratio
+  /// keeps rather than the whole frame, so a 16:9 crop of a 4:3 frame fills
+  /// the space the way the native Camera app's 16:9 viewfinder does, and a
+  /// ratio change zooms the live preview instead of reconfiguring the camera.
+  final CameraAspectRatios? captureAspectRatio;
 
   const AnimatedPreviewFit({
     super.key,
@@ -28,6 +55,7 @@ class AnimatedPreviewFit extends StatefulWidget {
     required this.child,
     this.onPreviewCalculated,
     this.previewPadding,
+    this.captureAspectRatio,
   });
 
   @override
@@ -35,51 +63,49 @@ class AnimatedPreviewFit extends StatefulWidget {
 }
 
 class _AnimatedPreviewFitState extends State<AnimatedPreviewFit> {
-  late Tween<Size> animation;
+  /// Matches the aspect-ratio mask's animation in the app, so the zoom and the
+  /// mask move together.
+  static const _ratioChangeDuration = Duration(milliseconds: 300);
+
   Size? maxSize;
 
   PreviewSizeCalculator? sizeCalculator;
 
+  /// Only a capture-ratio change animates the zoom; a new frame size or new
+  /// constraints (rotation, first layout) snap to the new fit as before.
+  Duration _zoomDuration = Duration.zero;
+
   @override
   void initState() {
     super.initState();
-    sizeCalculator = PreviewSizeCalculator(
-      previewFit: widget.previewFit,
-      previewSize: widget.previewSize,
-      constraints: widget.constraints,
-    );
+    sizeCalculator = _calculatorFor(widget);
     sizeCalculator!.compute();
     maxSize = sizeCalculator!.maxSize;
-
-    animation = Tween<Size>(
-      begin: maxSize,
-      end: maxSize,
-    );
     _handPreviewCalculated();
   }
+
+  PreviewSizeCalculator _calculatorFor(AnimatedPreviewFit fit) => PreviewSizeCalculator(
+        previewFit: fit.previewFit,
+        previewSize: fit.previewSize,
+        constraints: fit.constraints,
+        captureAspectRatio: fit.captureAspectRatio,
+      );
 
   @override
   void didUpdateWidget(covariant AnimatedPreviewFit oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.previewFit != oldWidget.previewFit ||
-        widget.previewSize != oldWidget.previewSize ||
-        widget.constraints != oldWidget.constraints) {
-      var oldsizeCalculator = PreviewSizeCalculator(
-        previewFit: oldWidget.previewFit,
-        previewSize: oldWidget.previewSize,
-        constraints: oldWidget.constraints,
-      );
-      sizeCalculator = PreviewSizeCalculator(
-        previewFit: widget.previewFit,
-        previewSize: widget.previewSize,
-        constraints: widget.constraints,
-      );
-      oldsizeCalculator.compute();
+    // Pigeon's PreviewSize has no value equality, and the preview re-queries a
+    // fresh instance on every ratio change — compare the sizes, or every ratio
+    // change would read as a geometry change and snap.
+    final geometryChanged = widget.previewFit != oldWidget.previewFit ||
+        widget.previewSize.toSize() != oldWidget.previewSize.toSize() ||
+        widget.constraints != oldWidget.constraints;
+    final ratioChanged = widget.captureAspectRatio != oldWidget.captureAspectRatio;
+    if (geometryChanged || ratioChanged) {
+      sizeCalculator = _calculatorFor(widget);
       sizeCalculator!.compute();
-      animation = Tween<Size>(
-        begin: oldsizeCalculator.maxSize,
-        end: sizeCalculator!.maxSize,
-      );
+      maxSize = sizeCalculator!.maxSize;
+      _zoomDuration = geometryChanged ? Duration.zero : _ratioChangeDuration;
       _handPreviewCalculated();
     }
   }
@@ -106,23 +132,26 @@ class _AnimatedPreviewFitState extends State<AnimatedPreviewFit> {
 
   @override
   Widget build(BuildContext context) {
-    return TweenAnimationBuilder<Size>(
-      builder: (context, currentSize, child) {
-        final ratio = sizeCalculator!.zoom;
+    // TweenAnimationBuilder animates from wherever the zoom currently is to the
+    // new end, so a ratio tapped mid-animation retargets smoothly. Overlays get
+    // the end state once (onPreviewCalculated), not a value per frame — only
+    // the preview itself moves, so the camera chrome isn't rebuilt every frame.
+    return TweenAnimationBuilder<double>(
+      builder: (context, zoom, child) {
         return PreviewFitWidget(
           alignment: widget.alignment,
           constraints: widget.constraints,
           previewFit: widget.previewFit,
           previewSize: widget.previewSize,
-          scale: ratio,
+          scale: zoom,
           maxSize: maxSize!,
           previewPadding: widget.previewPadding,
           child: child!,
         );
       },
-      tween: animation,
-      duration: const Duration(milliseconds: 700),
-      curve: Curves.fastLinearToSlowEaseIn,
+      tween: Tween<double>(end: sizeCalculator!.zoom),
+      duration: _zoomDuration,
+      curve: Curves.easeInOut,
       child: widget.child,
     );
   }
@@ -152,26 +181,37 @@ class PreviewFitWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final transformController = TransformationController()..value = (Matrix4.identity()..scale(scale));
+    final contentWidth = previewSize.width * scale;
+    final contentHeight = previewSize.height * scale;
 
+    // The scaled frame, clipped to the available space: when the capture crop
+    // zooms it past the edges (16:9 from a 4:3 frame) the overflow is cropped
+    // evenly, like the still. This tree is the same widget types every build —
+    // it used to be an InteractiveViewer keyed with a fresh UniqueKey(), which
+    // re-parented the native preview platform view on every rebuild, and an
+    // animated zoom rebuilds every frame.
     return Align(
       alignment: alignment,
       child: SizedBox(
-        width: previewSize.width * scale,
-        height: previewSize.height * scale,
+        width: min(contentWidth, constraints.maxWidth),
+        height: min(contentHeight, constraints.maxHeight),
         child: Padding(
           padding: previewPadding ?? EdgeInsets.zero,
-          child: InteractiveViewer(
-            key: UniqueKey(),
-            transformationController: transformController,
-            scaleEnabled: false,
-            constrained: false,
-            panEnabled: false,
-            clipBehavior: Clip.antiAlias,
-            child: SizedBox(
-              width: previewSize.width,
-              height: previewSize.height,
-              child: child,
+          child: ClipRect(
+            child: OverflowBox(
+              alignment: alignment,
+              minWidth: contentWidth,
+              maxWidth: contentWidth,
+              minHeight: contentHeight,
+              maxHeight: contentHeight,
+              child: FittedBox(
+                fit: BoxFit.fill,
+                child: SizedBox(
+                  width: previewSize.width,
+                  height: previewSize.height,
+                  child: child,
+                ),
+              ),
             ),
           ),
         ),
@@ -187,6 +227,10 @@ class PreviewSizeCalculator {
   final PreviewSize previewSize;
   final BoxConstraints constraints;
 
+  /// See [AnimatedPreviewFit.captureAspectRatio]; only [CameraPreviewFit.contain]
+  /// reads it.
+  final CameraAspectRatios? captureAspectRatio;
+
   Size? _maxSize;
   double? _zoom;
   Offset? _offset;
@@ -195,6 +239,7 @@ class PreviewSizeCalculator {
     required this.previewFit,
     required this.previewSize,
     required this.constraints,
+    this.captureAspectRatio,
   });
 
   void compute() {
@@ -290,8 +335,12 @@ class PreviewSizeCalculator {
         }
         break;
       case CameraPreviewFit.contain:
-        final ratioW = constraints.maxWidth / nativePreviewSize.width;
-        final ratioH = constraints.maxHeight / nativePreviewSize.height;
+        // Contain what the capture keeps, not the whole frame: for 16:9 from a
+        // 4:3 frame this zooms the frame so the 16:9 band fills the space; 4:3
+        // and 1:1 keep the full-frame fit (the app masks 1:1's cropped bands).
+        final kept = captureCropSize(nativePreviewSize, captureAspectRatio);
+        final ratioW = constraints.maxWidth / kept.width;
+        final ratioH = constraints.maxHeight / kept.height;
         final minRatio = min(ratioW, ratioH);
         ratio = minRatio;
         break;
@@ -306,7 +355,8 @@ class PreviewSizeCalculator {
           runtimeType == other.runtimeType &&
           previewFit == other.previewFit &&
           constraints == other.constraints &&
-          previewSize == other.previewSize;
+          previewSize == other.previewSize &&
+          captureAspectRatio == other.captureAspectRatio;
 
   @override
   int get hashCode => previewSize.hashCode ^ previewSize.hashCode;

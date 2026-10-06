@@ -11,6 +11,13 @@
 // flags (used to know when AF/AE have settled).
 static void * const FocusStableContext = (void *)&FocusStableContext;
 
+/// Whether [ratio] streams from the tuned 4:3 device format rather than the
+/// 16:9 1080p preset. 1:1 is a centred crop of the 4:3 frame (MIN-5997), so
+/// it shares 4:3's session; only 16:9 runs the 16:9 preset.
+static BOOL SCPUsesFourThreeSession(AspectRatio ratio) {
+  return ratio == Ratio4_3 || ratio == Ratio1_1;
+}
+
 @interface SingleCameraPreview ()
 /// Safely applies the analysis pixel format (optionally at a fixed
 /// width/height) to the analysis data output — 32BGRA by default, or the
@@ -234,14 +241,17 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   if (_aspectRatio == ratio) {
     return;
   }
+  BOOL sameSession = SCPUsesFourThreeSession(_aspectRatio) == SCPUsesFourThreeSession(ratio);
   _aspectRatio = ratio;
   // The 4:3 and 16:9 session configs differ (tuned 4:3 device format vs 1080p
   // preset — MIN-3098), so re-pick the config when the ratio actually changes.
   // This also catches the app's initial ratio push right after setup (init runs
   // with the enum default 4:3 before Dart sends the persisted ratio). Skip
   // while recording: the writer is pinned to the current format, matching
-  // setPreviewSize's recording guard.
-  if (!_videoController.isRecording) {
+  // setPreviewSize's recording guard. 4:3 ↔ 1:1 share the 4:3 session
+  // (MIN-5997) — only the still's crop differs — so that switch leaves the
+  // running session alone instead of flashing the preview.
+  if (!sameSession && !_videoController.isRecording) {
     [self setBestPreviewQuality];
   }
 }
@@ -1439,7 +1449,13 @@ static const int32_t kStillLongEdgeTarget = 4032;
       // 4:3 HD *preset* (only 640x480 / 352x288 / Photo), so for 4:3 we pick a
       // ~1280–1920-wide 4:3 device *format* (far lighter than the Photo preset)
       // and fall back to the 640x480 preset if none is exposed.
-      if (_aspectRatio == Ratio4_3) {
+      //
+      // 1:1 rides the 4:3 session too (MIN-5997): the still is a centred square
+      // cropped out of the frame (CameraPictureController), and the 4:3 frame is
+      // the full sensor, so the square keeps the sensor's whole short side. On
+      // the 16:9 preset it was cut from a frame already cropped top and bottom —
+      // a far smaller, more zoomed-in square than the viewfinder suggested.
+      if (SCPUsesFourThreeSession(_aspectRatio)) {
         forcedFormat = [self bestStreamingFourThreeFormat];
         if (forcedFormat == nil) {
           forcedPreset = AVCaptureSessionPreset640x480;

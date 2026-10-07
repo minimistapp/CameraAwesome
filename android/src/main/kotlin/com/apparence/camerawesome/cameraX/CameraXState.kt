@@ -51,8 +51,13 @@ data class CameraXState(
     var photoSize: Size? = null,
     var previewSize: Size? = null,
     var aspectRatio: Int? = null,
-    // Rational is used only in ratio 1:1
+    /// The bound ViewPort's ratio: 9:16 for 16:9, 3:4 otherwise. 1:1 photos bind
+    /// the 4:3 viewport too and are cropped after capture ([squareCapture]).
     var rational: Rational = Rational(3, 4),
+    /// 1:1: photos are a centred square cropped from the saved 4:3 still, like
+    /// the native camera apps (the sensor is 4:3). The camera binds exactly as
+    /// for 4:3, so 4:3 ↔ 1:1 never rebinds and the preview never freezes.
+    var squareCapture: Boolean = false,
     var flashMode: FlashMode = FlashMode.NONE,
     val onStreamReady: (state: CameraXState) -> Unit,
     var mirrorFrontCamera: Boolean = false,
@@ -289,7 +294,7 @@ data class CameraXState(
                     val imageCapture = ImageCapture.Builder()
 //                .setJpegQuality(100)
                         .apply {
-                            if (rational.denominator != rational.numerator) {
+                            if (viewPortRational().let { it.denominator != it.numerator }) {
                                 setResolutionSelector(resolutionSelector)
                             }
 
@@ -318,7 +323,7 @@ data class CameraXState(
 
                 isFirst = false
                 useCaseGroupBuilder.setViewPort(
-                    ViewPort.Builder(rational, lastViewPortRotation).build()
+                    ViewPort.Builder(viewPortRational(), lastViewPortRotation).build()
                 )
                 singleCameraConfigs.add(
                     ConcurrentCamera.SingleCameraConfig(
@@ -381,7 +386,7 @@ data class CameraXState(
 //                .setJpegQuality(100)
                     .apply {
                         //photoSize?.let { setTargetResolution(it) }
-                        if (rational.denominator != rational.numerator) {
+                        if (viewPortRational().let { it.denominator != it.numerator }) {
                             setResolutionSelector(resolutionSelector)
                         }
                         setFlashMode(
@@ -423,7 +428,7 @@ data class CameraXState(
             // ViewPort rotation follows the window so the preview crop fills the
             // screen upright when a tablet rotates; stays ROTATION_0 on a
             // portrait-locked phone. (MIN-2437)
-            useCaseGroupBuilder.setViewPort(ViewPort.Builder(rational, lastViewPortRotation).build())
+            useCaseGroupBuilder.setViewPort(ViewPort.Builder(viewPortRational(), lastViewPortRotation).build())
                 .build()
 
             concurrentCamera = null
@@ -789,15 +794,24 @@ data class CameraXState(
         lastExposureIndex = null
     }
 
-    fun updateAspectRatio(newAspectRatio: String) {
+    /// Applies a capture ratio and returns whether the camera must rebind for it.
+    /// Only 16:9 ↔ 4:3 changes what is bound (resolution + ViewPort); 4:3 ↔ 1:1
+    /// differ only in the photo's crop, applied after capture.
+    fun updateAspectRatio(newAspectRatio: String): Boolean {
+        val boundBefore = boundConfig()
         // In CameraX, aspect ratio is an Int. RATIO_4_3 = 0 (default), RATIO_16_9 = 1
         aspectRatio = if (newAspectRatio == "RATIO_16_9") 1 else 0
-        rational = when (newAspectRatio) {
-            "RATIO_16_9" -> Rational(9, 16)
-            "RATIO_1_1" -> Rational(1, 1)
-            else -> Rational(3, 4)
-        }
+        rational = if (newAspectRatio == "RATIO_16_9") Rational(9, 16) else Rational(3, 4)
+        squareCapture = newAspectRatio == "RATIO_1_1"
+        return boundConfig() != boundBefore
     }
+
+    /// The ViewPort to bind. A 1:1 *video* can't be cropped after the fact, so
+    /// only video keeps a square ViewPort; 1:1 photos bind the 4:3 one.
+    private fun viewPortRational(): Rational =
+        if (squareCapture && currentCaptureMode == CaptureModes.VIDEO) Rational(1, 1) else rational
+
+    private fun boundConfig() = Pair(aspectRatio, viewPortRational())
 
     companion object {
         /// How many times [restoreCameraControlState] retries while CameraX is

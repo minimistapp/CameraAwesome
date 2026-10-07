@@ -11,13 +11,6 @@
 // flags (used to know when AF/AE have settled).
 static void * const FocusStableContext = (void *)&FocusStableContext;
 
-/// Whether [ratio] streams from the tuned 4:3 device format rather than the
-/// 16:9 1080p preset. 1:1 is a centred crop of the 4:3 frame (MIN-5997), so
-/// it shares 4:3's session; only 16:9 runs the 16:9 preset.
-static BOOL SCPUsesFourThreeSession(AspectRatio ratio) {
-  return ratio == Ratio4_3 || ratio == Ratio1_1;
-}
-
 @interface SingleCameraPreview ()
 /// Safely applies the analysis pixel format (optionally at a fixed
 /// width/height) to the analysis data output — 32BGRA by default, or the
@@ -238,22 +231,12 @@ static BOOL SCPUsesFourThreeSession(AspectRatio ratio) {
 }
 
 - (void)setAspectRatio:(AspectRatio)ratio {
-  if (_aspectRatio == ratio) {
-    return;
-  }
-  BOOL sameSession = SCPUsesFourThreeSession(_aspectRatio) == SCPUsesFourThreeSession(ratio);
+  // A pure crop setting: every ratio streams from the same 4:3 session
+  // (-setCameraPreset:), and video sessions don't read the ratio at all, so the
+  // running session is never touched — switching ratio no longer freezes the
+  // preview, and the app's ratio push right after setup costs nothing. The
+  // still is cropped to it at capture time (CameraPictureController).
   _aspectRatio = ratio;
-  // The 4:3 and 16:9 session configs differ (tuned 4:3 device format vs 1080p
-  // preset — MIN-3098), so re-pick the config when the ratio actually changes.
-  // This also catches the app's initial ratio push right after setup (init runs
-  // with the enum default 4:3 before Dart sends the persisted ratio). Skip
-  // while recording: the writer is pinned to the current format, matching
-  // setPreviewSize's recording guard. 4:3 ↔ 1:1 share the 4:3 session
-  // (MIN-5997) — only the still's crop differs — so that switch leaves the
-  // running session alone instead of flashing the preview.
-  if (!sameSession && !_videoController.isRecording) {
-    [self setBestPreviewQuality];
-  }
 }
 
 /// Set image stream Flutter sink
@@ -1450,22 +1433,19 @@ static const int32_t kStillLongEdgeTarget = 4032;
       // ~1280–1920-wide 4:3 device *format* (far lighter than the Photo preset)
       // and fall back to the 640x480 preset if none is exposed.
       //
-      // 1:1 rides the 4:3 session too (MIN-5997): the still is a centred square
-      // cropped out of the frame (CameraPictureController), and the 4:3 frame is
-      // the full sensor, so the square keeps the sensor's whole short side. On
-      // the 16:9 preset it was cut from a frame already cropped top and bottom —
-      // a far smaller, more zoomed-in square than the viewfinder suggested.
-      if (SCPUsesFourThreeSession(_aspectRatio)) {
-        forcedFormat = [self bestStreamingFourThreeFormat];
-        if (forcedFormat == nil) {
-          forcedPreset = AVCaptureSessionPreset640x480;
-        }
-      } else {
-        // 16:9: iOS has HD 16:9 presets, so drive the GPU preview layer at 1080p
-        // for a sharp preview (the data output is capped back down in
-        // -applyAnalysisOutputDownscale). Same memory caveat as
-        // kPreviewFourThreeMaxWidth above.
-        targetSize = CGSizeMake(1080, 1920);
+      // Every capture ratio rides this one 4:3 session, like the native Camera
+      // app's photo mode: the 4:3 frame is the full sensor, and 16:9 / 1:1 are
+      // centred crops of it (CameraPictureController -cropRectForWidth:, and the
+      // app's viewfinder). 1:1 moved here first (MIN-5997) — on the 16:9 preset
+      // its square was cut from a frame already cropped top and bottom. 16:9
+      // used to run the 1080p preset, so every 4:3 ↔ 16:9 tap swapped the
+      // sensor readout mode under a running session: the preview froze or went
+      // black while the capture graph rebuilt. The 16:9 band of a ~1920×1440
+      // 4:3 format is ~1920×1080 — the same preview detail the preset gave —
+      // and a 16:9 still is the same centred 4032×2268-style band either way.
+      forcedFormat = [self bestStreamingFourThreeFormat];
+      if (forcedFormat == nil) {
+        forcedPreset = AVCaptureSessionPreset640x480;
       }
   }
 
@@ -1558,7 +1538,8 @@ static const int32_t kStillLongEdgeTarget = 4032;
 /// 1.0 is the *ultra-wide* constituent — Apple's "0.5×". So an aspect-ratio
 /// switch (4:3 ⇄ 16:9, each with its own session config — MIN-3098) silently
 /// yanked the preview out to ultra-wide while the Flutter chip row still read
-/// 1×.
+/// 1×. Ratios now share one session, but sensor and capture-mode switches
+/// still change the format.
 ///
 /// The bounds have to be re-latched first: `videoMaxZoomFactor` is a property
 /// of the *active format*, so the range cached at device-bind time no longer

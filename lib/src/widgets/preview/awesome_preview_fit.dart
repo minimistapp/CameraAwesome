@@ -199,7 +199,10 @@ class PreviewFitWidget extends StatelessWidget {
           padding: previewPadding ?? EdgeInsets.zero,
           child: ClipRect(
             child: OverflowBox(
-              alignment: alignment,
+              // Always centred, whatever [alignment] places the viewport at:
+              // the still is a centred crop (captureCropSize), so the visible
+              // part of an overflowing frame must be its centre too.
+              alignment: Alignment.center,
               minWidth: contentWidth,
               maxWidth: contentWidth,
               minHeight: contentHeight,

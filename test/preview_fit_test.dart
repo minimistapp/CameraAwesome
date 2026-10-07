@@ -115,6 +115,36 @@ void main() {
       expect(_MountCounter.mounts, 1);
     });
 
+    testWidgets('an overflowing frame stays centred under a non-centre alignment', (tester) async {
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              width: 390,
+              height: 844,
+              child: AnimatedPreviewFit(
+                alignment: Alignment.topLeft,
+                previewFit: CameraPreviewFit.contain,
+                previewSize: PreviewSize(width: 1440, height: 1920),
+                constraints: _phone,
+                sensor: Sensor.position(SensorPosition.back),
+                captureAspectRatio: CameraAspectRatios.ratio_16_9,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        ),
+      );
+      final viewport = tester.getRect(find.byType(ClipRect));
+      final frame = tester.getRect(find.byType(FittedBox));
+      // The 520-wide frame overflows the 390-wide viewport evenly: 65 each side,
+      // so the visible band is the centred crop the still gets.
+      expect(frame.center.dx, closeTo(viewport.center.dx, 0.01));
+      expect(viewport.left - frame.left, closeTo(65, 0.01));
+    });
+
     testWidgets('a new frame size snaps instead of animating', (tester) async {
       await tester.pumpWidget(fit(CameraAspectRatios.ratio_4_3));
       await tester.pumpWidget(fit(CameraAspectRatios.ratio_4_3, frame: PreviewSize(width: 1080, height: 1920)));

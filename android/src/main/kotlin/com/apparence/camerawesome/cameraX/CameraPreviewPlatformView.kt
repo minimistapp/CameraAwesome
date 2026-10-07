@@ -46,29 +46,41 @@ class CameraPreviewPlatformView(
         isFocusableInTouchMode = false
     }
 
+    /// Blurred last frame shown over the preview while an aspect-ratio change
+    /// rebinds the camera, instead of the black container.
+    private val freezeFrame = PreviewFreezeFrame(container)
+
     init {
         attachPreviewViewIfNeeded()
         // MIN-3655: colour-filter toggles recreate the PreviewView at runtime
         // (TextureView while filtered, SurfaceView otherwise) — re-attach the
         // fresh instance when that happens.
         provider.setOnPreviewViewRecreated { attachPreviewViewIfNeeded() }
+        provider.setOnPreviewRestarting {
+            provider.currentPreviewView()?.let { freezeFrame.cover(it) }
+        }
     }
 
     private fun attachPreviewViewIfNeeded() {
         val previewView = provider.currentPreviewView() ?: return
-        // Already showing exactly this PreviewView — nothing to do.
-        if (container.childCount == 1 && container.getChildAt(0) === previewView) {
+        // Already showing exactly this PreviewView — nothing to do. (Checked by
+        // parent, not child count: the freeze-frame overlay can be a sibling.)
+        if (previewView.parent === container) {
             return
         }
         // A new PreviewView instance (e.g. after a fresh setupCamera) — drop any
-        // stale child so we don't leave old views/surfaces parented here.
-        container.removeAllViews()
+        // stale PreviewView so we don't leave old views/surfaces parented here.
+        for (index in container.childCount - 1 downTo 0) {
+            if (container.getChildAt(index) is PreviewView) container.removeViewAt(index)
+        }
         // An Android View has exactly one parent — detach from any prior
         // (remounted) host before re-parenting. Defensive, like iOS's
         // removeFromSuperlayer.
         (previewView.parent as? ViewGroup)?.removeView(previewView)
         container.addView(
             previewView,
+            // Bottom of the stack, so a freeze-frame overlay stays on top.
+            0,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -85,6 +97,8 @@ class CameraPreviewPlatformView(
 
     override fun dispose() {
         provider.setOnPreviewViewRecreated(null)
+        provider.setOnPreviewRestarting(null)
+        freezeFrame.dispose()
         // Detach the shared PreviewView so it isn't held by a dead container; it
         // is owned by CameraXState and torn down with the camera session.
         val previewView = provider.currentPreviewView()

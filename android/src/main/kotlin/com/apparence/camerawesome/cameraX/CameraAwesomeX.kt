@@ -399,6 +399,14 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
         onPreviewViewRecreated = listener
     }
 
+    /// Single-slot hook fired right before an aspect-ratio rebind — see
+    /// [PreviewViewProvider.setOnPreviewRestarting].
+    private var onPreviewRestarting: (() -> Unit)? = null
+
+    override fun setOnPreviewRestarting(listener: (() -> Unit)?) {
+        onPreviewRestarting = listener
+    }
+
     override fun onPreviewViewAttached() {
         // First open on a tablet: the camera bound while the PreviewView had no
         // display (so the preview defaulted to portrait, centered). Now that it's
@@ -479,10 +487,34 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
 //        for (imageCapture in cameraState.imageCaptures) {
         imageCapture.targetRotation = captureOrientationOverride
             ?: orientationStreamListener!!.surfaceOrientation
+        // Read at shutter time: the ratio may change while the photo is saved.
+        val cropToSquare = cameraState.squareCapture
         imageCapture.takePicture(outputFileOptions,
             ContextCompat.getMainExecutor(activity!!),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+                    if (!cropToSquare) {
+                        finishSavedPhoto(outputFileResults)
+                        return
+                    }
+                    // 1:1 binds the 4:3 camera (no rebind on 4:3 ↔ 1:1), so the
+                    // saved still is the full 4:3 frame — crop it to its centred
+                    // square off the main thread, then finish as usual. A failed
+                    // crop fails the capture rather than hand a 4:3 photo back as
+                    // the 1:1 one — as iOS does when its crop fails.
+                    CoroutineScope(Dispatchers.IO).launch {
+                        val cropped = SquareStillCrop.cropInPlace(imageFile)
+                        withContext(Dispatchers.Main) {
+                            if (cropped) {
+                                finishSavedPhoto(outputFileResults)
+                            } else if (continuation.isActive) {
+                                continuation.resume(false)
+                            }
+                        }
+                    }
+                }
+
+                private fun finishSavedPhoto(outputFileResults: ImageCapture.OutputFileResults) {
                     // MIN-3655: preview-only filters (bakeCaptures == false)
                     // skip the bake — the photo is saved as captured.
                     if (bakeCaptures && colorMatrix != null && noneFilter != colorMatrix) {
@@ -740,6 +772,7 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
             this.flashMode = FlashMode.NONE
             this.aspectRatio = null
             this.rational = Rational(3, 4)
+            this.squareCapture = false
             // ...and the zoom/exposure carried across rebinds of the *same*
             // sensor, which shouldn't follow the user to a different one.
             // (MIN-3655)
@@ -936,10 +969,12 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
     }
 
     override fun setAspectRatio(aspectRatio: String) {
-        cameraState.apply {
-            this.updateAspectRatio(aspectRatio)
-            updateLifecycle(activity!!)
-        }
+        // 4:3 ↔ 1:1 only changes the photo's crop — no rebind, so the preview
+        // keeps running. 16:9 ↔ 4:3 does restart the stream: cover the preview
+        // with a blurred freeze-frame first instead of letting it go black.
+        if (!cameraState.updateAspectRatio(aspectRatio)) return
+        onPreviewRestarting?.invoke()
+        cameraState.updateLifecycle(activity!!)
     }
 
     override fun setMirrorFrontCamera(mirror: Boolean) {

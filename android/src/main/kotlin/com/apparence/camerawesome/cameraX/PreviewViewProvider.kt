@@ -25,4 +25,10 @@ interface PreviewViewProvider {
     /// container can re-attach. Single-slot — the single-camera path mounts one
     /// preview platform view at a time; pass null to unregister.
     fun setOnPreviewViewRecreated(listener: (() -> Unit)?) {}
+
+    /// Registers a main-thread callback fired right BEFORE the camera rebinds
+    /// for an aspect-ratio change, while the old stream is still on screen —
+    /// the moment to freeze its last frame ([PreviewFreezeFrame]). Single-slot,
+    /// like [setOnPreviewViewRecreated]; pass null to unregister.
+    fun setOnPreviewRestarting(listener: (() -> Unit)?) {}
 }

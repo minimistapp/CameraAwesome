@@ -72,7 +72,7 @@ class CamerawesomePlugin {
 
   static Stream<Map<String, dynamic>>? _imagesStream;
 
-  static Stream<String>? _qrCodesStream;
+  static Stream<dynamic>? _qrCodesStream;
 
   static CameraRunningState currentState = CameraRunningState.stopped;
 
@@ -172,8 +172,26 @@ class CamerawesomePlugin {
   /// error).
   static Stream<String> listenQrCodes() async* {
     if (!Platform.isIOS) return;
-    yield* _qrCodesStream ??= _qrCodesChannel.receiveBroadcastStream('qrCodesChannel').map((dynamic data) => data as String);
+    yield* _machineReadableCodes().where((data) => data is String).cast<String>();
   }
+
+  /// Retail 1D barcodes (EAN-13/8, UPC-E; UPC-A arrives as EAN-13) in view of
+  /// the hardware reader, with their on-screen geometry. Shares the
+  /// `camerawesome/qrcodes` channel with [listenQrCodes]: the native side
+  /// sends a QR as a plain string and barcodes as a map.
+  ///
+  /// Each event is every barcode in the current frame; an empty list means
+  /// they left the frame. iOS-only, like [listenQrCodes].
+  static Stream<List<NativeBarcode>> listenBarcodes() async* {
+    if (!Platform.isIOS) return;
+    yield* _machineReadableCodes().where((data) => data is Map).map((dynamic data) {
+      final codes = (data as Map)['barcodes'] as List<dynamic>? ?? const [];
+      return codes.map((c) => NativeBarcode.fromMap(c as Map)).toList();
+    });
+  }
+
+  static Stream<dynamic> _machineReadableCodes() =>
+      _qrCodesStream ??= _qrCodesChannel.receiveBroadcastStream('qrCodesChannel');
 
   static Stream<bool>? listenPermissionResult() {
     _permissionsStream ??= _permissionsChannel
@@ -628,4 +646,25 @@ class CamerawesomePlugin {
   static Future<void> setMirrorFrontCamera(bool mirrorFrontCamera) {
     return CameraInterface().setMirrorFrontCamera(mirrorFrontCamera);
   }
+}
+
+/// A barcode decoded by the iOS hardware reader (see
+/// [CamerawesomePlugin.listenBarcodes]).
+class NativeBarcode {
+  const NativeBarcode({required this.value, required this.format, required this.corners});
+
+  factory NativeBarcode.fromMap(Map<dynamic, dynamic> map) => NativeBarcode(
+        value: map['value'] as String,
+        format: map['format'] as String,
+        corners: (map['corners'] as List<dynamic>).map((v) => (v as num).toDouble()).toList(),
+      );
+
+  final String value;
+
+  /// `ean13`, `ean8` or `upce`.
+  final String format;
+
+  /// Flat `[x0, y0, x1, y1, …]`, each normalised (0–1) to the on-screen
+  /// preview rect.
+  final List<double> corners;
 }

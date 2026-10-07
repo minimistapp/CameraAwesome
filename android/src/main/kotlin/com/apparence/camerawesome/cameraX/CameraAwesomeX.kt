@@ -499,10 +499,18 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
                     }
                     // 1:1 binds the 4:3 camera (no rebind on 4:3 ↔ 1:1), so the
                     // saved still is the full 4:3 frame — crop it to its centred
-                    // square off the main thread, then finish as usual.
+                    // square off the main thread, then finish as usual. A failed
+                    // crop fails the capture rather than hand a 4:3 photo back as
+                    // the 1:1 one — as iOS does when its crop fails.
                     CoroutineScope(Dispatchers.IO).launch {
-                        SquareStillCrop.cropInPlace(imageFile)
-                        withContext(Dispatchers.Main) { finishSavedPhoto(outputFileResults) }
+                        val cropped = SquareStillCrop.cropInPlace(imageFile)
+                        withContext(Dispatchers.Main) {
+                            if (cropped) {
+                                finishSavedPhoto(outputFileResults)
+                            } else if (continuation.isActive) {
+                                continuation.resume(false)
+                            }
+                        }
                     }
                 }
 

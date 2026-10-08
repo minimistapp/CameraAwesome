@@ -8,6 +8,12 @@ final previewWidgetKey = GlobalKey();
 
 typedef OnPreviewCalculated = void Function(AnalysisPreview preview);
 
+/// The one transition an aspect-ratio change runs on: the preview's resize
+/// here, and whatever an app moves with it (masks, controls placed around the
+/// frame). Sharing it is what makes the preview and the chrome move as one.
+const Duration kCameraRatioTransitionDuration = Duration(milliseconds: 300);
+const Curve kCameraRatioTransitionCurve = Curves.easeInOut;
+
 /// The centred region of a preview [frame] that a [ratio] capture keeps — the
 /// same crop the still gets natively (iOS CameraPictureController
 /// -cropRectForWidth:): 16:9 trims the frame's short side, 1:1 its long side,
@@ -63,17 +69,15 @@ class AnimatedPreviewFit extends StatefulWidget {
 }
 
 class _AnimatedPreviewFitState extends State<AnimatedPreviewFit> {
-  /// Matches the aspect-ratio mask's animation in the app, so the zoom and the
-  /// mask move together.
-  static const _ratioChangeDuration = Duration(milliseconds: 300);
-
   Size? maxSize;
 
   PreviewSizeCalculator? sizeCalculator;
 
-  /// Only a capture-ratio change animates the zoom; a new frame size or new
-  /// constraints (rotation, first layout) snap to the new fit as before.
-  Duration _zoomDuration = Duration.zero;
+  /// A capture-ratio change animates the preview's size — also when it brings
+  /// a new frame shape with it (Android binds 16:9 and 4:3 natively, so the
+  /// frame itself changes there). New constraints or a new frame on their own
+  /// (rotation, first layout, the camera settling) snap to the new fit.
+  Duration _resizeDuration = Duration.zero;
 
   @override
   void initState() {
@@ -105,10 +109,13 @@ class _AnimatedPreviewFitState extends State<AnimatedPreviewFit> {
       sizeCalculator = _calculatorFor(widget);
       sizeCalculator!.compute();
       maxSize = sizeCalculator!.maxSize;
-      _zoomDuration = geometryChanged ? Duration.zero : _ratioChangeDuration;
+      _resizeDuration = ratioChanged ? kCameraRatioTransitionDuration : Duration.zero;
       _handPreviewCalculated();
     }
   }
+
+  /// The frame's on-screen size at the current fit.
+  Size get _contentSize => widget.previewSize.toSize() * sizeCalculator!.zoom;
 
   void _handPreviewCalculated() {
     if (widget.onPreviewCalculated != null) {
@@ -132,26 +139,29 @@ class _AnimatedPreviewFitState extends State<AnimatedPreviewFit> {
 
   @override
   Widget build(BuildContext context) {
-    // TweenAnimationBuilder animates from wherever the zoom currently is to the
-    // new end, so a ratio tapped mid-animation retargets smoothly. Overlays get
-    // the end state once (onPreviewCalculated), not a value per frame — only
-    // the preview itself moves, so the camera chrome isn't rebuilt every frame.
-    return TweenAnimationBuilder<double>(
-      builder: (context, zoom, child) {
+    // Animates the frame's on-screen SIZE, not its zoom: when a ratio change
+    // also reshapes the frame (Android 16:9 ↔ 4:3) the box — and the black bars
+    // around it — slide to the new shape instead of snapping, while the frame
+    // covers the box undistorted. TweenAnimationBuilder animates from wherever
+    // the size currently is, so a ratio tapped mid-animation retargets
+    // smoothly. Overlays get the end state once (onPreviewCalculated), not a
+    // value per frame, so the camera chrome isn't rebuilt every frame.
+    return TweenAnimationBuilder<Size>(
+      builder: (context, contentSize, child) {
         return PreviewFitWidget(
           alignment: widget.alignment,
           constraints: widget.constraints,
           previewFit: widget.previewFit,
           previewSize: widget.previewSize,
-          scale: zoom,
+          contentSize: contentSize,
           maxSize: maxSize!,
           previewPadding: widget.previewPadding,
           child: child!,
         );
       },
-      tween: Tween<double>(end: sizeCalculator!.zoom),
-      duration: _zoomDuration,
-      curve: Curves.easeInOut,
+      tween: Tween<Size>(end: _contentSize),
+      duration: _resizeDuration,
+      curve: kCameraRatioTransitionCurve,
       child: widget.child,
     );
   }
@@ -163,7 +173,10 @@ class PreviewFitWidget extends StatelessWidget {
   final CameraPreviewFit previewFit;
   final PreviewSize previewSize;
   final Widget child;
-  final double scale;
+
+  /// The frame's on-screen size. Normally [previewSize] scaled; mid-transition
+  /// it can have another shape, which the frame then covers.
+  final Size contentSize;
   final Size maxSize;
   final EdgeInsets? previewPadding;
 
@@ -174,19 +187,22 @@ class PreviewFitWidget extends StatelessWidget {
     required this.previewFit,
     required this.previewSize,
     required this.child,
-    required this.scale,
+    required this.contentSize,
     required this.maxSize,
     this.previewPadding,
   });
 
   @override
   Widget build(BuildContext context) {
-    final contentWidth = previewSize.width * scale;
-    final contentHeight = previewSize.height * scale;
+    final contentWidth = contentSize.width;
+    final contentHeight = contentSize.height;
 
-    // The scaled frame, clipped to the available space: when the capture crop
-    // zooms it past the edges (16:9 from a 4:3 frame) the overflow is cropped
-    // evenly, like the still. This tree is the same widget types every build —
+    // The frame, clipped to the available space: when the capture crop zooms it
+    // past the edges (16:9 from a 4:3 frame) the overflow is cropped evenly,
+    // like the still. `cover` keeps the frame's own shape when the box is
+    // mid-way between two shapes (Android's 16:9 ↔ 4:3 transition), cropping
+    // instead of stretching; at rest the box has the frame's shape, so it is an
+    // exact fit. This tree is the same widget types every build —
     // it used to be an InteractiveViewer keyed with a fresh UniqueKey(), which
     // re-parented the native preview platform view on every rebuild, and an
     // animated zoom rebuilds every frame.
@@ -208,7 +224,7 @@ class PreviewFitWidget extends StatelessWidget {
               minHeight: contentHeight,
               maxHeight: contentHeight,
               child: FittedBox(
-                fit: BoxFit.fill,
+                fit: BoxFit.cover,
                 child: SizedBox(
                   width: previewSize.width,
                   height: previewSize.height,

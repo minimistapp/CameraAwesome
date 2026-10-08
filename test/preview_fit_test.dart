@@ -145,6 +145,29 @@ void main() {
       expect(viewport.left - frame.left, closeTo(65, 0.01));
     });
 
+    testWidgets('a ratio change that also reshapes the frame animates, without distorting it (Android)', (tester) async {
+      // A phone-sized surface, so the 844-tall fixture isn't clipped by the default 800x600.
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      // Android binds 16:9 natively: 16:9 → 4:3 brings a 1080x1920 frame to 1440x1920.
+      await tester.pumpWidget(fit(CameraAspectRatios.ratio_16_9, frame: PreviewSize(width: 1080, height: 1920)));
+      expect(tester.getSize(find.byType(ClipRect)).height, closeTo(693.33, 0.01));
+
+      await tester.pumpWidget(fit(CameraAspectRatios.ratio_4_3));
+      await tester.pump(const Duration(milliseconds: 150));
+      // The box — and so the black bars around it — is mid-way between the shapes...
+      final midway = tester.getSize(find.byType(ClipRect)).height;
+      expect(midway, greaterThan(520));
+      expect(midway, lessThan(693.33));
+      // ...while the frame inside keeps the new frame's 3:4 shape (cover), not the box's.
+      final frame = tester.getSize(find.byType(_MountCounter));
+      expect(frame.width / frame.height, closeTo(1440 / 1920, 0.001));
+
+      await tester.pumpAndSettle();
+      expect(tester.getSize(find.byType(ClipRect)).height, closeTo(520, 0.01));
+    });
+
     testWidgets('a new frame size snaps instead of animating', (tester) async {
       await tester.pumpWidget(fit(CameraAspectRatios.ratio_4_3));
       await tester.pumpWidget(fit(CameraAspectRatios.ratio_4_3, frame: PreviewSize(width: 1080, height: 1920)));

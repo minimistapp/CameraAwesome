@@ -180,13 +180,22 @@ class CamerawesomePlugin {
   /// `camerawesome/qrcodes` channel with [listenQrCodes]: the native side
   /// sends a QR as a plain string and barcodes as a map.
   ///
-  /// Each event is every barcode in the current frame; an empty list means
-  /// they left the frame. iOS-only, like [listenQrCodes].
+  /// Each event is the barcodes the hardware reader reported in one callback.
+  /// `AVCaptureMetadataOutput` decodes at most one 1D code per callback
+  /// (Apple TN2325), so in practice this is the one code in view. An empty
+  /// list means none were reported — but the reader isn't guaranteed to call
+  /// back once a code leaves the frame, so consumers should also drop a
+  /// barcode that stops being reported. iOS-only, like [listenQrCodes].
+  ///
+  /// A malformed entry is skipped rather than failing the whole event.
   static Stream<List<NativeBarcode>> listenBarcodes() async* {
     if (!Platform.isIOS) return;
     yield* _machineReadableCodes().where((data) => data is Map).map((dynamic data) {
       final codes = (data as Map)['barcodes'] as List<dynamic>? ?? const [];
-      return codes.map((c) => NativeBarcode.fromMap(c as Map)).toList();
+      return [
+        for (final c in codes)
+          if (NativeBarcode.tryFromMap(c) case final barcode?) barcode,
+      ];
     });
   }
 
@@ -658,6 +667,18 @@ class NativeBarcode {
         format: map['format'] as String,
         corners: (map['corners'] as List<dynamic>).map((v) => (v as num).toDouble()).toList(),
       );
+
+  /// [fromMap], or null when [map] isn't a well-formed barcode entry.
+  static NativeBarcode? tryFromMap(Object? map) {
+    if (map is! Map) return null;
+    final value = map['value'];
+    final format = map['format'];
+    final corners = map['corners'];
+    if (value is! String || format is! String || corners is! List || corners.any((v) => v is! num)) {
+      return null;
+    }
+    return NativeBarcode.fromMap(map);
+  }
 
   final String value;
 

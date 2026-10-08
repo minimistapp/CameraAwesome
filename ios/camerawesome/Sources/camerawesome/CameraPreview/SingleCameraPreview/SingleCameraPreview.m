@@ -435,11 +435,15 @@ static NSString *CAMBarcodeFormatName(AVMetadataObjectType type) {
 /// Delivered by the hardware machine-readable-code reader on _dispatchQueue.
 /// Both kinds of event go to Dart over the "camerawesome/qrcodes" event channel:
 ///   - the first decoded QR string, as a plain `String` (the MIN-3077 contract);
-///   - every retail barcode in view, as `{"barcodes": [{value, format, corners}]}`
+///   - the retail barcodes the reader reported, as `{"barcodes": [{value, format, corners}]}`
+///     (the metadata reader decodes at most one 1D code per callback, TN2325)
 ///     where `corners` is a flat [x0, y0, x1, y1, …] list normalised to the
 ///     preview layer's bounds — i.e. to the on-screen preview rect, with the
 ///     layer's gravity, orientation and mirroring already applied. An empty list
-///     is sent once when the barcodes leave the frame.
+///     is sent when a callback reports none after some were visible — but the
+///     reader isn't guaranteed to call back once a code leaves the frame, so
+///     consumers time out a barcode that stops being reported (the app clears
+///     its highlight after 400 ms).
 /// The sink and the preview layer are only touched on the main thread, so hop
 /// there before either.
 - (void)captureOutput:(AVCaptureOutput *)output
@@ -503,8 +507,10 @@ static NSString *CAMBarcodeFormatName(AVMetadataObjectType type) {
       [flat addObject:@(point.x / size.width)];
       [flat addObject:@(point.y / size.height)];
     }
-    if (flat.count < 4) {
-      // A 1D code can come back with no corners; fall back to its bounds.
+    if (flat.count < 8) {
+      // Corners aren't guaranteed to be four points (and a 1D code can come
+      // back with none); anything short of a full quadrilateral falls back to
+      // the bounds.
       CGRect r = transformed.bounds;
       [flat setArray:@[
         @(CGRectGetMinX(r) / size.width), @(CGRectGetMinY(r) / size.height),

@@ -674,7 +674,9 @@ class NativeBarcode {
     final value = map['value'];
     final format = map['format'];
     final corners = map['corners'];
-    if (value is! String || format is! String || corners is! List || corners.any((v) => v is! num)) {
+    // The native side always sends a full quadrilateral (four points, falling
+    // back to the bounds), so anything else is malformed.
+    if (value is! String || format is! String || corners is! List || corners.length != 8 || corners.any((v) => v is! num)) {
       return null;
     }
     return NativeBarcode.fromMap(map);
@@ -685,7 +687,7 @@ class NativeBarcode {
   /// `ean13`, `ean8` or `upce`.
   final String format;
 
-  /// Flat `[x0, y0, x1, y1, …]`, each normalised (0–1) to the on-screen
-  /// preview rect.
+  /// Flat `[x0, y0, x1, y1, x2, y2, x3, y3]` — four points, each normalised
+  /// (0–1) to the on-screen preview rect.
   final List<double> corners;
 }

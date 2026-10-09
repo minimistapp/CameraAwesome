@@ -85,6 +85,10 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // initCameraPreview: and torn down / recreated on every sensor switch. Lets
   // us scan QR codes without running the CPU image-analysis stream.
   AVCaptureMetadataOutput *_metadataOutput;
+  // Whether the last metadata event carried a retail barcode, so the frame that
+  // loses it can tell Dart once (an empty list) instead of on every frame.
+  // Main queue only.
+  BOOL _barcodesVisible;
   // While recording, the analysis output must deliver 32BGRA regardless of the
   // requested analysis format: VideoController appends these same buffers
   // through an AVAssetWriterInputPixelBufferAdaptor pinned to 32BGRA, so a YUV
@@ -390,10 +394,25 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   [self attachPreviewLayerConnection];
 }
 
-#pragma mark - QR metadata delegate (MIN-3077)
+#pragma mark - QR + barcode metadata delegate (MIN-3077)
 
-/// Enable QR detection on the metadata output when the live connection offers
-/// it. Guarded because -setMetadataObjectTypes: throws if a type isn't in
+/// Retail 1D symbologies the hardware reader reports alongside QR, for the
+/// live barcode highlight. UPC-A has no type of its own on iOS: AVFoundation
+/// reports it as EAN-13 with a leading zero.
+static NSArray<AVMetadataObjectType> *CAMBarcodeMetadataTypes(void) {
+  return @[ AVMetadataObjectTypeEAN13Code, AVMetadataObjectTypeEAN8Code, AVMetadataObjectTypeUPCECode ];
+}
+
+static NSString *CAMBarcodeFormatName(AVMetadataObjectType type) {
+  if ([type isEqualToString:AVMetadataObjectTypeEAN13Code]) return @"ean13";
+  if ([type isEqualToString:AVMetadataObjectTypeEAN8Code]) return @"ean8";
+  if ([type isEqualToString:AVMetadataObjectTypeUPCECode]) return @"upce";
+  return nil;
+}
+
+/// Enable QR + retail barcode detection on the metadata output, restricted to
+/// the types the live connection offers. Guarded because
+/// -setMetadataObjectTypes: throws if a type isn't in
 /// availableMetadataObjectTypes, and that set can be transiently empty while a
 /// sensor switch is mid-configuration — so this is also re-applied after the
 /// commit in setSensor:.
@@ -401,44 +420,112 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   if (_metadataOutput == nil) {
     return;
   }
-  if ([_metadataOutput.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeQRCode]) {
-    _metadataOutput.metadataObjectTypes = @[AVMetadataObjectTypeQRCode];
+  NSArray<AVMetadataObjectType> *available = _metadataOutput.availableMetadataObjectTypes;
+  NSMutableArray<AVMetadataObjectType> *types = [NSMutableArray array];
+  for (AVMetadataObjectType type in [@[ AVMetadataObjectTypeQRCode ] arrayByAddingObjectsFromArray:CAMBarcodeMetadataTypes()]) {
+    if ([available containsObject:type]) {
+      [types addObject:type];
+    }
+  }
+  if (types.count > 0) {
+    _metadataOutput.metadataObjectTypes = types;
   }
 }
 
 /// Delivered by the hardware machine-readable-code reader on _dispatchQueue.
-/// Forwards the first decoded QR string to Dart over the "camerawesome/qrcodes"
-/// event channel. The sink is only ever touched on the main thread (matching
-/// the analysis stream's contract), so hop there before calling it.
+/// Both kinds of event go to Dart over the "camerawesome/qrcodes" event channel:
+///   - the first decoded QR string, as a plain `String` (the MIN-3077 contract);
+///   - the retail barcodes the reader reported, as `{"barcodes": [{value, format, corners}]}`
+///     (the metadata reader decodes at most one 1D code per callback, TN2325)
+///     where `corners` is a flat [x0, y0, x1, y1, …] list normalised to the
+///     preview layer's bounds — i.e. to the on-screen preview rect, with the
+///     layer's gravity, orientation and mirroring already applied. An empty list
+///     is sent when a callback reports none after some were visible — but the
+///     reader isn't guaranteed to call back once a code leaves the frame, so
+///     consumers time out a barcode that stops being reported (the app clears
+///     its highlight after 400 ms).
+/// The sink and the preview layer are only touched on the main thread, so hop
+/// there before either.
 - (void)captureOutput:(AVCaptureOutput *)output
     didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)metadataObjects
               fromConnection:(AVCaptureConnection *)connection {
   // Only touch qrCodeEventSink on the main queue (it's set/cleared there): this
   // delegate runs on _dispatchQueue, so the sink nil-check lives inside the
   // main-queue block below, not here (CodeRabbit, MIN-3077).
-  if (metadataObjects.count == 0) {
-    return;
-  }
   NSString *value = nil;
+  NSMutableArray<AVMetadataMachineReadableCodeObject *> *barcodes = [NSMutableArray array];
   for (AVMetadataObject *object in metadataObjects) {
     if (![object isKindOfClass:[AVMetadataMachineReadableCodeObject class]]) {
       continue;
     }
     AVMetadataMachineReadableCodeObject *code = (AVMetadataMachineReadableCodeObject *)object;
-    if ([code.type isEqualToString:AVMetadataObjectTypeQRCode] && code.stringValue.length > 0) {
-      value = code.stringValue;
-      break;
+    if (code.stringValue.length == 0) {
+      continue;
     }
-  }
-  if (value == nil) {
-    return;
+    if ([code.type isEqualToString:AVMetadataObjectTypeQRCode]) {
+      if (value == nil) value = code.stringValue;
+    } else if (CAMBarcodeFormatName(code.type) != nil) {
+      [barcodes addObject:code];
+    }
   }
   dispatch_async(dispatch_get_main_queue(), ^{
     FlutterEventSink sink = self.qrCodeEventSink;
-    if (sink != nil) {
+    if (sink == nil) {
+      return;
+    }
+    if (value != nil) {
       sink(value);
     }
+    if (barcodes.count == 0 && !self->_barcodesVisible) {
+      return;
+    }
+    self->_barcodesVisible = barcodes.count > 0;
+    sink(@{@"barcodes" : [self barcodePayloads:barcodes]});
   });
+}
+
+/// Map each barcode into preview-layer space and normalise by the layer's
+/// bounds. Main thread only (reads the preview layer).
+- (NSArray<NSDictionary *> *)barcodePayloads:(NSArray<AVMetadataMachineReadableCodeObject *> *)barcodes {
+  CGSize size = _previewLayer != nil ? _previewLayer.bounds.size : CGSizeZero;
+  if (size.width <= 0 || size.height <= 0) {
+    return @[];
+  }
+  NSMutableArray<NSDictionary *> *payloads = [NSMutableArray arrayWithCapacity:barcodes.count];
+  for (AVMetadataMachineReadableCodeObject *code in barcodes) {
+    AVMetadataObject *transformed = [_previewLayer transformedMetadataObjectForMetadataObject:code];
+    if (![transformed isKindOfClass:[AVMetadataMachineReadableCodeObject class]]) {
+      continue;
+    }
+    NSArray *corners = ((AVMetadataMachineReadableCodeObject *)transformed).corners;
+    NSMutableArray<NSNumber *> *flat = [NSMutableArray arrayWithCapacity:corners.count * 2];
+    for (id corner in corners) {
+      CGPoint point;
+      if (!CGPointMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)corner, &point)) {
+        continue;
+      }
+      [flat addObject:@(point.x / size.width)];
+      [flat addObject:@(point.y / size.height)];
+    }
+    if (flat.count < 8) {
+      // Corners aren't guaranteed to be four points (and a 1D code can come
+      // back with none); anything short of a full quadrilateral falls back to
+      // the bounds.
+      CGRect r = transformed.bounds;
+      [flat setArray:@[
+        @(CGRectGetMinX(r) / size.width), @(CGRectGetMinY(r) / size.height),
+        @(CGRectGetMaxX(r) / size.width), @(CGRectGetMinY(r) / size.height),
+        @(CGRectGetMaxX(r) / size.width), @(CGRectGetMaxY(r) / size.height),
+        @(CGRectGetMinX(r) / size.width), @(CGRectGetMaxY(r) / size.height),
+      ]];
+    }
+    [payloads addObject:@{
+      @"value" : code.stringValue,
+      @"format" : CAMBarcodeFormatName(code.type),
+      @"corners" : flat,
+    }];
+  }
+  return payloads;
 }
 
 /// Wire (or rewire) the native AVCaptureVideoPreviewLayer to the current video

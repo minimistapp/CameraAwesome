@@ -72,7 +72,7 @@ class CamerawesomePlugin {
 
   static Stream<Map<String, dynamic>>? _imagesStream;
 
-  static Stream<String>? _qrCodesStream;
+  static Stream<dynamic>? _qrCodesStream;
 
   static CameraRunningState currentState = CameraRunningState.stopped;
 
@@ -172,8 +172,35 @@ class CamerawesomePlugin {
   /// error).
   static Stream<String> listenQrCodes() async* {
     if (!Platform.isIOS) return;
-    yield* _qrCodesStream ??= _qrCodesChannel.receiveBroadcastStream('qrCodesChannel').map((dynamic data) => data as String);
+    yield* _machineReadableCodes().where((data) => data is String).cast<String>();
   }
+
+  /// Retail 1D barcodes (EAN-13/8, UPC-E; UPC-A arrives as EAN-13) in view of
+  /// the hardware reader, with their on-screen geometry. Shares the
+  /// `camerawesome/qrcodes` channel with [listenQrCodes]: the native side
+  /// sends a QR as a plain string and barcodes as a map.
+  ///
+  /// Each event is the barcodes the hardware reader reported in one callback.
+  /// `AVCaptureMetadataOutput` decodes at most one 1D code per callback
+  /// (Apple TN2325), so in practice this is the one code in view. An empty
+  /// list means none were reported — but the reader isn't guaranteed to call
+  /// back once a code leaves the frame, so consumers should also drop a
+  /// barcode that stops being reported. iOS-only, like [listenQrCodes].
+  ///
+  /// A malformed entry is skipped rather than failing the whole event.
+  static Stream<List<NativeBarcode>> listenBarcodes() async* {
+    if (!Platform.isIOS) return;
+    yield* _machineReadableCodes().where((data) => data is Map).map((dynamic data) {
+      final codes = (data as Map)['barcodes'] as List<dynamic>? ?? const [];
+      return [
+        for (final c in codes)
+          if (NativeBarcode.tryFromMap(c) case final barcode?) barcode,
+      ];
+    });
+  }
+
+  static Stream<dynamic> _machineReadableCodes() =>
+      _qrCodesStream ??= _qrCodesChannel.receiveBroadcastStream('qrCodesChannel');
 
   static Stream<bool>? listenPermissionResult() {
     _permissionsStream ??= _permissionsChannel
@@ -628,4 +655,39 @@ class CamerawesomePlugin {
   static Future<void> setMirrorFrontCamera(bool mirrorFrontCamera) {
     return CameraInterface().setMirrorFrontCamera(mirrorFrontCamera);
   }
+}
+
+/// A barcode decoded by the iOS hardware reader (see
+/// [CamerawesomePlugin.listenBarcodes]).
+class NativeBarcode {
+  const NativeBarcode({required this.value, required this.format, required this.corners});
+
+  factory NativeBarcode.fromMap(Map<dynamic, dynamic> map) => NativeBarcode(
+        value: map['value'] as String,
+        format: map['format'] as String,
+        corners: (map['corners'] as List<dynamic>).map((v) => (v as num).toDouble()).toList(),
+      );
+
+  /// [fromMap], or null when [map] isn't a well-formed barcode entry.
+  static NativeBarcode? tryFromMap(Object? map) {
+    if (map is! Map) return null;
+    final value = map['value'];
+    final format = map['format'];
+    final corners = map['corners'];
+    // The native side always sends a full quadrilateral (four points, falling
+    // back to the bounds), so anything else is malformed.
+    if (value is! String || format is! String || corners is! List || corners.length != 8 || corners.any((v) => v is! num)) {
+      return null;
+    }
+    return NativeBarcode.fromMap(map);
+  }
+
+  final String value;
+
+  /// `ean13`, `ean8` or `upce`.
+  final String format;
+
+  /// Flat `[x0, y0, x1, y1, x2, y2, x3, y3]` — four points, each normalised
+  /// (0–1) to the on-screen preview rect.
+  final List<double> corners;
 }

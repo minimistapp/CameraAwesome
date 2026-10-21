@@ -66,6 +66,9 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
           completion(@(NO), [FlutterError errorWithCode:@"VIDEO_ERROR" message:@"impossible to completely write video" details:@""]);
         }
       }];
+    } else {
+      // Stopped before a single video frame arrived: nothing was written.
+      completion(@(NO), [FlutterError errorWithCode:@"VIDEO_ERROR" message:@"no video frame was recorded" details:@""]);
     }
   } else {
     completion(@(NO), [FlutterError errorWithCode:@"VIDEO_ERROR" message:@"video is not recording" details:@""]);
@@ -233,13 +236,21 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
     return;
   }
   
-  CFRetain(sampleBuffer);
   CMTime currentSampleTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
-  
+
   if (_videoWriter.status != AVAssetWriterStatusWriting) {
+    // The file starts at the first video frame (MIN-4185). Audio reaches the
+    // delegate first, and starting the session on it left every recording
+    // with ~0.7 s of no picture: a black opening when played, and no frame at
+    // 0 s for a poster (AVAssetImageGenerator then fails).
+    if (output != captureVideoOutput) {
+      return;
+    }
     [_videoWriter startWriting];
     [_videoWriter startSessionAtSourceTime:currentSampleTime];
   }
+
+  CFRetain(sampleBuffer);
   
   if (output == captureVideoOutput) {
     if (_videoIsDisconnected) {

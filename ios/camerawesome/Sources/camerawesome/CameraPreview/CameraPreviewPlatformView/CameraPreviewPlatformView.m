@@ -191,11 +191,6 @@ static AVCaptureVideoOrientation CAMVideoOrientationFromInterface(UIInterfaceOri
     [self layoutFilteredLayer];
     [CATransaction commit];
   }
-  // A mode-switch freeze (MIN-4185) must stay over any layer attached above.
-  UIView *freeze = [self viewWithTag:CAMPreviewFreezeViewTag];
-  if (freeze != nil) {
-    [self bringSubviewToFront:freeze];
-  }
 }
 
 - (void)dealloc {

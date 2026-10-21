@@ -119,7 +119,15 @@ AVCaptureMetadataOutputObjectsDelegate>
 - (void)setPhysicalButtonEventSink:(FlutterEventSink)physicalButtonEventSink;
 - (void)setPreviewSize:(CGSize)previewSize error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error;
 - (void)setFlashMode:(CameraFlashMode)flashMode error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error;
+/// Reconfigures the session on the capture queue and returns at once
+/// (MIN-4185); -runAfterSessionWork: runs after it.
 - (void)setCaptureMode:(CaptureModes)captureMode error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error;
+/// Runs [block] on the main queue once every session change queued so far
+/// (a capture-mode switch) has been applied.
+- (void)runAfterSessionWork:(dispatch_block_t)block;
+/// A small blurred copy of the next preview frame, {width, height, pixels
+/// (RGBA)}, on the main queue — nil when none arrives within 250 ms (MIN-4185).
+- (void)captureFreezeFrameWithWidth:(CGFloat)width completion:(void (^)(NSDictionary *_Nullable))completion;
 - (void)setCameraPreset:(CGSize)currentPreviewSize;
 - (void)setRecordingAudioMode:(bool)enableAudio completion:(void(^)(NSNumber *_Nullable, FlutterError *_Nullable))completion;
 - (void)pauseVideoRecording;

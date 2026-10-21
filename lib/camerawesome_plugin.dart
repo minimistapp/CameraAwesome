@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:camerawesome/camerawesome_plugin.dart';
 import 'package:camerawesome/pigeon.dart';
@@ -476,27 +477,24 @@ class CamerawesomePlugin {
   static const MethodChannel _previewFreezeChannel =
       MethodChannel('camerawesome/preview_freeze');
 
-  /// Covers the iOS preview with a blurred still of what it shows now, ahead
-  /// of a capture-mode switch (MIN-4185): the switch reconfigures the session,
-  /// and the native preview layer stalls and then letterboxes the new format
-  /// until the app re-lays it out. Reveal with [unfreezePreview] once the new
-  /// session is laid out (a 2.5 s native backstop reveals regardless).
-  ///
-  /// Android covers its own preview on a capture-mode switch and reveals when
-  /// the new stream is on screen, so this is a no-op there. Returns whether a
-  /// still is up.
-  static Future<bool> freezePreview() async {
-    if (!Platform.isIOS) return false;
-    return await _previewFreezeChannel.invokeMethod<bool>('freeze') ?? false;
+  /// A small blurred copy of what the preview shows now, [width] px wide —
+  /// the still a photo/video switch runs under (MIN-4185, [PreviewFreeze]).
+  /// Null when nothing is on screen, or no frame came in time.
+  static Future<ui.Image?> capturePreviewStill({int width = 120}) async {
+    final frame = await _previewFreezeChannel.invokeMapMethod<String, Object?>('capture', width);
+    if (frame == null) return null;
+    final pixels = frame['pixels'];
+    final frameWidth = frame['width'];
+    final frameHeight = frame['height'];
+    if (pixels is! Uint8List || frameWidth is! int || frameHeight is! int) return null;
+    final image = Completer<ui.Image>();
+    ui.decodeImageFromPixels(pixels, frameWidth, frameHeight, ui.PixelFormat.rgba8888, image.complete);
+    return image.future;
   }
 
-  /// Fades the [freezePreview] still out over [fade]. iOS only.
-  static Future<void> unfreezePreview({
-    Duration fade = const Duration(milliseconds: 250),
-  }) {
-    if (!Platform.isIOS) return Future.value();
-    return _previewFreezeChannel.invokeMethod('unfreeze', fade.inMilliseconds);
-  }
+  /// Completes once the session has applied a capture-mode switch queued
+  /// before it and the preview shows the new stream (MIN-4185).
+  static Future<void> previewSettled() => _previewFreezeChannel.invokeMethod('settled');
 
   static const MethodChannel _closeRangeScanChannel =
       MethodChannel('camerawesome/close_range_scan');

@@ -82,6 +82,7 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> with Widgets
     // Re-query the preview size on window metric changes (notably rotation) so
     // the box tracks the orientation the native preview now follows. (MIN-2437)
     WidgetsBinding.instance.addObserver(this);
+    PreviewFreeze.instance.addListener(_onFreezeChanged);
     Future.wait([
       widget.state.previewSize(0),
       _loadTextures(),
@@ -106,25 +107,46 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> with Widgets
       _aspectRatioSubscription?.cancel();
       _aspectRatioSubscription =
           sensorConfig.aspectRatio$.listen((event) async {
+        // Mid photo/video switch the geometry waits for the new session
+        // (_settleGeometry reads it all then).
+        if (PreviewFreeze.instance.holdsGeometry) return;
         final previewSize = await widget.state.previewSize(0);
         if ((_previewSize != previewSize || _aspectRatio != event) && mounted) {
           setState(() {
-            _aspectRatio = event;
-            switch (event) {
-              case CameraAspectRatios.ratio_16_9:
-                _aspectRatioValue = 16 / 9;
-                break;
-              case CameraAspectRatios.ratio_4_3:
-                _aspectRatioValue = 4 / 3;
-                break;
-              case CameraAspectRatios.ratio_1_1:
-                _aspectRatioValue = 1;
-                break;
-            }
+            _setAspectRatio(event);
             _previewSize = previewSize;
           });
         }
       });
+    });
+  }
+
+  void _setAspectRatio(CameraAspectRatios ratio) {
+    _aspectRatio = ratio;
+    _aspectRatioValue = switch (ratio) {
+      CameraAspectRatios.ratio_16_9 => 16 / 9,
+      CameraAspectRatios.ratio_4_3 => 4 / 3,
+      CameraAspectRatios.ratio_1_1 => 1,
+    };
+  }
+
+  /// A photo/video switch (MIN-4185): once the new session is on screen,
+  /// re-read its frame and ratio and animate the box to them under the still
+  /// ([AnimatedPreviewFit.transition]).
+  void _onFreezeChanged() {
+    if (!mounted) return;
+    if (PreviewFreeze.instance.phase == PreviewFreezePhase.settling) {
+      unawaited(_settleGeometry());
+    }
+    setState(() {});
+  }
+
+  Future<void> _settleGeometry() async {
+    final previewSize = await widget.state.previewSize(0);
+    if (!mounted || previewSize.width <= 0 || previewSize.height <= 0) return;
+    setState(() {
+      _setAspectRatio(widget.state.sensorConfig.aspectRatio);
+      _previewSize = previewSize;
     });
   }
 
@@ -169,7 +191,7 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> with Widgets
   /// against a zero size (camera not yet bound / torn down) so a stale-but-valid
   /// size is never clobbered.
   Future<void> _refreshPreviewSize() async {
-    if (!mounted) return;
+    if (!mounted || PreviewFreeze.instance.holdsGeometry) return;
     final previewSize = await widget.state.previewSize(0);
     if (mounted && previewSize != _previewSize && previewSize.width > 0 && previewSize.height > 0) {
       setState(() => _previewSize = previewSize);
@@ -187,6 +209,9 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> with Widgets
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    PreviewFreeze.instance
+      ..removeListener(_onFreezeChanged)
+      ..reset();
     _sensorConfigSubscription?.cancel();
     _aspectRatioSubscription?.cancel();
     super.dispose();
@@ -219,6 +244,7 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> with Widgets
                   previewFit: widget.previewFit,
                   previewSize: effectivePreviewSize,
                   captureAspectRatio: _aspectRatio,
+                  transition: PreviewFreeze.instance.isSettling,
                   previewPadding: widget.padding,
                   constraints: constraints,
                   sensor: widget.state.sensorConfig.sensors.first,
@@ -254,7 +280,7 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> with Widgets
                         final filter = snapshot.data;
                         final filterActive =
                             filter != null && !filter.isIdentity;
-                        final preview = _buildMainPreview();
+                        Widget preview = _buildMainPreview();
                         // ColorFiltered can't tint a PlatformView — on the
                         // native-preview path the filter is rendered natively
                         // instead (iOS: filtered display layer; Android: a GPU
@@ -262,12 +288,16 @@ class AwesomeCameraPreviewState extends State<AwesomeCameraPreview> with Widgets
                         // MIN-3655), so the wrapper applies only when the
                         // on-screen preview IS the Flutter Texture (multicam /
                         // analysis-only).
-                        return filterActive && !_usesNativePreview
-                            ? ColorFiltered(
-                                colorFilter: filter.preview,
-                                child: preview,
-                              )
-                            : preview;
+                        if (filterActive && !_usesNativePreview) {
+                          preview = ColorFiltered(colorFilter: filter.preview, child: preview);
+                        }
+                        // The photo/video switch still (MIN-4185) lies on
+                        // the frame itself, so it resizes with it. Always in
+                        // the tree, so the platform view never re-parents.
+                        return Stack(
+                          fit: StackFit.expand,
+                          children: [preview, const PreviewFreezeOverlay()],
+                        );
                       },
                     ),
                   ),

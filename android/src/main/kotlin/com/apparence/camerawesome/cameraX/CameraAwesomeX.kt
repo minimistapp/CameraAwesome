@@ -42,6 +42,7 @@ import io.flutter.embedding.engine.plugins.FlutterPlugin.FlutterPluginBinding
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.plugin.common.EventChannel
+import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.TextureRegistry
 import io.reactivex.rxjava3.disposables.Disposable
 import io.reactivex.rxjava3.subjects.BehaviorSubject
@@ -398,6 +399,8 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
     override fun setOnPreviewViewRecreated(listener: (() -> Unit)?) {
         onPreviewViewRecreated = listener
     }
+
+    private val switchStill = PreviewSwitchStill { currentPreviewView() }
 
     /// Single-slot hook fired right before an aspect-ratio rebind — see
     /// [PreviewViewProvider.setOnPreviewRestarting].
@@ -875,10 +878,6 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
 
     @SuppressLint("RestrictedApi")
     override fun setCaptureMode(mode: String) {
-        // A photo/video switch rebinds the use cases like a 16:9 ↔ 4:3 change
-        // does (MIN-4185): cover the preview with the blurred freeze-frame
-        // first, revealed once the new stream is on screen.
-        onPreviewRestarting?.invoke()
         cameraState.apply {
             setCaptureMode(CaptureModes.valueOf(mode))
             updateLifecycle(activity!!)
@@ -1005,6 +1004,15 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
         EventChannel(binding.binaryMessenger, "camerawesome/physical_button").setStreamHandler(
             physicalButtonHandler
         )
+        // Photo/video switch (MIN-4185): the blurred still the app covers the
+        // preview with, and when the new stream is on screen.
+        MethodChannel(binding.binaryMessenger, "camerawesome/preview_freeze").setMethodCallHandler { call, result ->
+            when (call.method) {
+                "capture" -> result.success(switchStill.capture((call.arguments as? Number)?.toInt() ?: 120))
+                "settled" -> switchStill.settled(result)
+                else -> result.notImplemented()
+            }
+        }
         // Native preview platform view (MIN-2406, Android parity with iOS). The
         // factory reads the current PreviewView from this plugin on demand.
         binding.platformViewRegistry.registerViewFactory(
@@ -1014,6 +1022,7 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
     }
 
     override fun onDetachedFromEngine(binding: FlutterPluginBinding) {
+        switchStill.dispose()
         this.binding = null
     }
 

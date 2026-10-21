@@ -875,6 +875,10 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
 
     @SuppressLint("RestrictedApi")
     override fun setCaptureMode(mode: String) {
+        // A photo/video switch rebinds the use cases like a 16:9 ↔ 4:3 change
+        // does (MIN-4185): cover the preview with the blurred freeze-frame
+        // first, revealed once the new stream is on screen.
+        onPreviewRestarting?.invoke()
         cameraState.apply {
             setCaptureMode(CaptureModes.valueOf(mode))
             updateLifecycle(activity!!)

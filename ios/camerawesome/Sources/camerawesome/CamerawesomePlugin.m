@@ -40,6 +40,9 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
 /// MIN-3655: the mounted preview container, weakly held so a filter toggle
 /// can request the layout pass that (de)attaches the filtered overlay.
 @property(nonatomic, weak, nullable) UIView *previewContainerView;
+/// MIN-4185: the blurred still covering the preview through a photo/video
+/// switch, until the app reveals the new session.
+@property(nonatomic, strong, nullable) UIView *previewFreezeView;
 /// Survives camera (re)setup: storing the override here means a fresh
 /// SingleCameraPreview / MultiCameraPreview created by setupCamera can be
 /// initialised with the most recently requested value rather than starting
@@ -57,6 +60,8 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
 /// like captureOrientationOverride. Cleared by the screens on dispose.
 @property(nonatomic, assign) BOOL closeRangeScanModeRequested;
 - (instancetype)init:(NSObject<FlutterPluginRegistrar>*)registrar;
+- (BOOL)freezePreview;
+- (void)unfreezePreviewWithDuration:(NSTimeInterval)duration;
 @end
 
 // TODO: create a protocol to uniformize multi camera & single camera
@@ -124,6 +129,28 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
   [previewOrientationChannel setMethodCallHandler:^(FlutterMethodCall *call, FlutterResult result) {
     if ([call.method isEqualToString:@"setPreviewOrientationOverride"]) {
       [weakInstance setPreviewOrientationOverrideFromString:call.arguments];
+      result(nil);
+    } else {
+      result(FlutterMethodNotImplemented);
+    }
+  }];
+
+  // Photo/video switch freeze (MIN-4185). A plain method channel like the two
+  // above. Switching capture mode reconfigures the session (a new format; the
+  // microphone for video): the preview layer stalls, then letterboxes the new
+  // format inside a box Flutter sized for the old one until the app re-lays it
+  // out. The app freezes the preview first — a snapshot of the composited
+  // layer (the only way to capture AVCaptureVideoPreviewLayer content) under a
+  // blur — and reveals once the new session is laid out.
+  FlutterMethodChannel *previewFreezeChannel =
+      [FlutterMethodChannel methodChannelWithName:@"camerawesome/preview_freeze"
+                                  binaryMessenger:[registrar messenger]];
+  [previewFreezeChannel setMethodCallHandler:^(FlutterMethodCall *call, FlutterResult result) {
+    if ([call.method isEqualToString:@"freeze"]) {
+      result(@([weakInstance freezePreview]));
+    } else if ([call.method isEqualToString:@"unfreeze"]) {
+      NSNumber *durationMs = [call.arguments isKindOfClass:[NSNumber class]] ? call.arguments : @250;
+      [weakInstance unfreezePreviewWithDuration:durationMs.doubleValue / 1000.0];
       result(nil);
     } else {
       result(FlutterMethodNotImplemented);
@@ -1040,6 +1067,80 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
 
 - (void)registerPreviewContainerView:(UIView *)containerView {
   self.previewContainerView = containerView;
+}
+
+#pragma mark - Mode-switch freeze (MIN-4185)
+
+/// Covers the preview with a blurred snapshot of what it shows now. Returns NO
+/// when there is nothing on screen to freeze. A second call while frozen keeps
+/// the still already up — the preview behind it is mid-switch.
+- (BOOL)freezePreview {
+  UIView *container = self.previewContainerView;
+  if (container == nil || container.window == nil) {
+    return NO;
+  }
+  UIView *existing = self.previewFreezeView;
+  if (existing != nil) {
+    [existing.layer removeAllAnimations];
+    existing.alpha = 1;
+    [self scheduleFreezeTimeout];
+    return YES;
+  }
+  UIView *snapshot = [container snapshotViewAfterScreenUpdates:NO];
+  if (snapshot == nil) {
+    return NO;
+  }
+  UIView *freeze = [[UIView alloc] initWithFrame:container.bounds];
+  freeze.tag = CAMPreviewFreezeViewTag;
+  freeze.userInteractionEnabled = NO;
+  freeze.backgroundColor = [UIColor blackColor];
+  // Keeps its size and stays centred while Flutter resizes the container to
+  // the new format: the live preview grows (or shrinks) behind the still
+  // instead of the still stretching with it.
+  freeze.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin |
+                            UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
+  snapshot.frame = freeze.bounds;
+  [freeze addSubview:snapshot];
+  UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleDark]];
+  blur.frame = freeze.bounds;
+  blur.alpha = 0;
+  [freeze addSubview:blur];
+  [container addSubview:freeze];
+  self.previewFreezeView = freeze;
+  [UIView animateWithDuration:0.12 animations:^{
+    blur.alpha = 1;
+  }];
+  [self scheduleFreezeTimeout];
+  return YES;
+}
+
+/// Fades the still out over [duration] seconds, revealing the live preview.
+- (void)unfreezePreviewWithDuration:(NSTimeInterval)duration {
+  [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(unfreezeAfterTimeout) object:nil];
+  UIView *freeze = self.previewFreezeView;
+  if (freeze == nil) {
+    return;
+  }
+  self.previewFreezeView = nil;
+  [UIView animateWithDuration:duration
+                        delay:0
+                      options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState
+                   animations:^{
+                     freeze.alpha = 0;
+                   }
+                   completion:^(BOOL finished) {
+                     [freeze removeFromSuperview];
+                   }];
+}
+
+/// Never leave a stale still up if the app never reveals (a failed switch).
+- (void)scheduleFreezeTimeout {
+  [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(unfreezeAfterTimeout) object:nil];
+  [self performSelector:@selector(unfreezeAfterTimeout) withObject:nil afterDelay:2.5];
+}
+
+- (void)unfreezeAfterTimeout {
+  [self unfreezePreviewWithDuration:0.25];
 }
 
 #pragma mark - Multi camera methods

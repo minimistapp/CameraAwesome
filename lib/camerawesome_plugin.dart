@@ -473,6 +473,31 @@ class CamerawesomePlugin {
     );
   }
 
+  static const MethodChannel _previewFreezeChannel =
+      MethodChannel('camerawesome/preview_freeze');
+
+  /// Covers the iOS preview with a blurred still of what it shows now, ahead
+  /// of a capture-mode switch (MIN-4185): the switch reconfigures the session,
+  /// and the native preview layer stalls and then letterboxes the new format
+  /// until the app re-lays it out. Reveal with [unfreezePreview] once the new
+  /// session is laid out (a 2.5 s native backstop reveals regardless).
+  ///
+  /// Android covers its own preview on a capture-mode switch and reveals when
+  /// the new stream is on screen, so this is a no-op there. Returns whether a
+  /// still is up.
+  static Future<bool> freezePreview() async {
+    if (!Platform.isIOS) return false;
+    return await _previewFreezeChannel.invokeMethod<bool>('freeze') ?? false;
+  }
+
+  /// Fades the [freezePreview] still out over [fade]. iOS only.
+  static Future<void> unfreezePreview({
+    Duration fade = const Duration(milliseconds: 250),
+  }) {
+    if (!Platform.isIOS) return Future.value();
+    return _previewFreezeChannel.invokeMethod('unfreeze', fade.inMilliseconds);
+  }
+
   static const MethodChannel _closeRangeScanChannel =
       MethodChannel('camerawesome/close_range_scan');
 

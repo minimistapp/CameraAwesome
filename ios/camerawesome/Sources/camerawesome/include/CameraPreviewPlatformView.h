@@ -16,6 +16,10 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+/// Tag of the freeze overlay (MIN-4185) inside the preview container: the
+/// container keeps it above the preview layers it (re)attaches.
+static const NSInteger CAMPreviewFreezeViewTag = 0x4185;
+
 /// Supplies the live preview layer to a platform view on demand. Implemented by
 /// CamerawesomePlugin so the factory/view stay decoupled from camera ownership
 /// and always read the *current* layer (SingleCameraPreview recreates it on

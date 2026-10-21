@@ -1015,7 +1015,7 @@ static const int32_t kStreamingMaxFps = 30;
   // filtered display layer consumes these frames, so the data output must
   // keep producing them even when neither analysis nor recording does.
   BOOL shouldFeed = _imageStreamController.streamImages || _videoController.isRecording || self.previewFilterActive ||
-                    _freezeFrameCompletion != nil;
+                    _freezeFrameCompletion != nil || _captureMode == Video;
   if (_captureConnection != nil && _captureConnection.isEnabled != shouldFeed) {
     _captureConnection.enabled = shouldFeed;
   }
@@ -1309,7 +1309,8 @@ static const int32_t kStreamingMaxFps = 30;
 /// nv21 (YUV) analysis format once the video writer no longer consumes the
 /// data-output buffers. No-op for BGRA streams (the flag is only set for nv21).
 - (void)clearForceBGRAAnalysisForRecording {
-  if (!_forceBGRAAnalysisForRecording) {
+  // Video mode keeps it armed for the next recording (-setCaptureMode:).
+  if (!_forceBGRAAnalysisForRecording || _captureMode == Video) {
     return;
   }
   _forceBGRAAnalysisForRecording = NO;
@@ -2304,6 +2305,12 @@ static const int32_t kStillLongEdgeTarget = 4032;
   // animation stalled. -runAfterSessionWork: queues behind it.
   dispatch_async(_dispatchQueue, ^{
     [self->_captureSession beginConfiguration];
+    // Video mode arms what a recording needs from the data output up front —
+    // BGRA buffers (MIN-3084) and the connection on (MIN-3077) — inside this
+    // switch, under the app's still. Flipping them as a recording starts and
+    // stops reconfigured the running session, and the preview blinked black.
+    self->_forceBGRAAnalysisForRecording = captureMode == Video && self->_requestedAnalysisFormat == nv21;
+    [self updateAnalysisConnectionState];
     // Re-run the session config for the new mode (MIN-3098): Photo/Preview
     // picks the tuned low-power preview format (+ video-HDR off, fps cap);
     // Video restores the full-quality video preset (+ auto HDR). Without this
@@ -2504,7 +2511,10 @@ static const int32_t kStillLongEdgeTarget = 4032;
     // BGRA-only forward guard and the recording would complete "successfully"
     // as an empty file. Skip the session reconfigure entirely for the common
     // BGRA-stream case.
-    if (_requestedAnalysisFormat == nv21) {
+    // Video mode normally has it armed already (-setCaptureMode:), so this
+    // reconfigures nothing.
+    NSNumber *current = _captureVideoOutput.videoSettings[(NSString *)kCVPixelBufferPixelFormatTypeKey];
+    if (_requestedAnalysisFormat == nv21 && (current == nil || current.unsignedIntValue != kCVPixelFormatType_32BGRA)) {
       _forceBGRAAnalysisForRecording = YES;
       [self applyAnalysisOutputDownscale];
       NSNumber *applied = _captureVideoOutput.videoSettings[(NSString *)kCVPixelBufferPixelFormatTypeKey];

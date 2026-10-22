@@ -40,6 +40,9 @@ typedef void(^OnVideoWriterSetup)(void);
 - (instancetype)init;
 - (void)recordVideoAtPath:(NSString *)path captureDevice:(AVCaptureDevice *)device orientation:(NSInteger)orientation audioSetupCallback:(OnAudioSetup)audioSetupCallback videoWriterCallback:(OnVideoWriterSetup)videoWriterCallback options:(CupertinoVideoOptions *)options quality:(VideoRecordingQuality)quality completion:(nonnull void (^)(FlutterError * _Nullable))completion;
 - (void)stopRecordingVideo:(nonnull void (^)(NSNumber * _Nullable, FlutterError * _Nullable))completion;
+/// Starts the writer — slow, hundreds of ms — on the capture queue, ahead of
+/// the frames; the file begins on the first video frame after it (MIN-4185).
+- (void)startWriterForRecording;
 - (void)pauseVideoRecording;
 - (void)resumeVideoRecording;
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection captureVideoOutput:(AVCaptureVideoDataOutput *)captureVideoOutput;

@@ -853,6 +853,9 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
 /// (landscape) dims; the portrait capture connection rotates them on delivery,
 /// as before. We only downscale (never upscale), so a format already smaller
 /// than the target long edge (e.g. the 640x480 fallback) is left untouched.
+/// Long edge of the data-output buffers in video mode: the 720p recording's.
+static const int32_t kVideoBufferLongEdge = 1280;
+
 - (void)applyAnalysisOutputDownscale {
   if (_captureVideoOutput == nil || _captureDevice == nil) {
     return;
@@ -874,6 +877,11 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
   // the hard ceiling since we only ever downscale.
   const int32_t kTargetLongEdge = 1024;
   int32_t targetLongEdge = _requestedAnalysisLongEdge > 0 ? _requestedAnalysisLongEdge : kTargetLongEdge;
+  // In video mode these buffers ARE the recording (MIN-4185): never below the
+  // 720p file's long edge, or the writer upscales a 1024-wide frame.
+  if (_captureMode == Video) {
+    targetLongEdge = MAX(targetLongEdge, kVideoBufferLongEdge);
+  }
   int32_t g = SCPGreatestCommonDivisor(dims.width, dims.height);
   int32_t ratioW = dims.width / g;   // aspect in lowest terms
   int32_t ratioH = dims.height / g;
@@ -1480,26 +1488,19 @@ static const int32_t kStillLongEdgeTarget = 4032;
 
   // Determine the target size based on the current mode and settings
   if (_captureMode == Video || _videoController.isRecording) {
-      // If recording video, prioritize the recording quality setting
-      // TODO: Need a way to get the CGSize from the _recordingQuality enum or _videoOptions
-      // For now, let's assume a helper function or default high quality if direct mapping isn't obvious.
-      // Placeholder: If video options exist, try to use them, otherwise fall back.
-      // If no direct mapping, maybe use the highest available preset suitable for video?
-      // Or just pass CGSizeZero to let selectVideoCapturePreset pick the best for video?
-      // For now, let's pass CGSizeZero to select the best default for video capture.
-      if (_videoOptions != nil) {
-         // Hypothetical: Get size from VideoOptions quality. Needs actual implementation.
-         // targetSize = [CameraQualities sizeFromQuality:_recordingQuality];
-         // If no direct mapping, maybe use the highest available preset suitable for video?
-         // Or just pass CGSizeZero to let selectVideoCapturePreset pick the best for video?
-         // For now, let's pass CGSizeZero to select the best default for video capture.
-         targetSize = CGSizeZero; 
-      } else if (!CGSizeEqualToSize(currentPreviewSize, CGSizeZero)){
-         // Use provided size if valid and no video options
-         targetSize = currentPreviewSize;
-      } else {
-         // Fallback to best quality if no specific size or options given
-         targetSize = CGSizeZero;
+      // A video session streams the recording's own shape (MIN-4185): the
+      // writer takes the data output's frames, so the session format IS the
+      // video's aspect. 4:3 — chosen by the app for 4:3 screens, like the
+      // tablets' native camera — rides the same ~1920x1440 4:3 format as photo
+      // mode; 16:9 takes the 1080p preset. Either is ample for the 720p
+      // recording; the device's best preset (4K on most) used to run here,
+      // at near-recording heat for a 720p file.
+      if (_aspectRatio == Ratio4_3) {
+        forcedFormat = [self bestStreamingFourThreeFormat];
+      }
+      if (forcedFormat == nil) {
+        forcedPreset = [_captureSession canSetSessionPreset:AVCaptureSessionPreset1920x1080] ? AVCaptureSessionPreset1920x1080
+                                                                                              : AVCaptureSessionPreset1280x720;
       }
   } else {
       // Any live-preview session — streaming analysis or idle (MIN-3098). This
@@ -2554,6 +2555,10 @@ static const int32_t kStillLongEdgeTarget = 4032;
 
       recordingCompletion(nil);
     } options:_videoOptions quality: _recordingQuality completion:recordingCompletion];
+    // Off the main thread and ahead of the frames queued behind it (MIN-4185).
+    dispatch_async(_dispatchQueue, ^{
+      [self->_videoController startWriterForRecording];
+    });
   } else {
     completion([FlutterError errorWithCode:@"VIDEO_ERROR" message:@"already recording video" details:@""]);
   }

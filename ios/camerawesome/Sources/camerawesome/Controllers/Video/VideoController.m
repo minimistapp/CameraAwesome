@@ -9,7 +9,11 @@
 
 FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
 
-@implementation VideoController
+@implementation VideoController {
+  /// Whether the file's timeline has begun — on the first video frame after
+  /// the writer started (MIN-4185).
+  BOOL _sessionStarted;
+}
 
 - (instancetype)init {
   self = [super init];
@@ -26,6 +30,7 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
 - (void)recordVideoAtPath:(NSString *)path captureDevice:(AVCaptureDevice *)device orientation:(NSInteger)orientation audioSetupCallback:(OnAudioSetup)audioSetupCallback videoWriterCallback:(OnVideoWriterSetup)videoWriterCallback options:(CupertinoVideoOptions *)options quality:(VideoRecordingQuality)quality completion:(nonnull void (^)(FlutterError * _Nullable))completion {
   _options = options;
   _recordingQuality = quality;
+  _sessionStarted = NO;
   _orientation = orientation;
   _captureDevice = device;
   
@@ -58,7 +63,11 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
   
   if (_isRecording) {
     _isRecording = NO;
-    if (_videoWriter.status != AVAssetWriterStatusUnknown) {
+    if (_videoWriter.status == AVAssetWriterStatusWriting && !_sessionStarted) {
+      // Stopped before the first frame reached the file: nothing to finish.
+      [_videoWriter cancelWriting];
+      completion(@(NO), [FlutterError errorWithCode:@"VIDEO_ERROR" message:@"no video frame was recorded" details:@""]);
+    } else if (_videoWriter.status != AVAssetWriterStatusUnknown) {
       [_videoWriter finishWritingWithCompletionHandler:^{
         if (self->_videoWriter.status == AVAssetWriterStatusCompleted) {
           completion(@(YES), nil);
@@ -72,6 +81,17 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
     }
   } else {
     completion(@(NO), [FlutterError errorWithCode:@"VIDEO_ERROR" message:@"video is not recording" details:@""]);
+  }
+}
+
+- (void)startWriterForRecording {
+  if (_videoWriter.status != AVAssetWriterStatusUnknown) {
+    return;
+  }
+  [_videoWriter startWriting];
+  // Stopped while the writer was starting: the stop already answered.
+  if (!_isRecording && _videoWriter.status == AVAssetWriterStatusWriting) {
+    [_videoWriter cancelWriting];
   }
 }
 
@@ -238,16 +258,21 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
   
   CMTime currentSampleTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
 
+  // Still starting (-startWriterForRecording, queued ahead of these frames).
   if (_videoWriter.status != AVAssetWriterStatusWriting) {
-    // The file starts at the first video frame (MIN-4185). Audio reaches the
-    // delegate first, and starting the session on it left every recording
-    // with ~0.7 s of no picture: a black opening when played, and no frame at
-    // 0 s for a poster (AVAssetImageGenerator then fails).
+    return;
+  }
+  if (!_sessionStarted) {
+    // The file starts at the first video frame once the writer runs
+    // (MIN-4185). Starting it on the first audio sample opened every clip on
+    // ~0.7 s of black (and left no frame at 0 s for a poster); starting the
+    // writer itself here, in front of the frames, froze the first one for as
+    // long as -startWriting took (1.9 s on an iPad).
     if (output != captureVideoOutput) {
       return;
     }
-    [_videoWriter startWriting];
     [_videoWriter startSessionAtSourceTime:currentSampleTime];
+    _sessionStarted = YES;
   }
 
   CFRetain(sampleBuffer);
@@ -400,6 +425,13 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
       break;
   }
     
+  // A 4:3 session records 4:3 (MIN-4185): same height, 4:3 width — 960x720
+  // for HD. The frames are the session's, so a 16:9 file would stretch them.
+  if (_previewSize.width > 0 && _previewSize.height > 0 &&
+      MAX(_previewSize.width, _previewSize.height) / MIN(_previewSize.width, _previewSize.height) < 1.5) {
+    size = CGSizeMake(round(size.height * 4.0 / 3.0), size.height);
+  }
+
   // ensure video output size does not exceed capture session size
   if (size.width > _previewSize.width) {
     size = _previewSize;

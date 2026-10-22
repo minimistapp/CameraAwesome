@@ -1,4 +1,4 @@
-import 'dart:typed_data';
+import 'dart:async';
 
 import 'package:camerawesome/camerawesome_plugin.dart';
 import 'package:flutter/services.dart';
@@ -15,15 +15,19 @@ void main() {
   late List<String> calls;
   late bool hasFrame;
 
+  Completer<void>? settled;
+
   setUp(() {
     calls = [];
     hasFrame = true;
+    settled = null;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
       calls.add(call.method);
       if (call.method == 'capture') {
         if (!hasFrame) return null;
         return {'width': 2, 'height': 2, 'pixels': Uint8List.fromList(List.filled(16, 128))};
       }
+      if (call.method == 'settled') await settled?.future;
       return null;
     });
   });
@@ -124,5 +128,28 @@ void main() {
     expect(freeze.phase, PreviewFreezePhase.settling);
     await tester.pump(PreviewFreeze.revealDelay + PreviewFreeze.revealDuration);
     expect(freeze.phase, PreviewFreezePhase.idle);
+  });
+
+  testWidgets('a reveal still waiting when the backstop revealed does not reveal again', (tester) async {
+    hasFrame = false;
+    settled = Completer<void>();
+    await pumpOverlay(tester);
+    final covered = freeze.cover();
+    await tester.pump();
+    await tester.pump(PreviewFreeze.coverDuration);
+    await covered;
+
+    // The switch never settles in time: the backstop reveals and clears.
+    final revealed = freeze.reveal();
+    await tester.pump(const Duration(seconds: 3) - PreviewFreeze.coverDuration);
+    await tester.pump(PreviewFreeze.revealDelay + PreviewFreeze.revealDuration);
+    expect(freeze.phase, PreviewFreezePhase.idle);
+
+    // Then the native answer finally comes: nothing goes back over the preview.
+    settled!.complete();
+    await tester.pump();
+    await revealed;
+    expect(freeze.phase, PreviewFreezePhase.idle);
+    expect(find.byType(ColoredBox), findsNothing);
   });
 }

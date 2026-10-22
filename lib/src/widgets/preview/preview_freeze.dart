@@ -95,7 +95,9 @@ class PreviewFreeze extends ChangeNotifier {
     } catch (_) {
       // Reveal anyway.
     }
-    if (generation != _generation) return;
+    // The backstop may have revealed while this waited: a second reveal would
+    // bring the still back, or — once it's gone — cover the live preview.
+    if (generation != _generation || !holdsGeometry) return;
     await _reveal(generation);
   }
 

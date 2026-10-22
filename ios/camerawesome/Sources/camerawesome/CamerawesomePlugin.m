@@ -130,6 +130,41 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
     }
   }];
 
+  // Photo/video switch (MIN-4185). A plain method channel like the two above.
+  // The app covers the preview with a blurred still of its last frame through
+  // the switch, like the system camera: `capture` returns that still (the
+  // preview layer can't be snapshotted, so it comes from the data output) and
+  // `settled` answers once a queued capture-mode switch has been applied and
+  // the preview has had a beat to show the new format.
+  FlutterMethodChannel *previewFreezeChannel =
+      [FlutterMethodChannel methodChannelWithName:@"camerawesome/preview_freeze"
+                                  binaryMessenger:[registrar messenger]];
+  [previewFreezeChannel setMethodCallHandler:^(FlutterMethodCall *call, FlutterResult result) {
+    SingleCameraPreview *camera = weakInstance.camera;
+    if ([call.method isEqualToString:@"capture"]) {
+      NSNumber *width = [call.arguments isKindOfClass:[NSNumber class]] ? call.arguments : @120;
+      if (camera == nil) {
+        result(nil);
+        return;
+      }
+      [camera captureFreezeFrameWithWidth:width.doubleValue completion:^(NSDictionary *frame) {
+        result(frame);
+      }];
+    } else if ([call.method isEqualToString:@"settled"]) {
+      if (camera == nil) {
+        result(nil);
+        return;
+      }
+      [camera runAfterSessionWork:^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+          result(nil);
+        });
+      }];
+    } else {
+      result(FlutterMethodNotImplemented);
+    }
+  }];
+
   // Close-range scan bias for the field-scanner screens (MIN-3475). A plain
   // method channel for the same reason as preview_orientation above: one
   // iOS-only setter isn't worth regenerating the pigeon interface across

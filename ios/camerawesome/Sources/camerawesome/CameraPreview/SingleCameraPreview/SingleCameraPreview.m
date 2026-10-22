@@ -109,6 +109,13 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
   // Long edge (px) the Dart analysis stream requested (MIN-3475); 0 means
   // "no request" and keeps applyAnalysisOutputDownscale's built-in 1024 cap.
   int32_t _requestedAnalysisLongEdge;
+  CGFloat _freezeFrameWidth;
+  // Photo/video switch still (MIN-4185): a pending request for a small blurred
+  // copy of the next frame, answered — and cleared — on the capture queue.
+  // The preview layer itself can't be snapshotted, so the frame comes from the
+  // data output, which runs portrait like the preview.
+  void (^_freezeFrameCompletion)(NSDictionary *_Nullable);
+  CIContext *_freezeFrameContext;
 }
 
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
@@ -846,6 +853,9 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
 /// (landscape) dims; the portrait capture connection rotates them on delivery,
 /// as before. We only downscale (never upscale), so a format already smaller
 /// than the target long edge (e.g. the 640x480 fallback) is left untouched.
+/// Long edge of the data-output buffers in video mode: the 720p recording's.
+static const int32_t kVideoBufferLongEdge = 1280;
+
 - (void)applyAnalysisOutputDownscale {
   if (_captureVideoOutput == nil || _captureDevice == nil) {
     return;
@@ -867,6 +877,11 @@ static int32_t SCPGreatestCommonDivisor(int32_t a, int32_t b) {
   // the hard ceiling since we only ever downscale.
   const int32_t kTargetLongEdge = 1024;
   int32_t targetLongEdge = _requestedAnalysisLongEdge > 0 ? _requestedAnalysisLongEdge : kTargetLongEdge;
+  // In video mode these buffers ARE the recording (MIN-4185): never below the
+  // 720p file's long edge, or the writer upscales a 1024-wide frame.
+  if (_captureMode == Video) {
+    targetLongEdge = MAX(targetLongEdge, kVideoBufferLongEdge);
+  }
   int32_t g = SCPGreatestCommonDivisor(dims.width, dims.height);
   int32_t ratioW = dims.width / g;   // aspect in lowest terms
   int32_t ratioH = dims.height / g;
@@ -1007,7 +1022,8 @@ static const int32_t kStreamingMaxFps = 30;
   // previewFilterActive (MIN-3655): while a colour filter is active the
   // filtered display layer consumes these frames, so the data output must
   // keep producing them even when neither analysis nor recording does.
-  BOOL shouldFeed = _imageStreamController.streamImages || _videoController.isRecording || self.previewFilterActive;
+  BOOL shouldFeed = _imageStreamController.streamImages || _videoController.isRecording || self.previewFilterActive ||
+                    _freezeFrameCompletion != nil || _captureMode == Video;
   if (_captureConnection != nil && _captureConnection.isEnabled != shouldFeed) {
     _captureConnection.enabled = shouldFeed;
   }
@@ -1301,7 +1317,8 @@ static const int32_t kStreamingMaxFps = 30;
 /// nv21 (YUV) analysis format once the video writer no longer consumes the
 /// data-output buffers. No-op for BGRA streams (the flag is only set for nv21).
 - (void)clearForceBGRAAnalysisForRecording {
-  if (!_forceBGRAAnalysisForRecording) {
+  // Video mode keeps it armed for the next recording (-setCaptureMode:).
+  if (!_forceBGRAAnalysisForRecording || _captureMode == Video) {
     return;
   }
   _forceBGRAAnalysisForRecording = NO;
@@ -1471,26 +1488,19 @@ static const int32_t kStillLongEdgeTarget = 4032;
 
   // Determine the target size based on the current mode and settings
   if (_captureMode == Video || _videoController.isRecording) {
-      // If recording video, prioritize the recording quality setting
-      // TODO: Need a way to get the CGSize from the _recordingQuality enum or _videoOptions
-      // For now, let's assume a helper function or default high quality if direct mapping isn't obvious.
-      // Placeholder: If video options exist, try to use them, otherwise fall back.
-      // If no direct mapping, maybe use the highest available preset suitable for video?
-      // Or just pass CGSizeZero to let selectVideoCapturePreset pick the best for video?
-      // For now, let's pass CGSizeZero to select the best default for video capture.
-      if (_videoOptions != nil) {
-         // Hypothetical: Get size from VideoOptions quality. Needs actual implementation.
-         // targetSize = [CameraQualities sizeFromQuality:_recordingQuality];
-         // If no direct mapping, maybe use the highest available preset suitable for video?
-         // Or just pass CGSizeZero to let selectVideoCapturePreset pick the best for video?
-         // For now, let's pass CGSizeZero to select the best default for video capture.
-         targetSize = CGSizeZero; 
-      } else if (!CGSizeEqualToSize(currentPreviewSize, CGSizeZero)){
-         // Use provided size if valid and no video options
-         targetSize = currentPreviewSize;
-      } else {
-         // Fallback to best quality if no specific size or options given
-         targetSize = CGSizeZero;
+      // A video session streams the recording's own shape (MIN-4185): the
+      // writer takes the data output's frames, so the session format IS the
+      // video's aspect. 4:3 — chosen by the app for 4:3 screens, like the
+      // tablets' native camera — rides the same ~1920x1440 4:3 format as photo
+      // mode; 16:9 takes the 1080p preset. Either is ample for the 720p
+      // recording; the device's best preset (4K on most) used to run here,
+      // at near-recording heat for a 720p file.
+      if (_aspectRatio == Ratio4_3) {
+        forcedFormat = [self bestStreamingFourThreeFormat];
+      }
+      if (forcedFormat == nil) {
+        forcedPreset = [_captureSession canSetSessionPreset:AVCaptureSessionPreset1920x1080] ? AVCaptureSessionPreset1920x1080
+                                                                                              : AVCaptureSessionPreset1280x720;
       }
   } else {
       // Any live-preview session — streaming analysis or idle (MIN-3098). This
@@ -2288,24 +2298,129 @@ static const int32_t kStillLongEdgeTarget = 4032;
   
   _captureMode = captureMode;
 
-  // Re-run the session config for the new mode (MIN-3098): Photo/Preview picks
-  // the tuned low-power preview format (+ video-HDR off, fps cap); Video
-  // restores the full-quality video preset (+ auto HDR). Without this the
-  // low-power preview format would leak into a recording — or the video config
-  // into the idle preview.
-  [self setBestPreviewQuality];
+  // The reconfiguration runs on the capture queue, as one atomic change
+  // (MIN-4185). A format or preset change on a running session — plus, for
+  // video, attaching the microphone — blocks its thread for a few hundred ms;
+  // on the main thread that froze every Flutter frame with it (a platform view
+  // ties Flutter's frames to the main thread), so the app's whole switch
+  // animation stalled. -runAfterSessionWork: queues behind it.
+  dispatch_async(_dispatchQueue, ^{
+    [self->_captureSession beginConfiguration];
+    // Video mode arms what a recording needs from the data output up front —
+    // BGRA buffers (MIN-3084) and the connection on (MIN-3077) — inside this
+    // switch, under the app's still. Flipping them as a recording starts and
+    // stops reconfigured the running session, and the preview blinked black.
+    self->_forceBGRAAnalysisForRecording = captureMode == Video && self->_requestedAnalysisFormat == nv21;
+    [self updateAnalysisConnectionState];
+    // Re-run the session config for the new mode (MIN-3098): Photo/Preview
+    // picks the tuned low-power preview format (+ video-HDR off, fps cap);
+    // Video restores the full-quality video preset (+ auto HDR). Without this
+    // the low-power preview format would leak into a recording — or the video
+    // config into the idle preview.
+    [self setBestPreviewQuality];
 
-  if (captureMode == Video && _videoController.isAudioEnabled) {
-    [self setUpCaptureSessionForAudioError:^(NSError *audioError) {
-      // Audio is best-effort. If the microphone can't be set up (permission
-      // denied, or no usable audio device — e.g. "Cannot use iPad Microphone")
-      // we record silent video instead of failing the capture-mode switch.
-      // Disabling audio here keeps the recorder from waiting on samples that
-      // never arrive. The Flutter layer owns the microphone-permission UX.
-      [self->_videoController setIsAudioEnabled:NO];
-      NSLog(@"camerawesome: microphone unavailable, recording video without audio (%@)", audioError.localizedDescription);
-    }];
+    if (captureMode == Video && self->_videoController.isAudioEnabled) {
+      [self setUpCaptureSessionForAudioError:^(NSError *audioError) {
+        // Audio is best-effort. If the microphone can't be set up (permission
+        // denied, or no usable audio device — e.g. "Cannot use iPad
+        // Microphone") we record silent video instead of failing the
+        // capture-mode switch. Disabling audio here keeps the recorder from
+        // waiting on samples that never arrive. The Flutter layer owns the
+        // microphone-permission UX.
+        [self->_videoController setIsAudioEnabled:NO];
+        NSLog(@"camerawesome: microphone unavailable, recording video without audio (%@)", audioError.localizedDescription);
+      }];
+    }
+    [self->_captureSession commitConfiguration];
+  });
+}
+
+- (void)runAfterSessionWork:(dispatch_block_t)block {
+  dispatch_async(_dispatchQueue, ^{
+    dispatch_async(dispatch_get_main_queue(), block);
+  });
+}
+
+#pragma mark - Photo/video switch still (MIN-4185)
+
+- (void)captureFreezeFrameWithWidth:(CGFloat)width completion:(void (^)(NSDictionary *_Nullable))completion {
+  dispatch_async(_dispatchQueue, ^{
+    if (self->_freezeFrameCompletion != nil) {
+      self->_freezeFrameCompletion(nil);
+    }
+    __block BOOL answered = NO;
+    __weak SingleCameraPreview *weakSelf = self;
+    void (^answer)(NSDictionary *) = ^(NSDictionary *frame) {
+      // Capture queue only — the frame and the timeout race on it.
+      if (answered) {
+        return;
+      }
+      answered = YES;
+      SingleCameraPreview *strongSelf = weakSelf;
+      if (strongSelf != nil) {
+        strongSelf->_freezeFrameCompletion = nil;
+        [strongSelf updateAnalysisConnectionState];
+      }
+      dispatch_async(dispatch_get_main_queue(), ^{
+        completion(frame);
+      });
+    };
+    self->_freezeFrameCompletion = answer;
+    self->_freezeFrameWidth = width;
+    // The data connection is off while nothing reads it (MIN-3077); a frame
+    // follows within a frame or two of switching it on.
+    [self updateAnalysisConnectionState];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), self->_dispatchQueue, ^{
+      answer(nil);
+    });
+  });
+}
+
+/// Capture queue. A [_freezeFrameWidth]-wide, blurred, RGBA copy of [buffer],
+/// mirrored like the preview: {width, height, pixels}.
+- (nullable NSDictionary *)freezeFrameFromPixelBuffer:(CVPixelBufferRef)buffer {
+  CIImage *frame = [CIImage imageWithCVPixelBuffer:buffer];
+  CGRect extent = frame.extent;
+  if (CGRectIsEmpty(extent)) {
+    return nil;
   }
+  // The data connection always mirrors the front camera; the preview only
+  // when mirroring is on.
+  BOOL dataMirrored = _captureConnection != nil && _captureConnection.isVideoMirrored;
+  BOOL previewMirrored = _previewConnection != nil && _previewConnection.isVideoMirrored;
+  if (dataMirrored != previewMirrored) {
+    frame = [frame imageByApplyingTransform:CGAffineTransformMake(-1, 0, 0, 1, CGRectGetMaxX(extent) + CGRectGetMinX(extent), 0)];
+  }
+  CGFloat scale = MIN(1.0, _freezeFrameWidth / extent.size.width);
+  frame = [frame imageByApplyingTransform:CGAffineTransformMakeScale(scale, scale)];
+  CGRect small = CGRectIntegral(frame.extent);
+  // Clamped first so the edges don't fade to transparent.
+  CIImage *blurred = [[frame imageByClampingToExtent] imageByApplyingGaussianBlurWithSigma:MAX(2.0, small.size.width / 24.0)];
+  blurred = [blurred imageByCroppingToRect:small];
+  size_t width = (size_t)small.size.width;
+  size_t height = (size_t)small.size.height;
+  if (width == 0 || height == 0) {
+    return nil;
+  }
+  if (_freezeFrameContext == nil) {
+    CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    _freezeFrameContext = [CIContext contextWithOptions:@{kCIContextWorkingColorSpace : (__bridge id)srgb}];
+    CGColorSpaceRelease(srgb);
+  }
+  NSMutableData *pixels = [NSMutableData dataWithLength:width * height * 4];
+  CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  [_freezeFrameContext render:blurred
+                     toBitmap:pixels.mutableBytes
+                     rowBytes:width * 4
+                       bounds:small
+                       format:kCIFormatRGBA8
+                   colorSpace:srgb];
+  CGColorSpaceRelease(srgb);
+  return @{
+    @"width" : @(width),
+    @"height" : @(height),
+    @"pixels" : [FlutterStandardTypedData typedDataWithBytes:pixels],
+  };
 }
 
 - (void)refresh {
@@ -2397,7 +2512,10 @@ static const int32_t kStillLongEdgeTarget = 4032;
     // BGRA-only forward guard and the recording would complete "successfully"
     // as an empty file. Skip the session reconfigure entirely for the common
     // BGRA-stream case.
-    if (_requestedAnalysisFormat == nv21) {
+    // Video mode normally has it armed already (-setCaptureMode:), so this
+    // reconfigures nothing.
+    NSNumber *current = _captureVideoOutput.videoSettings[(NSString *)kCVPixelBufferPixelFormatTypeKey];
+    if (_requestedAnalysisFormat == nv21 && (current == nil || current.unsignedIntValue != kCVPixelFormatType_32BGRA)) {
       _forceBGRAAnalysisForRecording = YES;
       [self applyAnalysisOutputDownscale];
       NSNumber *applied = _captureVideoOutput.videoSettings[(NSString *)kCVPixelBufferPixelFormatTypeKey];
@@ -2437,6 +2555,10 @@ static const int32_t kStillLongEdgeTarget = 4032;
 
       recordingCompletion(nil);
     } options:_videoOptions quality: _recordingQuality completion:recordingCompletion];
+    // Off the main thread and ahead of the frames queued behind it (MIN-4185).
+    dispatch_async(_dispatchQueue, ^{
+      [self->_videoController startWriterForRecording];
+    });
   } else {
     completion([FlutterError errorWithCode:@"VIDEO_ERROR" message:@"already recording video" details:@""]);
   }
@@ -2536,6 +2658,12 @@ static const int32_t kStillLongEdgeTarget = 4032;
 
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
   if (output == _captureVideoOutput) {
+    void (^freezeFrame)(NSDictionary *) = _freezeFrameCompletion;
+    if (freezeFrame != nil) {
+      CVPixelBufferRef frameBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+      freezeFrame(frameBuffer != nil ? [self freezeFrameFromPixelBuffer:frameBuffer] : nil);
+    }
+
     // MIN-2406: the on-screen preview is the native AVCaptureVideoPreviewLayer
     // (hosted in a PlatformView), so we no longer pump frames into the Flutter
     // preview Texture. Doing so would run a second, redundant preview pipeline

@@ -51,6 +51,11 @@ class AnimatedPreviewFit extends StatefulWidget {
   /// ratio change zooms the live preview instead of reconfiguring the camera.
   final CameraAspectRatios? captureAspectRatio;
 
+  /// Animates every geometry change while true — the preview settling into a
+  /// new capture mode's frame under the switch still (MIN-4185) — instead of
+  /// snapping all but ratio changes.
+  final bool transition;
+
   const AnimatedPreviewFit({
     super.key,
     this.alignment = Alignment.center,
@@ -62,6 +67,7 @@ class AnimatedPreviewFit extends StatefulWidget {
     this.onPreviewCalculated,
     this.previewPadding,
     this.captureAspectRatio,
+    this.transition = false,
   });
 
   @override
@@ -109,7 +115,7 @@ class _AnimatedPreviewFitState extends State<AnimatedPreviewFit> {
       sizeCalculator = _calculatorFor(widget);
       sizeCalculator!.compute();
       maxSize = sizeCalculator!.maxSize;
-      _resizeDuration = ratioChanged ? kCameraRatioTransitionDuration : Duration.zero;
+      _resizeDuration = ratioChanged || widget.transition ? kCameraRatioTransitionDuration : Duration.zero;
       _handPreviewCalculated();
     }
   }

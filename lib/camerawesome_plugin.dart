@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:camerawesome/camerawesome_plugin.dart';
 import 'package:camerawesome/pigeon.dart';
@@ -472,6 +473,28 @@ class CamerawesomePlugin {
       override?.name,
     );
   }
+
+  static const MethodChannel _previewFreezeChannel =
+      MethodChannel('camerawesome/preview_freeze');
+
+  /// A small blurred copy of what the preview shows now, [width] px wide —
+  /// the still a photo/video switch runs under (MIN-4185, [PreviewFreeze]).
+  /// Null when nothing is on screen, or no frame came in time.
+  static Future<ui.Image?> capturePreviewStill({int width = 120}) async {
+    final frame = await _previewFreezeChannel.invokeMapMethod<String, Object?>('capture', width);
+    if (frame == null) return null;
+    final pixels = frame['pixels'];
+    final frameWidth = frame['width'];
+    final frameHeight = frame['height'];
+    if (pixels is! Uint8List || frameWidth is! int || frameHeight is! int) return null;
+    final image = Completer<ui.Image>();
+    ui.decodeImageFromPixels(pixels, frameWidth, frameHeight, ui.PixelFormat.rgba8888, image.complete);
+    return image.future;
+  }
+
+  /// Completes once the session has applied a capture-mode switch queued
+  /// before it and the preview shows the new stream (MIN-4185).
+  static Future<void> previewSettled() => _previewFreezeChannel.invokeMethod('settled');
 
   static const MethodChannel _closeRangeScanChannel =
       MethodChannel('camerawesome/close_range_scan');

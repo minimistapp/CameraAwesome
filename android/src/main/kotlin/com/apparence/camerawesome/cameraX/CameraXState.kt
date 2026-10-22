@@ -508,7 +508,10 @@ data class CameraXState(
 
     private fun buildVideoCapture(videoOptions: AndroidVideoOptions?): VideoCapture<Recorder> {
         val recorderBuilder = Recorder.Builder()
-        // Aspect ratio is handled by the setViewPort on the UseCaseGroup
+        // The recording's own shape (MIN-4185): the app asks 4:3 on 4:3-ish
+        // screens and 16:9 elsewhere, and a Quality alone always picks 16:9.
+        // The viewport still crops to the same ratio, so the two agree.
+        aspectRatio?.let { recorderBuilder.setAspectRatio(it) }
         if (videoRecordingQuality != null) {
             val quality = when (videoRecordingQuality) {
                 VideoRecordingQuality.LOWEST -> Quality.LOWEST

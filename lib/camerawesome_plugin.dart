@@ -196,8 +196,9 @@ class CamerawesomePlugin {
   /// before it acts on one (MIN-6670). Same events and rules as
   /// [listenBarcodes], except that several QR codes can be in one event.
   ///
-  /// Each code still arrives on [listenQrCodes] too, as a plain string: that
-  /// stream is unchanged for callers that only need the value.
+  /// [listenQrCodes] is unchanged: it still gets only the first QR code of
+  /// each callback, as a plain string. Callers that need every code in view
+  /// use this stream.
   static Stream<List<NativeBarcode>> listenQrCodeOutlines() => _codesUnder('qrCodes');
 
   static Stream<List<NativeBarcode>> _codesUnder(String key) async* {

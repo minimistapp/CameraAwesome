@@ -179,7 +179,7 @@ class CamerawesomePlugin {
   /// Retail 1D barcodes (EAN-13/8, UPC-E; UPC-A arrives as EAN-13) in view of
   /// the hardware reader, with their on-screen geometry. Shares the
   /// `camerawesome/qrcodes` channel with [listenQrCodes]: the native side
-  /// sends a QR as a plain string and barcodes as a map.
+  /// sends a QR as a plain string and the codes' geometry as a map.
   ///
   /// Each event is the barcodes the hardware reader reported in one callback.
   /// `AVCaptureMetadataOutput` decodes at most one 1D code per callback
@@ -189,15 +189,22 @@ class CamerawesomePlugin {
   /// barcode that stops being reported. iOS-only, like [listenQrCodes].
   ///
   /// A malformed entry is skipped rather than failing the whole event.
-  static Stream<List<NativeBarcode>> listenBarcodes() async* {
+  static Stream<List<NativeBarcode>> listenBarcodes() => _codesUnder('barcodes');
+
+  /// Every QR code in view of the hardware reader, with its on-screen
+  /// geometry (format `qr`) — so a camera can show which code it is reading
+  /// before it acts on one (MIN-6670). Same events and rules as
+  /// [listenBarcodes], except that several QR codes can be in one event.
+  ///
+  /// Each code still arrives on [listenQrCodes] too, as a plain string: that
+  /// stream is unchanged for callers that only need the value.
+  static Stream<List<NativeBarcode>> listenQrCodeOutlines() => _codesUnder('qrCodes');
+
+  static Stream<List<NativeBarcode>> _codesUnder(String key) async* {
     if (!Platform.isIOS) return;
-    yield* _machineReadableCodes().where((data) => data is Map).map((dynamic data) {
-      final codes = (data as Map)['barcodes'] as List<dynamic>? ?? const [];
-      return [
-        for (final c in codes)
-          if (NativeBarcode.tryFromMap(c) case final barcode?) barcode,
-      ];
-    });
+    await for (final data in _machineReadableCodes()) {
+      if (NativeBarcode.listFromEvent(data, key) case final codes?) yield codes;
+    }
   }
 
   static Stream<dynamic> _machineReadableCodes() =>
@@ -680,8 +687,8 @@ class CamerawesomePlugin {
   }
 }
 
-/// A barcode decoded by the iOS hardware reader (see
-/// [CamerawesomePlugin.listenBarcodes]).
+/// A barcode or QR code decoded by the iOS hardware reader (see
+/// [CamerawesomePlugin.listenBarcodes] and [CamerawesomePlugin.listenQrCodeOutlines]).
 class NativeBarcode {
   const NativeBarcode({required this.value, required this.format, required this.corners});
 
@@ -690,6 +697,18 @@ class NativeBarcode {
         format: map['format'] as String,
         corners: (map['corners'] as List<dynamic>).map((v) => (v as num).toDouble()).toList(),
       );
+
+  /// The codes under [key] (`barcodes` or `qrCodes`) of one event on the
+  /// `camerawesome/qrcodes` channel, or null when the event carries none — a
+  /// plain QR string, or a map with only the other kind. A malformed entry is
+  /// skipped rather than failing the whole event.
+  static List<NativeBarcode>? listFromEvent(Object? event, String key) {
+    if (event is! Map || event[key] is! List) return null;
+    return [
+      for (final c in event[key] as List)
+        if (tryFromMap(c) case final barcode?) barcode,
+    ];
+  }
 
   /// [fromMap], or null when [map] isn't a well-formed barcode entry.
   static NativeBarcode? tryFromMap(Object? map) {
@@ -707,7 +726,7 @@ class NativeBarcode {
 
   final String value;
 
-  /// `ean13`, `ean8` or `upce`.
+  /// `ean13`, `ean8`, `upce`, or `qr` (from [CamerawesomePlugin.listenQrCodeOutlines]).
   final String format;
 
   /// Flat `[x0, y0, x1, y1, x2, y2, x3, y3]` — four points, each normalised

@@ -166,9 +166,15 @@ data class CameraXState(
      *
      * Falls back to `DEFAULT_BACK_CAMERA` on API < 30 (where CONTROL_ZOOM_RATIO_RANGE
      * isn't reported) or when no sub-1.0 camera is available.
+     *
+     * A device with no back camera at all but an external (USB/V4L2) one uses
+     * the external camera instead: Cuttlefish test devices fed a recording
+     * (MIN-6862), USB-camera tablets. Phones always have a back camera, so they
+     * never take this branch.
      */
     @SuppressLint("UnsafeOptInUsageError", "RestrictedApi")
     private fun backCameraSelector(): CameraSelector {
+        externalCameraSelectorIfNoBackCamera()?.let { return it }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             return CameraSelector.DEFAULT_BACK_CAMERA
         }
@@ -199,6 +205,30 @@ data class CameraXState(
             Log.w(CamerawesomePlugin.TAG, "Falling back to DEFAULT_BACK_CAMERA: ${e.message}")
             CameraSelector.DEFAULT_BACK_CAMERA
         }
+    }
+
+    /**
+     * The first external camera, when the device has external cameras but no
+     * back camera; otherwise null (CameraX's `DEFAULT_BACK_CAMERA` would find
+     * nothing to bind there).
+     */
+    @SuppressLint("UnsafeOptInUsageError")
+    private fun externalCameraSelectorIfNoBackCamera(): CameraSelector? {
+        val infos = try {
+            cameraProvider.availableCameraInfos
+        } catch (e: Exception) {
+            Log.w(CamerawesomePlugin.TAG, "Cannot list cameras to look for an external one: ${e.message}")
+            return null
+        }
+        if (infos.any { it.lensFacing == CameraSelector.LENS_FACING_BACK }) return null
+        if (infos.none { it.lensFacing == CameraSelector.LENS_FACING_EXTERNAL }) {
+            Log.w(CamerawesomePlugin.TAG, "No back or external camera among ${infos.size} camera(s)")
+            return null
+        }
+        Log.i(CamerawesomePlugin.TAG, "No back camera; using the external camera instead")
+        return CameraSelector.Builder()
+            .requireLensFacing(CameraSelector.LENS_FACING_EXTERNAL)
+            .build()
     }
 
     @SuppressLint("RestrictedApi", "UnsafeOptInUsageError")

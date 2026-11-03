@@ -438,6 +438,19 @@ class CamerawesomePlugin {
     return CameraInterface().setRecordingAudioMode(enableAudio);
   }
 
+  static const MethodChannel _videoAudioChannel = MethodChannel('camerawesome/video_audio');
+
+  /// Whether the next video recording takes sound (MIN-6820), for a sound
+  /// toggle. On iOS, unlike [setAudioMode] — which detaches the microphone
+  /// from the running session, so another recorder can take it — this leaves
+  /// the session alone: detaching froze the preview and flashed it black. The
+  /// microphone is attached as video mode starts whenever it is allowed.
+  /// Android only ever sets a flag, so it goes through [setAudioMode].
+  static Future<void> setRecordsAudio(bool recordsAudio) {
+    if (!Platform.isIOS) return setAudioMode(recordsAudio);
+    return _videoAudioChannel.invokeMethod('setRecordsAudio', recordsAudio);
+  }
+
   /// set exif preferences when a photo is saved
   ///
   /// The GPS value can be null on Android if:

@@ -2334,7 +2334,12 @@ static const int32_t kStillLongEdgeTarget = 4032;
     // config into the idle preview.
     [self setBestPreviewQuality];
 
-    if (captureMode == Video && self->_videoController.isAudioEnabled) {
+    // The microphone joins whenever it is allowed, even with the sound toggle
+    // off (MIN-6820): the toggle then only decides whether a recording writes
+    // its sound (-setRecordsAudio:), so flipping it never reconfigures the
+    // running session. Attaching it here happens under the switch's still.
+    BOOL microphoneAllowed = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio] == AVAuthorizationStatusAuthorized;
+    if (captureMode == Video && (self->_videoController.isAudioEnabled || microphoneAllowed)) {
       [self setUpCaptureSessionForAudioError:^(NSError *audioError) {
         // Audio is best-effort. If the microphone can't be set up (permission
         // denied, or no usable audio device — e.g. "Cannot use iPad
@@ -2345,6 +2350,10 @@ static const int32_t kStillLongEdgeTarget = 4032;
         [self->_videoController setIsAudioEnabled:NO];
         NSLog(@"camerawesome: microphone unavailable, recording video without audio (%@)", audioError.localizedDescription);
       }];
+    } else if (captureMode != Video && !self->_videoController.isAudioEnabled) {
+      // Held only for video with the sound off: photo mode lets it go, under
+      // the same still. With the sound on it stays, as it always has.
+      [self removeAudioFromSession];
     }
     [self->_captureSession commitConfiguration];
   });
@@ -2607,19 +2616,77 @@ static const int32_t kStillLongEdgeTarget = 4032;
   }
 }
 
-/// Set audio recording mode
+/// Set audio recording mode. Turning it off also releases the microphone, so
+/// another recorder (the app's voice notes) can take it.
 - (void)setRecordingAudioMode:(bool)isAudioEnabled completion:(void(^)(NSNumber *_Nullable, FlutterError *_Nullable))completion {
   if (_videoController.isRecording) {
     completion(@(NO), [FlutterError errorWithCode:@"CHANGE_AUDIO_MODE" message:@"impossible to change audio mode, video already recording" details:@""]);
     return;
   }
-  
-  [_captureSession beginConfiguration];
   [_videoController setIsAudioEnabled:isAudioEnabled];
-  [_videoController setIsAudioSetup:NO];
   [_videoController setAudioIsDisconnected:YES];
-  
-  // Only remove audio channel input but keep video
+  // On the capture queue, off the platform thread (MIN-6820), and in order
+  // with the -setRecordsAudio: and mode-switch work queued before it: a
+  // microphone attach still waiting there can't land after this release.
+  dispatch_async(_dispatchQueue, ^{
+    [self->_captureSession beginConfiguration];
+    [self removeAudioFromSession];
+    [self->_captureSession commitConfiguration];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      completion(@(YES), nil);
+    });
+  });
+}
+
+- (void)setRecordsAudio:(bool)recordsAudio completion:(void (^)(FlutterError *_Nullable))completion {
+  if (_videoController.isRecording) {
+    completion([FlutterError errorWithCode:@"CHANGE_AUDIO_MODE" message:@"impossible to change audio mode, video already recording" details:@""]);
+    return;
+  }
+  // A recording reads this as it starts: with it off the writer has no audio
+  // track and the audio output's samples are dropped, so the microphone can
+  // stay attached and the session is left alone.
+  [_videoController setIsAudioEnabled:recordsAudio];
+  CaptureModes captureMode = _captureMode;
+  BOOL microphoneAllowed = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio] == AVAuthorizationStatusAuthorized;
+  // Session work stays on the capture queue, in order with the mode switches
+  // and releases queued there. The only change ever made is attaching a
+  // microphone video mode doesn't have yet — one granted just now, or one a
+  // voice note released — on the same terms as -setCaptureMode: (allowed, or
+  // asked for), so the next toggle has nothing to attach.
+  dispatch_async(_dispatchQueue, ^{
+    if (captureMode == Video && (recordsAudio || microphoneAllowed) && ![self hasAudioInput]) {
+      VideoController *videoController = self->_videoController;
+      [self->_captureSession beginConfiguration];
+      [self setUpCaptureSessionForAudioError:^(NSError *audioError) {
+        [videoController setIsAudioEnabled:NO];
+        NSLog(@"camerawesome: microphone unavailable, recording video without audio (%@)", audioError.localizedDescription);
+      }];
+      [self->_captureSession commitConfiguration];
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      completion(nil);
+    });
+  });
+}
+
+# pragma mark - Audio
+
+/// Whether the session has a microphone attached.
+- (BOOL)hasAudioInput {
+  for (AVCaptureInput *input in [_captureSession inputs]) {
+    for (AVCaptureInputPort *port in input.ports) {
+      if ([[port mediaType] isEqual:AVMediaTypeAudio]) {
+        return YES;
+      }
+    }
+  }
+  return NO;
+}
+
+/// Detaches the microphone (input and output). Call inside a configuration
+/// block, on the capture queue.
+- (void)removeAudioFromSession {
   for (AVCaptureInput *input in [_captureSession inputs]) {
     for (AVCaptureInputPort *port in input.ports) {
       if ([[port mediaType] isEqual:AVMediaTypeAudio]) {
@@ -2628,32 +2695,32 @@ static const int32_t kStillLongEdgeTarget = 4032;
       }
     }
   }
-  // Only remove audio channel output but keep video
-  [_captureSession removeOutput:_audioOutput];
-  
-  if (_videoController.isRecording) {
-    [self setUpCaptureSessionForAudioError:^(NSError *error) {
-      completion(@(NO), [FlutterError errorWithCode:@"VIDEO_ERROR" message:@"error when trying to setup audio" details:[error localizedDescription]]);
-    }];
+  if (_audioOutput != nil) {
+    [_captureSession removeOutput:_audioOutput];
   }
-  
-  [_captureSession commitConfiguration];
-  completion(@(YES), nil);
+  [_videoController setIsAudioSetup:NO];
 }
 
-# pragma mark - Audio
 /// Setup audio channel to record audio
 - (void)setUpCaptureSessionForAudioError:(nonnull void (^)(NSError *))error {
+  // Already attached (MIN-6820): video mode keeps the microphone across sound
+  // toggles and mode switches, and a second input would be refused anyway.
+  if ([self hasAudioInput] && _audioOutput != nil && [[_captureSession outputs] containsObject:_audioOutput]) {
+    [_videoController setIsAudioSetup:YES];
+    return;
+  }
   NSError *audioError = nil;
   // Create a device input with the device and add it to the session.
   // Setup the audio input.
   AVCaptureDevice *audioDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio];
   AVCaptureDeviceInput *audioInput = [AVCaptureDeviceInput deviceInputWithDevice:audioDevice
                                                                            error:&audioError];
-  if (audioError) {
+  if (audioError || audioInput == nil) {
+    [_videoController setIsAudioSetup:NO];
     error(audioError);
+    return;
   }
-  
+
   // Setup the audio output.
   _audioOutput = [[AVCaptureAudioDataOutput alloc] init];
   
@@ -2664,6 +2731,8 @@ static const int32_t kStillLongEdgeTarget = 4032;
       [_captureSession addOutput:_audioOutput];
       [_videoController setIsAudioSetup:YES];
     } else {
+      // No input without its output: -hasAudioInput would skip the next setup.
+      [_captureSession removeInput:audioInput];
       [_videoController setIsAudioSetup:NO];
     }
   }

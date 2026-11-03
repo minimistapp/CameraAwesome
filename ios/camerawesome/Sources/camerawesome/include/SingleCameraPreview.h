@@ -130,6 +130,10 @@ AVCaptureMetadataOutputObjectsDelegate>
 - (void)captureFreezeFrameWithWidth:(CGFloat)width completion:(void (^)(NSDictionary *_Nullable))completion;
 - (void)setCameraPreset:(CGSize)currentPreviewSize;
 - (void)setRecordingAudioMode:(bool)enableAudio completion:(void(^)(NSNumber *_Nullable, FlutterError *_Nullable))completion;
+/// Whether the next recording writes sound, without detaching the microphone
+/// (MIN-6820). Attaches it, on the capture queue, only when sound is turned on
+/// in video mode and none is attached yet. [completion] runs on the main queue.
+- (void)setRecordsAudio:(bool)recordsAudio completion:(void (^)(FlutterError *_Nullable))completion;
 - (void)pauseVideoRecording;
 - (void)resumeVideoRecording;
 - (void)receivedImageFromStream;

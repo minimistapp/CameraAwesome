@@ -183,6 +183,29 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
       result(FlutterMethodNotImplemented);
     }
   }];
+
+  // The video sound toggle (MIN-6820). A plain method channel like the ones
+  // above. Unlike setRecordingAudioMode, which detaches the microphone from the
+  // running session (so a voice recorder can take it), this only decides
+  // whether the next recording writes the sound: a session change here froze
+  // the preview and the main thread for a few hundred ms and flashed it black.
+  FlutterMethodChannel *videoAudioChannel =
+      [FlutterMethodChannel methodChannelWithName:@"camerawesome/video_audio"
+                                  binaryMessenger:[registrar messenger]];
+  [videoAudioChannel setMethodCallHandler:^(FlutterMethodCall *call, FlutterResult result) {
+    if ([call.method isEqualToString:@"setRecordsAudio"]) {
+      SingleCameraPreview *camera = weakInstance.camera;
+      if (camera == nil) {
+        result([FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil]);
+        return;
+      }
+      [camera setRecordsAudio:[call.arguments boolValue] completion:^(FlutterError *_Nullable error) {
+        result(error);
+      }];
+    } else {
+      result(FlutterMethodNotImplemented);
+    }
+  }];
 }
 
 /// Maps "portrait"/"landscape" to the AVCaptureVideoOrientation the preview is

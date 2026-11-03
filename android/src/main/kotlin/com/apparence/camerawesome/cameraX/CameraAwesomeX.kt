@@ -909,7 +909,11 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
     override fun setRecordingAudioMode(
         enableAudio: Boolean, callback: (Result<Boolean>) -> Unit
     ) {
-        CoroutineScope(Dispatchers.IO).launch {
+        // Main, like every other permission request here: the Pigeon reply and
+        // cameraState are main-thread objects. (This used to launch on IO and
+        // reply from there: `Dispatchers.Main.run {}` is Kotlin's scope function,
+        // not a thread switch.)
+        CoroutineScope(Dispatchers.Main).launch {
             cameraPermissions.requestPermissions(
                 activity!!,
                 listOf(Manifest.permission.RECORD_AUDIO),
@@ -921,7 +925,7 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
                         // No need to update lifecycle, it will be applied on next recording
                     }
                 }
-                Dispatchers.Main.run { callback(Result.success(granted.isNotEmpty())) }
+                callback(Result.success(granted.isNotEmpty()))
             }
         }
     }

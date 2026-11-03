@@ -55,16 +55,24 @@ class CameraPermissions : EventChannel.StreamHandler, RequestPermissionsResultLi
                 deniedPermissions.add(permissions[i])
             }
         }
-        val toRemove = mutableListOf<PermissionRequest>()
-        for (c in callbacks) {
-            if (c.permissionsAsked.containsAll(permissions.toList()) && permissions.toList()
-                    .containsAll(c.permissionsAsked)
-            ) {
-                c.callback(grantedPermissions, deniedPermissions)
-                toRemove.add(c)
+        // A request Android cancels (another request already in flight) comes back
+        // with empty arrays: answer the requests made with this code as denied,
+        // otherwise they would wait forever.
+        val answered = synchronized(callbacks) {
+            val matching = callbacks.filter {
+                if (permissions.isEmpty()) {
+                    it.requestCode == requestCode
+                } else {
+                    it.permissionsAsked.containsAll(permissions.toList()) && permissions.toList()
+                        .containsAll(it.permissionsAsked)
+                }
             }
+            callbacks.removeAll(matching)
+            matching
         }
-        callbacks.removeAll(toRemove)
+        for (c in answered) {
+            c.callback(grantedPermissions, deniedPermissions)
+        }
 
         if (events != null) {
             Log.d(
@@ -166,23 +174,36 @@ class CameraPermissions : EventChannel.StreamHandler, RequestPermissionsResultLi
         return granted
     }
 
+    /**
+     * Asks for [permissions] and calls [callback] with the ones granted.
+     *
+     * Permissions that are all granted already are answered here, without asking
+     * Android: Android answers such a request immediately, and that answer used
+     * to arrive before the request was registered to receive it, so the caller
+     * waited forever (MIN-6960). For the same reason the request is registered
+     * before it is sent, and sent from the main thread.
+     */
     suspend fun requestPermissions(
         activity: Activity,
         permissions: List<String>,
         requestCode: Int,
-        callback: (denied: List<String>) -> Unit
+        callback: (granted: List<String>) -> Unit
     ) {
+        if (hasPermission(activity, permissions)) {
+            callback(permissions)
+            return
+        }
         val result: List<String> = suspendCoroutine { continuation: Continuation<List<String>> ->
-            ActivityCompat.requestPermissions(
-                activity, permissions.toTypedArray(), requestCode
+            val request = PermissionRequest(
+                UUID.randomUUID().toString(),
+                permissions,
+                requestCode,
+                callback = { granted, _ -> continuation.resume(granted) },
             )
-            callbacks.add(
-                PermissionRequest(UUID.randomUUID().toString(),
-                    permissions,
-                    callback = { granted, _ ->
-                        continuation.resume(granted)
-                    })
-            )
+            synchronized(callbacks) { callbacks.add(request) }
+            activity.runOnUiThread {
+                ActivityCompat.requestPermissions(activity, permissions.toTypedArray(), requestCode)
+            }
         }
         callback(result)
     }
@@ -206,5 +227,6 @@ class CameraPermissions : EventChannel.StreamHandler, RequestPermissionsResultLi
 data class PermissionRequest(
     var id: String,
     val permissionsAsked: List<String>,
+    val requestCode: Int,
     val callback: (permissionsGranted: List<String>, permissionsDenied: List<String>) -> Unit
 ) {}

@@ -176,8 +176,9 @@ class CamerawesomePlugin {
     yield* _machineReadableCodes().where((data) => data is String).cast<String>();
   }
 
-  /// Retail 1D barcodes (EAN-13/8, UPC-E; UPC-A arrives as EAN-13) in view of
-  /// the hardware reader, with their on-screen geometry. Shares the
+  /// 1D barcodes in view of the hardware reader — retail (EAN-13/8, UPC-E;
+  /// UPC-A arrives as EAN-13) and Code 128 (format `code128`) — with their
+  /// on-screen geometry. Shares the
   /// `camerawesome/qrcodes` channel with [listenQrCodes]: the native side
   /// sends a QR as a plain string and the codes' geometry as a map.
   ///
@@ -740,7 +741,7 @@ class NativeBarcode {
 
   final String value;
 
-  /// `ean13`, `ean8`, `upce`, or `qr` (from [CamerawesomePlugin.listenQrCodeOutlines]).
+  /// `ean13`, `ean8`, `upce`, `code128`, or `qr` (from [CamerawesomePlugin.listenQrCodeOutlines]).
   final String format;
 
   /// Flat `[x0, y0, x1, y1, x2, y2, x3, y3]` — four points, each normalised

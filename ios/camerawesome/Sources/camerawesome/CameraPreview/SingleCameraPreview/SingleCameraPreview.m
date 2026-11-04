@@ -404,11 +404,15 @@ static void * const FocusStableContext = (void *)&FocusStableContext;
 
 #pragma mark - QR + barcode metadata delegate (MIN-3077)
 
-/// Retail 1D symbologies the hardware reader reports alongside QR, for the
-/// live barcode highlight. UPC-A has no type of its own on iOS: AVFoundation
-/// reports it as EAN-13 with a leading zero.
+/// 1D symbologies the hardware reader reports alongside QR: the retail codes,
+/// for the live barcode highlight — UPC-A has no type of its own on iOS:
+/// AVFoundation reports it as EAN-13 with a leading zero — and Code 128, which
+/// the app prints on its own security-box and storage-slot labels (MIN-6741).
+/// Consumers tell the two apart by `format`.
 static NSArray<AVMetadataObjectType> *CAMBarcodeMetadataTypes(void) {
-  return @[ AVMetadataObjectTypeEAN13Code, AVMetadataObjectTypeEAN8Code, AVMetadataObjectTypeUPCECode ];
+  return @[
+    AVMetadataObjectTypeEAN13Code, AVMetadataObjectTypeEAN8Code, AVMetadataObjectTypeUPCECode, AVMetadataObjectTypeCode128Code
+  ];
 }
 
 static NSString *CAMBarcodeFormatName(AVMetadataObjectType type) {
@@ -416,6 +420,7 @@ static NSString *CAMBarcodeFormatName(AVMetadataObjectType type) {
   if ([type isEqualToString:AVMetadataObjectTypeEAN13Code]) return @"ean13";
   if ([type isEqualToString:AVMetadataObjectTypeEAN8Code]) return @"ean8";
   if ([type isEqualToString:AVMetadataObjectTypeUPCECode]) return @"upce";
+  if ([type isEqualToString:AVMetadataObjectTypeCode128Code]) return @"code128";
   return nil;
 }
 

@@ -30,6 +30,23 @@
 - (void)startMotionDetection {
   [_motionManager startDeviceMotionUpdatesToQueue:[NSOperationQueue mainQueue]
                                       withHandler:^(CMDeviceMotion *data, NSError *error) {
+    // A failed reading has no gravity: messaging nil zeroes the struct, which
+    // the y >= 0 branch below would read as upside-down portrait.
+    if (data == nil) {
+      return;
+    }
+    // Held flat (face up over an item on a table, or face down), gravity runs
+    // almost entirely through the screen and x/y are both near zero, so which
+    // of them "wins" is sensor noise: the overlay spun to a random side and the
+    // capture got tagged with it (MIN-7254). Keep the last orientation until
+    // the phone tilts out of the flat zone, the way Android's
+    // OrientationEventListener reports ORIENTATION_UNKNOWN (and camerawesome's
+    // Android side ignores it) under the same rule: in-plane gravity squared,
+    // times 4, below z squared, i.e. within ~27 degrees of flat.
+    CMAcceleration gravity = data.gravity;
+    if ((gravity.x * gravity.x + gravity.y * gravity.y) * 4 < gravity.z * gravity.z) {
+      return;
+    }
     UIDeviceOrientation newOrientation;
     if(fabs(data.gravity.x) > fabs(data.gravity.y)) {
       // Landscape

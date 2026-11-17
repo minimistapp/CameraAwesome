@@ -97,6 +97,13 @@ static const CGFloat kConstituentReevaluationZoomStep = 0.001;
 /// by an invisible amount (MIN-7420). Caller must already hold
 /// -lockForConfiguration. On _dispatchQueue.
 - (void)requestConstituentReevaluationLocked:(NSString *)reason;
+/// The AF detector's way in: re-checks that a re-evaluation is still wanted,
+/// takes the configuration lock and calls the method above (MIN-7420). On
+/// _dispatchQueue.
+- (void)requestConstituentReevaluationFromDetector:(NSString *)reason;
+/// Re-arms the AF hunt check every kCloseRangeFocusHuntSeconds for as long as
+/// the same hunt goes on (MIN-7420). On _dispatchQueue.
+- (void)scheduleFocusHuntCheck:(CFAbsoluteTime)huntStartedAt;
 /// Registers/removes the always-on adjustingFocus watch that decides when AF
 /// has failed to converge (MIN-4878). Both run on _dispatchQueue.
 - (void)setupCloseRangeFocusObservation;
@@ -218,6 +225,10 @@ static const CGFloat kConstituentReevaluationZoomStep = 0.001;
   // kConstituentReevaluationMinInterval. 0 = never. Only touched on
   // _dispatchQueue.
   CFAbsoluteTime _lastConstituentReevaluationAt;
+  // A request that arrived inside that interval is retried once it ends,
+  // instead of being dropped; this coalesces them into one retry. Only touched
+  // on _dispatchQueue.
+  BOOL _constituentReevaluationPending;
 }
 
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
@@ -420,6 +431,9 @@ static const CGFloat kConstituentReevaluationZoomStep = 0.001;
     self->_focusHuntStartedAt = 0;
     self->_closeRangeSettleUntil = 0;
     self->_lastConstituentReevaluationAt = 0;
+    // A retry already scheduled for the outgoing device checks the device
+    // identity and drops itself; this only lets the new device schedule its own.
+    self->_constituentReevaluationPending = NO;
   });
 
   NSError *error;
@@ -1717,8 +1731,27 @@ static const int32_t kStillLongEdgeTarget = 4032;
   }
   const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
   if (_lastConstituentReevaluationAt != 0 && now - _lastConstituentReevaluationAt < kConstituentReevaluationMinInterval) {
-    NSLog(@"CamerAwesome: lens re-evaluation (%@) skipped - one ran %.2fs ago (MIN-7420)", reason,
+    // Too soon after the last one, but not unwanted: the earlier re-evaluation
+    // may have run while the item was still further away, and with a still
+    // subject no new AF event would come to ask again. Retry once the interval
+    // ends; requests in between fold into that one retry.
+    if (_constituentReevaluationPending) {
+      NSLog(@"CamerAwesome: lens re-evaluation (%@) folded into the retry already scheduled (MIN-7420)", reason);
+      return;
+    }
+    _constituentReevaluationPending = YES;
+    const NSTimeInterval wait = kConstituentReevaluationMinInterval - (now - _lastConstituentReevaluationAt);
+    NSLog(@"CamerAwesome: lens re-evaluation (%@) deferred %.2fs - one ran %.2fs ago (MIN-7420)", reason, wait,
           now - _lastConstituentReevaluationAt);
+    AVCaptureDevice *device = _captureDevice;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(wait * NSEC_PER_SEC)), _dispatchQueue, ^{
+      if (self->_captureDevice != device) {
+        NSLog(@"CamerAwesome: deferred lens re-evaluation (%@) dropped - camera changed (MIN-7420)", reason);
+        return;
+      }
+      self->_constituentReevaluationPending = NO;
+      [self requestConstituentReevaluationFromDetector:[NSString stringWithFormat:@"deferred: %@", reason]];
+    });
     return;
   }
 
@@ -1845,16 +1878,7 @@ static const int32_t kStillLongEdgeTarget = 4032;
       return;  // already timing this hunt
     }
     _focusHuntStartedAt = CFAbsoluteTimeGetCurrent();
-    const CFAbsoluteTime huntStartedAt = _focusHuntStartedAt;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kCloseRangeFocusHuntSeconds * NSEC_PER_SEC)),
-                   _dispatchQueue, ^{
-      // Same hunt, and it still hasn't landed: nothing in the near range is
-      // going to sharpen without the other lens.
-      if (self->_focusHuntStartedAt != huntStartedAt || !self->_captureDevice.isAdjustingFocus) {
-        return;
-      }
-      [self openCloseRangeFocusWindowFromDetector];
-    });
+    [self scheduleFocusHuntCheck:_focusHuntStartedAt];
     return;
   }
 
@@ -1873,10 +1897,53 @@ static const int32_t kStillLongEdgeTarget = 4032;
     return;
   }
   // The window is already open (a tap, or an earlier detector hit while the
-  // item was still further away) and AF has settled at the near limit again.
-  // Unless the ultra-wide is already in use (the macro hop happened, or the
-  // user picked 0.5x), the earlier re-evaluation ran before the item came this
-  // close: ask again (MIN-7420).
+  // item was still further away) and AF has settled at the near limit again:
+  // the earlier re-evaluation ran before the item came this close. Ask again
+  // (MIN-7420).
+  [self requestConstituentReevaluationFromDetector:[NSString stringWithFormat:@"still at near limit %.3f", lensPosition]];
+}
+
+/// One tick of the AF hunt watch. Same hunt, still not landed after
+/// kCloseRangeFocusHuntSeconds: nothing in the near range is going to sharpen
+/// without the other lens, so open the window. Re-armed for as long as that
+/// hunt goes on (MIN-7420): a restricted re-evaluation waits for focus to
+/// settle, and a single trigger fired early in a long hunt could otherwise be
+/// the last one — the settle branch only runs once AF stops adjusting.
+/// Requests in between are rate-limited and coalesced by
+/// -requestConstituentReevaluationLocked:.
+- (void)scheduleFocusHuntCheck:(CFAbsoluteTime)huntStartedAt {
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kCloseRangeFocusHuntSeconds * NSEC_PER_SEC)),
+                 _dispatchQueue, ^{
+    if (self->_focusHuntStartedAt != huntStartedAt || !self->_captureDevice.isAdjustingFocus) {
+      return;  // that hunt ended or the device changed; nothing left to watch
+    }
+    if (!self->_closeRangeFocusWindow) {
+      [self openCloseRangeFocusWindowFromDetector];
+    } else {
+      [self requestConstituentReevaluationFromDetector:@"AF still hunting"];
+    }
+    [self scheduleFocusHuntCheck:huntStartedAt];
+  });
+}
+
+- (void)requestConstituentReevaluationFromDetector:(NSString *)reason {
+  if (_captureDevice == nil || _closeRangeScanMode || !_closeRangeFocusWindow) {
+    // Scan mode runs `.auto`; a closed window means the user moved on (or a
+    // deferred retry outlived the close-up it was for).
+    NSLog(@"CamerAwesome: lens re-evaluation (%@) not needed - %@ (MIN-7420)", reason,
+          _captureDevice == nil ? @"no camera" : (_closeRangeScanMode ? @"scan mode" : @"close-range window closed"));
+    return;
+  }
+  // Re-check the focus state: by the time a deferred retry runs, AF may have
+  // settled comfortably inside the wide lens's range.
+  const float lensPosition = _captureDevice.lensPosition;
+  if (!_captureDevice.isAdjustingFocus && lensPosition > kCloseRangeLensNearLimit) {
+    NSLog(@"CamerAwesome: lens re-evaluation (%@) not needed - AF settled at lensPosition %.3f (MIN-7420)", reason,
+          lensPosition);
+    return;
+  }
+  // The ultra-wide already in use means the macro hop happened, or the user
+  // picked 0.5x; either way there is no closer-focusing lens to move to.
   if (@available(iOS 15.0, *)) {
     AVCaptureDevice *active = _captureDevice.activePrimaryConstituentDevice;
     if ([active.deviceType isEqualToString:AVCaptureDeviceTypeBuiltInUltraWideCamera]) {
@@ -1885,11 +1952,11 @@ static const int32_t kStillLongEdgeTarget = 4032;
   }
   NSError *lockError = nil;
   if (![_captureDevice lockForConfiguration:&lockError]) {
-    NSLog(@"handleFocusActivityChange: lockForConfiguration failed, lens not re-evaluated: %@",
+    NSLog(@"CamerAwesome: lens re-evaluation (%@) skipped - lockForConfiguration failed: %@ (MIN-7420)", reason,
           lockError.localizedDescription);
     return;
   }
-  [self requestConstituentReevaluationLocked:[NSString stringWithFormat:@"still at near limit %.3f", lensPosition]];
+  [self requestConstituentReevaluationLocked:reason];
   [_captureDevice unlockForConfiguration];
 }
 

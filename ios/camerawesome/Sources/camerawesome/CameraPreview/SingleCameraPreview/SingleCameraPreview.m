@@ -42,6 +42,18 @@ static void * const ConstituentSwitchContext = (void *)&ConstituentSwitchContext
 /// the lens could flip back and forth.
 static const NSTimeInterval kCloseRangeHopSettleSeconds = 1.5;
 
+/// Smallest gap between two lens re-evaluations we trigger ourselves
+/// (MIN-7420). Each one makes AVFoundation wait for focus and exposure to
+/// settle before it picks a lens, so firing faster than that only restarts the
+/// wait.
+static const NSTimeInterval kConstituentReevaluationMinInterval = 1.5;
+
+/// Relative videoZoomFactor step used to trigger a lens re-evaluation
+/// (MIN-7420). Under `.restricted` + `.videoZoomChanged`, *any* zoom change
+/// lets the virtual device pick a fallback lens. 0.1% is far below what the
+/// eye can see in the preview or a still.
+static const CGFloat kConstituentReevaluationZoomStep = 0.001;
+
 @interface SingleCameraPreview ()
 /// Safely applies the analysis pixel format (optionally at a fixed
 /// width/height) to the analysis data output — 32BGRA by default, or the
@@ -81,6 +93,17 @@ static const NSTimeInterval kCloseRangeHopSettleSeconds = 1.5;
 /// hold -lockForConfiguration.
 - (void)openCloseRangeFocusWindowLocked;
 - (void)closeCloseRangeFocusWindowLocked;
+/// Asks the virtual device to choose its lens again, now, by stepping the zoom
+/// by an invisible amount (MIN-7420). Caller must already hold
+/// -lockForConfiguration. On _dispatchQueue.
+- (void)requestConstituentReevaluationLocked:(NSString *)reason;
+/// The AF detector's way in: re-checks that a re-evaluation is still wanted,
+/// takes the configuration lock and calls the method above (MIN-7420). On
+/// _dispatchQueue.
+- (void)requestConstituentReevaluationFromDetector:(NSString *)reason;
+/// Re-arms the AF hunt check every kCloseRangeFocusHuntSeconds for as long as
+/// the same hunt goes on (MIN-7420). On _dispatchQueue.
+- (void)scheduleFocusHuntCheck:(CFAbsoluteTime)huntStartedAt;
 /// Registers/removes the always-on adjustingFocus watch that decides when AF
 /// has failed to converge (MIN-4878). Both run on _dispatchQueue.
 - (void)setupCloseRangeFocusObservation;
@@ -172,9 +195,10 @@ static const NSTimeInterval kCloseRangeHopSettleSeconds = 1.5;
   // data output, which runs portrait like the preview.
   void (^_freezeFrameCompletion)(NSDictionary *_Nullable);
   CIContext *_freezeFrameContext;
-  // Close-range macro window (MIN-4878). While open, the MIN-3071 `.restricted`
-  // constituent-switching policy is lifted so AVFoundation may do its
-  // focus-driven hop to the ultra-wide (macro) constituent — the capture
+  // Close-range macro window (MIN-4878). Opening it asks AVFoundation to
+  // re-choose the lens, which is how it gets to the ultra-wide (macro)
+  // constituent, and turns smooth AF off (MIN-7420; until then it switched to
+  // `.auto`, which never hopped on device) — the capture
   // screen's equivalent of what _closeRangeScanMode gives the field scanners,
   // but scoped to the moments a close-up is actually being framed. Two things
   // open it: a tap-to-focus, and AF failing to converge (see
@@ -197,6 +221,14 @@ static const NSTimeInterval kCloseRangeHopSettleSeconds = 1.5;
   // Whether we hold the -activePrimaryConstituentDevice KVO registration
   // (MIN-6971). Only touched on _dispatchQueue.
   BOOL _observingConstituentSwitch;
+  // When we last triggered a lens re-evaluation (MIN-7420), for
+  // kConstituentReevaluationMinInterval. 0 = never. Only touched on
+  // _dispatchQueue.
+  CFAbsoluteTime _lastConstituentReevaluationAt;
+  // A request that arrived inside that interval is retried once it ends,
+  // instead of being dropped; this coalesces them into one retry. Only touched
+  // on _dispatchQueue.
+  BOOL _constituentReevaluationPending;
 }
 
 - (instancetype)initWithCameraSensor:(PigeonSensorPosition)sensor
@@ -398,6 +430,10 @@ static const NSTimeInterval kCloseRangeHopSettleSeconds = 1.5;
     self->_closeRangeFocusWindow = NO;
     self->_focusHuntStartedAt = 0;
     self->_closeRangeSettleUntil = 0;
+    self->_lastConstituentReevaluationAt = 0;
+    // A retry already scheduled for the outgoing device checks the device
+    // identity and drops itself; this only lets the new device schedule its own.
+    self->_constituentReevaluationPending = NO;
   });
 
   NSError *error;
@@ -1571,6 +1607,8 @@ static const int32_t kStillLongEdgeTarget = 4032;
 /// MIN-4878 is the same problem on the capture screen, reported as "the camera
 /// freezes when I try to take a close up". So the hop is allowed exactly when
 /// it is the only way to focus: in scan mode, or inside a close-range window.
+/// Since MIN-7420 the window no longer switches to `.auto`; it turns smooth AF
+/// off and asks for a re-evaluation (see -applyMacroFocusBiasLocked).
 - (BOOL)macroConstituentSwitchingAllowed {
   return _closeRangeScanMode || _closeRangeFocusWindow;
 }
@@ -1604,12 +1642,23 @@ static const int32_t kStillLongEdgeTarget = 4032;
 /// back device the default `.auto` lets AVFoundation do a focus/exposure-driven
 /// "fallback" switch — e.g. hop wide -> ultra-wide when continuous AF meets a
 /// subject closer than the wide's minimum focus distance — a visible FOV jump
-/// at a constant 1x zoom. `.restricted` with only `.videoZoomChanged` keeps the
-/// explicit zoom presets switching while suppressing those fallbacks. Scan mode
-/// and the close-range window are the deliberate exceptions: that fallback hop
-/// IS the macro mode a triple-camera device needs to focus something held
-/// closer than the wide lens's ~20cm minimum. `.auto` requires the conditions
-/// argument to be `.none` (the API contract when not `.restricted`).
+/// at a constant 1x zoom. `.restricted` keeps the explicit zoom presets
+/// switching while suppressing fallbacks that nobody asked for.
+///
+/// The restricted conditions are `.videoZoomChanged` and `.focusModeChanged`
+/// (MIN-7420). Each one is a one-off trigger: AVFoundation waits for focus and
+/// exposure to settle, then picks the lens that can actually focus, and keeps
+/// it until the next trigger. That is exactly why a 1x → 2x → 1x round trip
+/// fixed a blurry close-up on device while the MIN-6971 `.auto` window did not.
+/// So the capture screen asks for a re-evaluation at the moments a lens choice
+/// is wanted, and the lens never moves in between:
+///   * a tap-to-focus and -subjectAreaDidChange: both set focusMode, and the
+///     second one lets the device go back to the wide lens for the next item;
+///   * the close-range window and the AF detector call
+///     -requestConstituentReevaluationLocked:, which steps the zoom.
+/// Scan mode stays `.auto` (device-verified in MIN-3475): a scanner has no
+/// framing to protect. `.auto` requires the conditions argument to be `.none`
+/// (the API contract when not `.restricted`).
 ///
 /// Caller must hold -lockForConfiguration.
 - (void)applyMacroFocusBiasLocked {
@@ -1621,14 +1670,15 @@ static const int32_t kStillLongEdgeTarget = 4032;
     return;
   }
   if (@available(iOS 15.0, *)) {
-    if (closeRange) {
+    if (_closeRangeScanMode) {
       [_captureDevice
           setPrimaryConstituentDeviceSwitchingBehavior:AVCapturePrimaryConstituentDeviceSwitchingBehaviorAuto
                  restrictedSwitchingBehaviorConditions:AVCapturePrimaryConstituentDeviceRestrictedSwitchingBehaviorConditionNone];
     } else {
       [_captureDevice
           setPrimaryConstituentDeviceSwitchingBehavior:AVCapturePrimaryConstituentDeviceSwitchingBehaviorRestricted
-                 restrictedSwitchingBehaviorConditions:AVCapturePrimaryConstituentDeviceRestrictedSwitchingBehaviorConditionVideoZoomChanged];
+                 restrictedSwitchingBehaviorConditions:AVCapturePrimaryConstituentDeviceRestrictedSwitchingBehaviorConditionVideoZoomChanged |
+                                                       AVCapturePrimaryConstituentDeviceRestrictedSwitchingBehaviorConditionFocusModeChanged];
     }
   }
 }
@@ -1653,6 +1703,90 @@ static const int32_t kStillLongEdgeTarget = 4032;
   [self applyMacroFocusBiasLocked];
   [_captureDevice setSubjectAreaChangeMonitoringEnabled:YES];
   NSLog(@"CamerAwesome: close-range focus window opened - macro hop allowed (MIN-4878)");
+  [self requestConstituentReevaluationLocked:@"close-range window opened"];
+}
+
+/// Step the zoom by kConstituentReevaluationZoomStep so the virtual device
+/// chooses its lens again (MIN-7420).
+///
+/// This is the user's 1x → 2x → 1x workaround done invisibly. Under
+/// `.restricted` + `.videoZoomChanged` any zoom change, not only a crossing of
+/// a switch-over factor, lets AVFoundation move to a fallback lens once focus
+/// and exposure settle — the ultra-wide, whose macro focus is the only way to
+/// sharpen something closer than the wide lens's minimum focus distance. The
+/// zoom alternates between the requested factor and one step above it (below
+/// at the top of the range), so repeated calls never drift; the next
+/// -setZoom: or -applyZoomPolicy lands on the exact requested factor again.
+///
+/// Caller must hold -lockForConfiguration. On _dispatchQueue.
+- (void)requestConstituentReevaluationLocked:(NSString *)reason {
+  if (_captureDevice == nil || _closeRangeScanMode || ![self supportsConstituentSwitching]) {
+    // Scan mode runs `.auto` and needs no trigger; a single-lens camera has
+    // nothing to switch to.
+    return;
+  }
+  if (_captureDevice.isRampingVideoZoom) {
+    NSLog(@"CamerAwesome: lens re-evaluation (%@) skipped - zoom is ramping (MIN-7420)", reason);
+    return;
+  }
+  const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+  if (_lastConstituentReevaluationAt != 0 && now - _lastConstituentReevaluationAt < kConstituentReevaluationMinInterval) {
+    // Too soon after the last one, but not unwanted: the earlier re-evaluation
+    // may have run while the item was still further away, and with a still
+    // subject no new AF event would come to ask again. Retry once the interval
+    // ends; requests in between fold into that one retry.
+    if (_constituentReevaluationPending) {
+      NSLog(@"CamerAwesome: lens re-evaluation (%@) folded into the retry already scheduled (MIN-7420)", reason);
+      return;
+    }
+    _constituentReevaluationPending = YES;
+    const NSTimeInterval wait = kConstituentReevaluationMinInterval - (now - _lastConstituentReevaluationAt);
+    NSLog(@"CamerAwesome: lens re-evaluation (%@) deferred %.2fs - one ran %.2fs ago (MIN-7420)", reason, wait,
+          now - _lastConstituentReevaluationAt);
+    AVCaptureDevice *device = _captureDevice;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(wait * NSEC_PER_SEC)), _dispatchQueue, ^{
+      if (self->_captureDevice != device) {
+        NSLog(@"CamerAwesome: deferred lens re-evaluation (%@) dropped - camera changed (MIN-7420)", reason);
+        return;
+      }
+      self->_constituentReevaluationPending = NO;
+      [self requestConstituentReevaluationFromDetector:[NSString stringWithFormat:@"deferred: %@", reason]];
+    });
+    return;
+  }
+
+  const CGFloat conversion = _displayRatioConversion > 0 ? _displayRatioConversion : 1.0;
+  const CGFloat nativeMin = _captureDevice.minAvailableVideoZoomFactor;
+  const CGFloat nativeMax = _captureDevice.activeFormat.videoMaxZoomFactor;
+  const CGFloat requested = (_requestedDisplayZoom > 0 ? _requestedDisplayZoom : 1.0) / conversion;
+  const CGFloat base = MAX(nativeMin, MIN(requested, nativeMax));
+  CGFloat stepped = base * (1.0 + kConstituentReevaluationZoomStep);
+  if (stepped > nativeMax) {
+    stepped = base * (1.0 - kConstituentReevaluationZoomStep);
+  }
+  if (stepped < nativeMin) {
+    NSLog(@"CamerAwesome: lens re-evaluation (%@) skipped - zoom range %.3f-%.3f has no room to step (MIN-7420)",
+          reason, nativeMin, nativeMax);
+    return;
+  }
+  const CGFloat current = _captureDevice.videoZoomFactor;
+  const BOOL atBase = fabs(current - base) < base * kConstituentReevaluationZoomStep * 0.5;
+  const CGFloat target = atBase ? stepped : base;
+
+  @try {
+    _captureDevice.videoZoomFactor = target;
+  } @catch (NSException *exception) {
+    // Same transient floor/ceiling race -setZoom: swallows. The lens just
+    // isn't re-chosen this time; the next trigger tries again.
+    NSLog(@"CamerAwesome: lens re-evaluation (%@) failed to step zoom %.4f -> %.4f: %@ (MIN-7420)", reason, current,
+          target, exception.reason);
+    return;
+  }
+  _lastConstituentReevaluationAt = now;
+  if (@available(iOS 15.0, *)) {
+    NSLog(@"CamerAwesome: lens re-evaluation requested (%@): zoom %.4f -> %.4f, lensPosition %.3f, primary %@ (MIN-7420)",
+          reason, current, target, _captureDevice.lensPosition, _captureDevice.activePrimaryConstituentDevice.deviceType);
+  }
 }
 
 /// Caller must hold -lockForConfiguration.
@@ -1664,7 +1798,7 @@ static const int32_t kStillLongEdgeTarget = 4032;
   _focusHuntStartedAt = 0;
   _closeRangeSettleUntil = 0;
   [self applyMacroFocusBiasLocked];
-  NSLog(@"CamerAwesome: close-range focus window closed - macro hop restricted again (MIN-4878)");
+  NSLog(@"CamerAwesome: close-range focus window closed - smooth AF back on (MIN-4878)");
 }
 
 /// Watch AF for the life of the bound device so we can tell a normal rack from
@@ -1744,26 +1878,86 @@ static const int32_t kStillLongEdgeTarget = 4032;
       return;  // already timing this hunt
     }
     _focusHuntStartedAt = CFAbsoluteTimeGetCurrent();
-    const CFAbsoluteTime huntStartedAt = _focusHuntStartedAt;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kCloseRangeFocusHuntSeconds * NSEC_PER_SEC)),
-                   _dispatchQueue, ^{
-      // Same hunt, and it still hasn't landed: nothing in the near range is
-      // going to sharpen without the other lens.
-      if (self->_focusHuntStartedAt != huntStartedAt || !self->_captureDevice.isAdjustingFocus) {
-        return;
-      }
-      [self openCloseRangeFocusWindowFromDetector];
-    });
+    [self scheduleFocusHuntCheck:_focusHuntStartedAt];
     return;
   }
 
   _focusHuntStartedAt = 0;
-  if (_closeRangeFocusWindow) {
+  const float lensPosition = _captureDevice.lensPosition;
+  if (lensPosition > kCloseRangeLensNearLimit) {
+    if (lensPosition <= kCloseRangeLensNearLimit * 3) {
+      // Not a trigger, but the near-limit threshold has never been checked on a
+      // device: this line shows how close to it a too-close subject settles.
+      NSLog(@"CamerAwesome: AF settled near but above the macro threshold, lensPosition %.3f (MIN-7420)", lensPosition);
+    }
     return;
   }
-  if (_captureDevice.lensPosition <= kCloseRangeLensNearLimit) {
+  if (!_closeRangeFocusWindow) {
     [self openCloseRangeFocusWindowFromDetector];
+    return;
   }
+  // The window is already open (a tap, or an earlier detector hit while the
+  // item was still further away) and AF has settled at the near limit again:
+  // the earlier re-evaluation ran before the item came this close. Ask again
+  // (MIN-7420).
+  [self requestConstituentReevaluationFromDetector:[NSString stringWithFormat:@"still at near limit %.3f", lensPosition]];
+}
+
+/// One tick of the AF hunt watch. Same hunt, still not landed after
+/// kCloseRangeFocusHuntSeconds: nothing in the near range is going to sharpen
+/// without the other lens, so open the window. Re-armed for as long as that
+/// hunt goes on (MIN-7420): a restricted re-evaluation waits for focus to
+/// settle, and a single trigger fired early in a long hunt could otherwise be
+/// the last one — the settle branch only runs once AF stops adjusting.
+/// Requests in between are rate-limited and coalesced by
+/// -requestConstituentReevaluationLocked:.
+- (void)scheduleFocusHuntCheck:(CFAbsoluteTime)huntStartedAt {
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kCloseRangeFocusHuntSeconds * NSEC_PER_SEC)),
+                 _dispatchQueue, ^{
+    if (self->_focusHuntStartedAt != huntStartedAt || !self->_captureDevice.isAdjustingFocus) {
+      return;  // that hunt ended or the device changed; nothing left to watch
+    }
+    if (!self->_closeRangeFocusWindow) {
+      [self openCloseRangeFocusWindowFromDetector];
+    } else {
+      [self requestConstituentReevaluationFromDetector:@"AF still hunting"];
+    }
+    [self scheduleFocusHuntCheck:huntStartedAt];
+  });
+}
+
+- (void)requestConstituentReevaluationFromDetector:(NSString *)reason {
+  if (_captureDevice == nil || _closeRangeScanMode || !_closeRangeFocusWindow) {
+    // Scan mode runs `.auto`; a closed window means the user moved on (or a
+    // deferred retry outlived the close-up it was for).
+    NSLog(@"CamerAwesome: lens re-evaluation (%@) not needed - %@ (MIN-7420)", reason,
+          _captureDevice == nil ? @"no camera" : (_closeRangeScanMode ? @"scan mode" : @"close-range window closed"));
+    return;
+  }
+  // Re-check the focus state: by the time a deferred retry runs, AF may have
+  // settled comfortably inside the wide lens's range.
+  const float lensPosition = _captureDevice.lensPosition;
+  if (!_captureDevice.isAdjustingFocus && lensPosition > kCloseRangeLensNearLimit) {
+    NSLog(@"CamerAwesome: lens re-evaluation (%@) not needed - AF settled at lensPosition %.3f (MIN-7420)", reason,
+          lensPosition);
+    return;
+  }
+  // The ultra-wide already in use means the macro hop happened, or the user
+  // picked 0.5x; either way there is no closer-focusing lens to move to.
+  if (@available(iOS 15.0, *)) {
+    AVCaptureDevice *active = _captureDevice.activePrimaryConstituentDevice;
+    if ([active.deviceType isEqualToString:AVCaptureDeviceTypeBuiltInUltraWideCamera]) {
+      return;
+    }
+  }
+  NSError *lockError = nil;
+  if (![_captureDevice lockForConfiguration:&lockError]) {
+    NSLog(@"CamerAwesome: lens re-evaluation (%@) skipped - lockForConfiguration failed: %@ (MIN-7420)", reason,
+          lockError.localizedDescription);
+    return;
+  }
+  [self requestConstituentReevaluationLocked:reason];
+  [_captureDevice unlockForConfiguration];
 }
 
 - (void)openCloseRangeFocusWindowFromDetector {
@@ -2551,8 +2745,8 @@ static const int32_t kStillLongEdgeTarget = 4032;
   dispatch_async(_dispatchQueue, ^{
     // Inside the settle grace the "scene change" is the macro hop swapping the
     // lens under the point of interest, not the user moving on (MIN-6971).
-    // Handling it would re-centre AF and close the window that allowed the hop,
-    // restricting switching mid-close-up. Ignored entirely, so monitoring stays
+    // Handling it would re-centre AF and close the window mid-close-up (and,
+    // since MIN-7420, re-run the lens choice). Ignored entirely, so monitoring stays
     // on and the next genuine reframe still closes the window.
     if (self->_closeRangeFocusWindow && CFAbsoluteTimeGetCurrent() < self->_closeRangeSettleUntil) {
       NSLog(@"CamerAwesome: subject-area change inside the macro settle grace - ignored (MIN-6971)");
@@ -2577,9 +2771,11 @@ static const int32_t kStillLongEdgeTarget = 4032;
         [self->_captureDevice setExposureMode:AVCaptureExposureModeContinuousAutoExposure];
       }
       // The scene at the point of interest changed, so whatever close-up the
-      // macro window was opened for is no longer being framed — restore
-      // MIN-3071's restriction before an unasked-for FOV jump can happen
-      // (MIN-4878).
+      // macro window was opened for is no longer being framed (MIN-4878).
+      // Closing it brings smooth AF back. The lens itself is re-chosen by the
+      // focusMode set above (`.focusModeChanged`, MIN-7420): the device goes
+      // back to the wide lens once the next item is far enough away, instead
+      // of staying on the cropped ultra-wide until the next zoom change.
       [self closeCloseRangeFocusWindowLocked];
       [self->_captureDevice setSubjectAreaChangeMonitoringEnabled:NO];
       [self->_captureDevice unlockForConfiguration];

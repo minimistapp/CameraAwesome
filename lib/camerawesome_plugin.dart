@@ -388,7 +388,13 @@ class CamerawesomePlugin {
   /// [AndroidFocusSettings.autoCancelDurationInMillis] > 0 releases it back to
   /// full-frame auto after that long instead.
   /// [AndroidFocusSettings.lockFocusAndExposure] is the long-press AE/AF lock:
-  /// focus and exposure stay pinned until the next [focusOnPoint].
+  /// focus and exposure stay pinned until the next [focusOnPoint], or until
+  /// the camera lets go of it on its own: a rebind (capture mode, aspect ratio
+  /// 4:3 ↔ 16:9, sensor switch, colour filter on/off, image analysis on/off,
+  /// display rotation), [init] again, [stop], or the activity pausing.
+  /// Each of those fires [tapMeteringReleased]; call [focusOnPoint] again to
+  /// re-take the lock. A plain point is also released when the phone turns
+  /// away from it.
   static Future<void> focusOnPoint({
     required PreviewSize previewSize,
     required Offset position,

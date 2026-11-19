@@ -842,6 +842,15 @@ data class CameraXState(
         }
     }
 
+    /// Before this state is replaced by a new setup: drop any tap (telling Dart,
+    /// it is gone) and stop forwarding, so only the current state reports
+    /// releases from here on. (MIN-6738)
+    fun retireTapMetering(reason: String) {
+        tapMetering?.reset(reason)
+        tapMetering = null
+        onTapMeteringReleased = null
+    }
+
     fun stop() {
         // Stops the motion listener and clears the interop regions. (MIN-6738)
         tapMetering?.reset("camera stopped")

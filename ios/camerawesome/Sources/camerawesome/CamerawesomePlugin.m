@@ -1068,11 +1068,14 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
     
     [self.multiCamera setSensors:sensors];
   } else {
+    BOOL hadTapMetering = [self.camera takeTapMeteringForSensorSwitch];
     [self.camera setSensor:sensors.firstObject];
-    // The new device starts on full-scene auto: any tapped point or AE/AF
-    // lock on the old one is gone, so the app should drop its focus square
-    // and lock label (MIN-6738; Android reports the same through its rebind).
-    [self.tapMeteringChannel invokeMethod:@"released" arguments:@"sensor switched"];
+    // The new device starts on full-scene auto: a tapped point or AE/AF lock
+    // on the old one is gone, so the app should drop its focus square and
+    // lock label (MIN-6738; Android reports the same through its rebind).
+    if (hadTapMetering) {
+      [self.tapMeteringChannel invokeMethod:@"released" arguments:@"sensor switched"];
+    }
   }
 }
 

@@ -209,6 +209,15 @@ static const CGFloat kConstituentReevaluationZoomStep = 0.001;
   // -applyContinuousAutoFocusPolicy from whichever thread re-binds the format,
   // hence atomic.
   _Atomic(BOOL) _closeRangeFocusWindow;
+  // Tap-to-focus state (MIN-6738). Bumped by every tap / long-press, so a
+  // pending lock or a queued subject-area reset from an older one is dropped.
+  // _tapPointActive: a plain tap's point is held (subject-area monitoring may
+  // release it). _tapLockActive: a long-press AE/AF lock is pending or held,
+  // which nothing but the next tap or a sensor switch releases. Written on
+  // _dispatchQueue, read from the main thread too, hence atomic.
+  _Atomic(NSUInteger) _tapGeneration;
+  _Atomic(BOOL) _tapPointActive;
+  _Atomic(BOOL) _tapLockActive;
   // Whether we hold the always-on adjustingFocus KVO registration, and when the
   // current uninterrupted AF hunt began (0 = not hunting). Both mutated only on
   // _dispatchQueue.
@@ -2283,6 +2292,14 @@ static const int32_t kStillLongEdgeTarget = 4032;
 }
 
 /// Set sensor between Front & Rear camera
+- (BOOL)takeTapMeteringForSensorSwitch {
+  BOOL wasActive = _tapPointActive || _tapLockActive;
+  _tapGeneration++;
+  _tapPointActive = NO;
+  _tapLockActive = NO;
+  return wasActive;
+}
+
 - (void)setSensor:(PigeonSensor *)sensor {
   // Check if the session is running before changing the preset
   BOOL sessionIsRunning = _captureSession.isRunning;
@@ -2406,9 +2423,12 @@ static const int32_t kStillLongEdgeTarget = 4032;
   if ([_captureDevice lockForConfiguration:&brightnessError]) {
     // Keep an AE/AF lock (long-press) locked: the target bias still applies
     // in AVCaptureExposureModeLocked, like dragging the sun in the Camera app
-    // while locked. Any other mode goes back to continuous metering. (MIN-6738)
+    // while locked. Any other mode goes back to continuous metering. A lock
+    // still settling (AutoExpose, pinned by its stability callback) is left
+    // alone too, so the callback pins what the long-press metered. (MIN-6738)
     AVCaptureExposureMode exposureMode = AVCaptureExposureModeContinuousAutoExposure;
-    if (_captureDevice.exposureMode != AVCaptureExposureModeLocked &&
+    if (!_tapLockActive &&
+        _captureDevice.exposureMode != AVCaptureExposureModeLocked &&
         [_captureDevice isExposureModeSupported:exposureMode]) {
       [_captureDevice setExposureMode:exposureMode];
     }
@@ -2672,6 +2692,9 @@ static const int32_t kStillLongEdgeTarget = 4032;
     //                       a hard lock can freeze a still-soft frame (MIN-1556).
     BOOL lockFocus = settings != nil && [settings.lockFocus boolValue];
     BOOL setExposure = settings != nil && [settings.setExposurePoint boolValue];
+    NSUInteger tapGeneration = ++_tapGeneration;
+    _tapPointActive = !lockFocus;
+    _tapLockActive = lockFocus;
 
     // Focus range restriction — apply BEFORE the focus mode so the AF scan
     // honours it from its first frame (matters most for the near/macro range).
@@ -2726,6 +2749,12 @@ static const int32_t kStillLongEdgeTarget = 4032;
     // the scene changes — matching native tap-to-focus.
     if (lockFocus) {
       [self whenFocusStableWithTimeout:1.0 completion:^{
+        // A newer tap (or a sensor switch) took over while AF settled: don't
+        // pin its focus and exposure with this lock.
+        if (self->_tapGeneration != tapGeneration) {
+          NSLog(@"CamerAwesome: AE/AF lock superseded before it settled - not pinned (MIN-6738)");
+          return;
+        }
         NSError *pinError;
         if ([self->_captureDevice lockForConfiguration:&pinError]) {
           if ([self->_captureDevice isFocusModeSupported:AVCaptureFocusModeLocked]) {
@@ -2758,6 +2787,12 @@ static const int32_t kStillLongEdgeTarget = 4032;
       NSLog(@"CamerAwesome: subject-area change inside the macro settle grace - ignored (MIN-6971)");
       return;
     }
+    // Queued from a plain tap's monitoring, but a long-press lock has started
+    // since: the lock holds through scene changes (MIN-6738).
+    if (self->_tapLockActive) {
+      NSLog(@"CamerAwesome: subject-area change while an AE/AF lock is held - ignored (MIN-6738)");
+      return;
+    }
     NSError *lockError;
     if ([self->_captureDevice lockForConfiguration:&lockError]) {
       // The device can report focus POI unsupported here (e.g. while the
@@ -2785,8 +2820,12 @@ static const int32_t kStillLongEdgeTarget = 4032;
       [self closeCloseRangeFocusWindowLocked];
       [self->_captureDevice setSubjectAreaChangeMonitoringEnabled:NO];
       [self->_captureDevice unlockForConfiguration];
+      // Only a tap's point is reported: monitoring may also have been turned
+      // on by the AF detector's macro window, with no tap to release.
+      BOOL hadTapPoint = self->_tapPointActive;
+      self->_tapPointActive = NO;
       void (^released)(NSString *) = self.onTapMeteringReleased;
-      if (released != nil) {
+      if (hadTapPoint && released != nil) {
         dispatch_async(dispatch_get_main_queue(), ^{
           released(@"subject area changed");
         });

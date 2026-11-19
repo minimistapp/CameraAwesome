@@ -88,7 +88,13 @@ class TapMeteringController(
     private var camera: Camera? = null
     private var point: MeteringPoint? = null
     private var fallbackAspect: Rational? = null
+
+    /// A long-press lock was asked for (it may still be acquiring).
     private var locked = false
+
+    /// The lock has settled: exposure is pinned. Kept apart from [locked] so a
+    /// zoom during acquisition can't pin exposure before the point is metered.
+    private var aeLocked = false
 
     /// Bumped by every tap and every reset, so a callback from an older
     /// action never touches state that a newer one owns.
@@ -123,6 +129,7 @@ class TapMeteringController(
         this.point = point
         this.fallbackAspect = fallbackAspect
         this.locked = lock
+        this.aeLocked = false
         observeLifecycle()
 
         val regions = meteringRegions(camera, point, fallbackAspect)
@@ -135,16 +142,17 @@ class TapMeteringController(
             return
         }
         applyInterop(camera, regions, aeLock = false)
+        // Watch for the release from the tap itself, not from the end of the
+        // scan: a turn during the scan must still count, and a hold must last
+        // as long as asked however long the scan takes. A release mid-scan
+        // bumps [generation], so the scan's completion below is ignored.
+        if (!lock) startHolding(gen, holdMillis)
 
         if (regions.af == null) {
             // Fixed-focus lens: there is nothing to scan, only exposure to meter.
             Log.d(CamerawesomePlugin.TAG, "Tap-to-focus: no AF regions on this camera, metering exposure only")
             if (lock) {
-                handler.postDelayed({
-                    if (gen == generation) applyInterop(camera, regions, aeLock = true)
-                }, AE_SETTLE_MS)
-            } else {
-                startHolding(gen, holdMillis)
+                handler.postDelayed({ if (gen == generation) settleLock(camera) }, AE_SETTLE_MS)
             }
             return
         }
@@ -159,20 +167,47 @@ class TapMeteringController(
                 Log.d(CamerawesomePlugin.TAG, "Tap-to-focus scan finished after a newer tap or reset; ignored")
                 return@addListener
             }
-            runCatching { scan.get() }.onFailure { e ->
-                Log.w(CamerawesomePlugin.TAG, "Tap-to-focus scan didn't complete (lock=$lock): ${e.message}")
-            }
+            val result = runCatching { scan.get() }
+            val error = result.exceptionOrNull()
             if (lock) {
+                if (error != null) {
+                    // No scan ran (camera inactive, action rejected), so there
+                    // is no focus to hold: don't pin exposure on its own.
+                    Log.w(CamerawesomePlugin.TAG, "AE/AF lock not taken, the focus scan failed: ${error.message}")
+                    reset("lock scan failed")
+                    return@addListener
+                }
+                if (result.getOrNull()?.isFocusSuccessful == false) {
+                    // Like the system cameras (and our iOS lock): lock where
+                    // the lens ended up rather than refuse the lock.
+                    Log.d(CamerawesomePlugin.TAG, "AE/AF lock: AF didn't converge, locking at the lens position it reached")
+                }
                 // Focus stays locked by the (never cancelled) action; pin
                 // exposure too now that it has metered the point.
-                applyInterop(camera, regions, aeLock = true)
+                settleLock(camera)
             } else {
+                if (error != null) {
+                    Log.w(CamerawesomePlugin.TAG, "Tap-to-focus scan didn't complete: ${error.message}")
+                }
                 // Back to CONTINUOUS_PICTURE. The interop regions keep it
                 // aimed at the tapped point.
                 logFailure(control.cancelFocusAndMetering(), "resume continuous AF after the tap scan")
-                startHolding(gen, holdMillis)
             }
         }, mainExecutor)
+    }
+
+    /// Pins exposure for a long-press lock, with regions for the crop as it is
+    /// *now* (a crop-region zoom may have moved it while the scan ran).
+    private fun settleLock(camera: Camera) {
+        val p = point ?: return
+        val regions = meteringRegions(camera, p, fallbackAspect)
+        if (regions == null) {
+            Log.w(CamerawesomePlugin.TAG, "AE/AF lock not settled: the camera reports no active array size")
+            reset("no active array")
+            return
+        }
+        aeLocked = true
+        applyInterop(camera, regions, aeLock = true)
     }
 
     /// Back to full-frame continuous AF/AE. Safe to call when nothing is active.
@@ -189,6 +224,7 @@ class TapMeteringController(
         camera = null
         point = null
         locked = false
+        aeLocked = false
         clearInterop(cam, reason)
         logFailure(cam.cameraControl.cancelFocusAndMetering(), "cancel tap focus ($reason)")
         if (wasActive) onReleased(reason)
@@ -208,7 +244,7 @@ class TapMeteringController(
             Log.w(CamerawesomePlugin.TAG, "Tap-to-focus regions not recomputed after zoom: no active array size")
             return
         }
-        applyInterop(cam, regions, aeLock = locked)
+        applyInterop(cam, regions, aeLock = aeLocked)
     }
 
     private fun startHolding(gen: Int, holdMillis: Long) {

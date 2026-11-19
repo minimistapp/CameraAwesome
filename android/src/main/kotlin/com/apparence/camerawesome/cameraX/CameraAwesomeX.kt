@@ -180,6 +180,10 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
         val cameraProvider = getCameraProvider()
 
         val mode = CaptureModes.valueOf(captureMode)
+        // A state being replaced must not keep a tap alive: its motion watcher
+        // could otherwise release "a point" after the user taps the new
+        // preview. (MIN-6738)
+        if (::cameraState.isInitialized) cameraState.retireTapMetering("camera set up again")
         cameraState = CameraXState(cameraProvider = cameraProvider,
             textureEntries = sensors.mapIndexed { index: Int, pigeonSensor: PigeonSensor ->
                 (pigeonSensor.deviceId

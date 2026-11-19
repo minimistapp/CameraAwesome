@@ -70,6 +70,10 @@ AVCaptureMetadataOutputObjectsDelegate>
 /// full-scene auto without a new tap (a subject-area change), with the
 /// reason. The app hides its focus square then. (MIN-6738)
 @property(nonatomic, copy, nullable) void (^onTapMeteringReleased)(NSString *reason);
+/// Forgets any tapped point or AE/AF lock (the new device starts on full-scene
+/// auto, and a pending lock must not pin it) and returns whether there was
+/// one. Called by the plugin around a sensor switch. (MIN-6738)
+- (BOOL)takeTapMeteringForSensorSwitch;
 
 /// MIN-3655: while a non-identity colour filter is active the preview stays
 /// fully native — the container view overlays [filteredPreviewLayer] (an

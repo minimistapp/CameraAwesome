@@ -177,8 +177,10 @@ class CameraContext {
   /// [flutterPreviewSize] is the size of the preview widget. You can retrieve
   /// it from the builders of [CameraAwesomeBuilder].
   ///
-  /// Use [androidFocusSettings] for additional Android focus settings (auto
-  /// focus timeout before going back to passive mode).
+  /// Use [androidFocusSettings] for additional Android focus settings. By
+  /// default the point is held (focus and exposure keep tracking it) until the
+  /// phone turns away, like the system camera; set
+  /// [AndroidFocusSettings.lockFocusAndExposure] for the long-press AE/AF lock.
   Future<void> focusOnPoint({
     required Offset flutterPosition,
     required PreviewSize pixelPreviewSize,
@@ -197,14 +199,17 @@ class CameraContext {
         iosFocusSettings: iosFocusSettings,
       );
     } else {
-      final ratio = pixelPreviewSize.height / flutterPreviewSize.height;
-      // Transform flutter position to pixel position
-      Offset pixelPosition = flutterPosition.scale(ratio, ratio);
+      // Into the upright preview frame's pixel space, per axis. Native
+      // normalises it and maps it to the sensor (MIN-6738).
+      final pixelPosition = flutterPosition.scale(
+        pixelPreviewSize.width / flutterPreviewSize.width,
+        pixelPreviewSize.height / flutterPreviewSize.height,
+      );
       return CamerawesomePlugin.focusOnPoint(
         position: pixelPosition,
         previewSize: pixelPreviewSize,
         androidFocusSettings: androidFocusSettings ??
-            AndroidFocusSettings(autoCancelDurationInMillis: 5000),
+            AndroidFocusSettings(autoCancelDurationInMillis: 0),
       );
     }
   }

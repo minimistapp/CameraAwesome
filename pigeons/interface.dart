@@ -234,7 +234,16 @@ class AndroidFocusSettings {
   /// between 0 (exclusive) and 1000 (exclusive), it will be raised to 1000.
   int autoCancelDurationInMillis;
 
-  AndroidFocusSettings({required this.autoCancelDurationInMillis});
+  /// Native long-press AE/AF lock: focus once at the point, then hold focus and
+  /// exposure there until the next `focusOnPoint` (no auto-cancel, no release
+  /// on device movement). Null or false: focus once at the point, then keep
+  /// focusing and metering continuously at it.
+  bool? lockFocusAndExposure;
+
+  AndroidFocusSettings({
+    required this.autoCancelDurationInMillis,
+    this.lockFocusAndExposure,
+  });
 }
 
 /// iOS-specific focus settings for [focusOnPoint].

@@ -56,6 +56,9 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
 /// SingleCameraPreview — so it lives here and is pushed onto every new camera,
 /// like captureOrientationOverride. Cleared by the screens on dispose.
 @property(nonatomic, assign) BOOL closeRangeScanModeRequested;
+/// Tells Dart when a tap-to-focus point was dropped without a new tap, so
+/// the app can hide its focus square (MIN-6738).
+@property(nonatomic, strong, nullable) FlutterMethodChannel *tapMeteringChannel;
 - (instancetype)init:(NSObject<FlutterPluginRegistrar>*)registrar;
 @end
 
@@ -164,6 +167,11 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
       result(FlutterMethodNotImplemented);
     }
   }];
+
+  // Tap-to-focus release notices (MIN-6738), native → Dart only.
+  instance.tapMeteringChannel =
+      [FlutterMethodChannel methodChannelWithName:@"camerawesome/tap_metering"
+                                  binaryMessenger:[registrar messenger]];
 
   // Close-range scan bias for the field-scanner screens (MIN-3475). A plain
   // method channel for the same reason as preview_orientation above: one
@@ -321,6 +329,11 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
     // initState precedes camera init) — push the stored request onto the
     // fresh camera (MIN-3475). No-op when it was never set.
     [self.camera setCloseRangeScanMode:self.closeRangeScanModeRequested];
+
+    __weak typeof(self) weakPlugin = self;
+    self.camera.onTapMeteringReleased = ^(NSString *reason) {
+      [weakPlugin.tapMeteringChannel invokeMethod:@"released" arguments:reason];
+    };
 
     int64_t textureId = [self->_textureRegistry registerTexture:self.camera.previewTexture];
     
@@ -1056,6 +1069,10 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
     [self.multiCamera setSensors:sensors];
   } else {
     [self.camera setSensor:sensors.firstObject];
+    // The new device starts on full-scene auto: any tapped point or AE/AF
+    // lock on the old one is gone, so the app should drop its focus square
+    // and lock label (MIN-6738; Android reports the same through its rebind).
+    [self.tapMeteringChannel invokeMethod:@"released" arguments:@"sensor switched"];
   }
 }
 

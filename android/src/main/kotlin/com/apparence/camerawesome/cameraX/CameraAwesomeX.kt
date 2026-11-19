@@ -62,6 +62,9 @@ enum class CaptureModes {
 class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewViewProvider {
     private lateinit var physicalButtonHandler: PhysicalButtonsHandler
     private var binding: FlutterPluginBinding? = null
+
+    /// Tap-to-focus release notices, native → Dart (MIN-6738).
+    private var tapMeteringChannel: MethodChannel? = null
     private var textureRegistry: TextureRegistry? = null
     private var activity: Activity? = null
     private lateinit var imageStreamChannel: EventChannel
@@ -192,6 +195,9 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
             this.updateAspectRatio(aspectRatio)
             this.flashMode = FlashMode.valueOf(flashMode)
             this.enableAudioRecording = videoOptions?.enableAudio ?: true
+            this.onTapMeteringReleased = { reason ->
+                tapMeteringChannel?.invokeMethod("released", reason)
+            }
         }
         // MIN-2406 (Android parity with iOS): render the single-sensor preview
         // through a native CameraX PreviewView — OS-composited and decoupled
@@ -843,7 +849,16 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
         }
     }
 
-    @SuppressLint("RestrictedApi")
+    /**
+     * Tap-to-focus. [x]/[y] are in [previewSize]'s space: the displayed,
+     * upright preview frame (the Dart side lays the preview out at that size,
+     * so a tap's local position is already in it).
+     *
+     * [AndroidFocusSettings.lockFocusAndExposure] picks the long-press AE/AF
+     * lock; [AndroidFocusSettings.autoCancelDurationInMillis] > 0 releases the
+     * point after that long, <= 0 holds it until the scene changes. See
+     * [TapMeteringController]. (MIN-6738)
+     */
     override fun focusOnPoint(
         previewSize: PreviewSize,
         x: Double,
@@ -851,29 +866,22 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
         androidFocusSettings: AndroidFocusSettings?,
         iosFocusSettings: IOSFocusSettings?,
     ) {
-        val autoCancelDurationInMillis = androidFocusSettings?.autoCancelDurationInMillis ?: 2500L
-        val factory: MeteringPointFactory = SurfaceOrientedMeteringPointFactory(
-            previewSize.width.toFloat(), previewSize.height.toFloat(),
-        )
-
-        val autoFocusPoint = factory.createPoint(x.toFloat(), y.toFloat())
-        try {
-            (cameraState.concurrentCamera?.cameras?.firstOrNull()
-                ?: cameraState.previewCamera!!).cameraControl.startFocusAndMetering(
-                FocusMeteringAction.Builder(
-                    autoFocusPoint,
-                    FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE or FocusMeteringAction.FLAG_AWB
-                ).apply {
-                    if (autoCancelDurationInMillis <= 0) {
-                        disableAutoCancel()
-                    } else {
-                        setAutoCancelDuration(autoCancelDurationInMillis, TimeUnit.MILLISECONDS)
-                    }
-                }.build()
-            )
-        } catch (e: CameraInfoUnavailableException) {
-            throw e
+        if (previewSize.width <= 0.0 || previewSize.height <= 0.0) {
+            Log.w(CamerawesomePlugin.TAG, "Tap-to-focus at ($x, $y) ignored: preview size ${previewSize.width}x${previewSize.height}")
+            return
         }
+        val act = activity
+        if (act == null) {
+            Log.w(CamerawesomePlugin.TAG, "Tap-to-focus at ($x, $y) ignored: no activity attached")
+            return
+        }
+        cameraState.focusOnPreviewPoint(
+            act,
+            u = (x / previewSize.width).toFloat().coerceIn(0f, 1f),
+            v = (y / previewSize.height).toFloat().coerceIn(0f, 1f),
+            lock = androidFocusSettings?.lockFocusAndExposure == true,
+            holdMillis = androidFocusSettings?.autoCancelDurationInMillis ?: 0L,
+        )
     }
 
     @SuppressLint("RestrictedApi")
@@ -1017,6 +1025,7 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
                 else -> result.notImplemented()
             }
         }
+        tapMeteringChannel = MethodChannel(binding.binaryMessenger, "camerawesome/tap_metering")
         // Native preview platform view (MIN-2406, Android parity with iOS). The
         // factory reads the current PreviewView from this plugin on demand.
         binding.platformViewRegistry.registerViewFactory(
@@ -1027,6 +1036,7 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware, PreviewVie
 
     override fun onDetachedFromEngine(binding: FlutterPluginBinding) {
         switchStill.dispose()
+        tapMeteringChannel = null
         this.binding = null
     }
 

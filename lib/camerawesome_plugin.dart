@@ -382,14 +382,13 @@ class CamerawesomePlugin {
 
   /// Start auto focus on a specific [position] with a given [previewSize].
   ///
-  /// On Android, you can set [androidFocusSettings].
-  /// It contains a parameter [AndroidFocusSettings.autoCancelDurationInMillis].
-  /// It is the time in milliseconds after which the auto focus will be canceled.
-  /// Passive focus will resume after that duration.
-  ///
-  /// If that duration is equals to or less than 0, auto focus is never
-  /// cancelled and passive focus will not resume. After this, if you want to
-  /// focus on an other point, you'll have to call again [focusOnPoint].
+  /// On Android, [position] is in [previewSize]'s space (the upright preview
+  /// frame). A tap focuses once at the point, then keeps focusing and metering
+  /// there until the phone turns away, the next call, or a rebind.
+  /// [AndroidFocusSettings.autoCancelDurationInMillis] > 0 releases it back to
+  /// full-frame auto after that long instead.
+  /// [AndroidFocusSettings.lockFocusAndExposure] is the long-press AE/AF lock:
+  /// focus and exposure stay pinned until the next [focusOnPoint].
   static Future<void> focusOnPoint({
     required PreviewSize previewSize,
     required Offset position,
@@ -494,6 +493,25 @@ class CamerawesomePlugin {
       'setPreviewOrientationOverride',
       override?.name,
     );
+  }
+
+  static const MethodChannel _tapMeteringChannel =
+      MethodChannel('camerawesome/tap_metering');
+  static StreamController<String>? _tapMeteringReleases;
+
+  /// Fires, with the native reason, when a [focusOnPoint] point or AE/AF lock
+  /// is dropped back to full-frame auto without a new [focusOnPoint]: the phone
+  /// turned away or the scene changed, the camera rebound, stopped or the app
+  /// paused. Hide any focus indicator then (MIN-6738).
+  static Stream<String> get tapMeteringReleased {
+    final controller = _tapMeteringReleases ??= StreamController<String>.broadcast(
+      onListen: () => _tapMeteringChannel.setMethodCallHandler((call) async {
+        if (call.method == 'released') {
+          _tapMeteringReleases?.add(call.arguments is String ? call.arguments as String : '');
+        }
+      }),
+    );
+    return controller.stream;
   }
 
   static const MethodChannel _previewFreezeChannel =

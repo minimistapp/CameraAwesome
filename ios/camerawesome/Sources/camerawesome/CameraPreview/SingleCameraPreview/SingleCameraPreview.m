@@ -2404,8 +2404,12 @@ static const int32_t kStillLongEdgeTarget = 4032;
 - (void)setBrightness:(NSNumber *)brightness error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
   NSError *brightnessError = nil;
   if ([_captureDevice lockForConfiguration:&brightnessError]) {
+    // Keep an AE/AF lock (long-press) locked: the target bias still applies
+    // in AVCaptureExposureModeLocked, like dragging the sun in the Camera app
+    // while locked. Any other mode goes back to continuous metering. (MIN-6738)
     AVCaptureExposureMode exposureMode = AVCaptureExposureModeContinuousAutoExposure;
-    if ([_captureDevice isExposureModeSupported:exposureMode]) {
+    if (_captureDevice.exposureMode != AVCaptureExposureModeLocked &&
+        [_captureDevice isExposureModeSupported:exposureMode]) {
       [_captureDevice setExposureMode:exposureMode];
     }
     
@@ -2705,11 +2709,13 @@ static const int32_t kStillLongEdgeTarget = 4032;
       }
     }
 
-    // Subject-area change monitoring in BOTH modes: when the scene at the
+    // Subject-area change monitoring for a plain tap: when the scene at the
     // tapped point changes significantly, subjectAreaDidChange: resets us to
     // centered continuous AF/AE — matching the native Camera app, which drops
-    // the focus square and returns to full-scene auto.
-    [_captureDevice setSubjectAreaChangeMonitoringEnabled:YES];
+    // the focus square and returns to full-scene auto. The lock flavour is the
+    // long-press AE/AF lock, which the Camera app holds through any scene
+    // change until the next tap (MIN-6738), so it turns monitoring off.
+    [_captureDevice setSubjectAreaChangeMonitoringEnabled:!lockFocus];
 
     [_captureDevice unlockForConfiguration];
 
@@ -2779,6 +2785,14 @@ static const int32_t kStillLongEdgeTarget = 4032;
       [self closeCloseRangeFocusWindowLocked];
       [self->_captureDevice setSubjectAreaChangeMonitoringEnabled:NO];
       [self->_captureDevice unlockForConfiguration];
+      void (^released)(NSString *) = self.onTapMeteringReleased;
+      if (released != nil) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          released(@"subject area changed");
+        });
+      }
+    } else {
+      NSLog(@"CamerAwesome: subject-area change not applied, lockForConfiguration failed: %@", lockError.localizedDescription);
     }
   });
 }

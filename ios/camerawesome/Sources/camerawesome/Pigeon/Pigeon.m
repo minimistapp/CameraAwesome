@@ -305,15 +305,18 @@ static id GetNullableObjectAtIndex(NSArray *array, NSInteger key) {
 @end
 
 @implementation AndroidFocusSettings
-+ (instancetype)makeWithAutoCancelDurationInMillis:(NSNumber *)autoCancelDurationInMillis {
++ (instancetype)makeWithAutoCancelDurationInMillis:(NSNumber *)autoCancelDurationInMillis
+    lockFocusAndExposure:(nullable NSNumber *)lockFocusAndExposure {
   AndroidFocusSettings* pigeonResult = [[AndroidFocusSettings alloc] init];
   pigeonResult.autoCancelDurationInMillis = autoCancelDurationInMillis;
+  pigeonResult.lockFocusAndExposure = lockFocusAndExposure;
   return pigeonResult;
 }
 + (AndroidFocusSettings *)fromList:(NSArray *)list {
   AndroidFocusSettings *pigeonResult = [[AndroidFocusSettings alloc] init];
   pigeonResult.autoCancelDurationInMillis = GetNullableObjectAtIndex(list, 0);
   NSAssert(pigeonResult.autoCancelDurationInMillis != nil, @"");
+  pigeonResult.lockFocusAndExposure = list.count > 1 ? GetNullableObjectAtIndex(list, 1) : nil;
   return pigeonResult;
 }
 + (nullable AndroidFocusSettings *)nullableFromList:(NSArray *)list {
@@ -322,6 +325,7 @@ static id GetNullableObjectAtIndex(NSArray *array, NSInteger key) {
 - (NSArray *)toList {
   return @[
     (self.autoCancelDurationInMillis ?: [NSNull null]),
+    (self.lockFocusAndExposure ?: [NSNull null]),
   ];
 }
 @end

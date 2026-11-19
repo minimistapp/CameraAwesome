@@ -66,6 +66,10 @@ AVCaptureMetadataOutputObjectsDelegate>
 @property(readonly, nonatomic) PhysicalButtonController *physicalButtonController;
 @property(readonly, copy) void (^completion)(NSNumber * _Nullable, FlutterError * _Nullable);
 @property(nonatomic, copy) void (^onPreviewFrameAvailable)(void);
+/// Called on the main queue when a tap-to-focus point is dropped back to
+/// full-scene auto without a new tap (a subject-area change), with the
+/// reason. The app hides its focus square then. (MIN-6738)
+@property(nonatomic, copy, nullable) void (^onTapMeteringReleased)(NSString *reason);
 
 /// MIN-3655: while a non-identity colour filter is active the preview stays
 /// fully native — the container view overlays [filteredPreviewLayer] (an

@@ -403,19 +403,28 @@ data class AndroidFocusSettings (
    * Minimal duration of [autoCancelDurationInMillis] is 1000 ms. If set
    * between 0 (exclusive) and 1000 (exclusive), it will be raised to 1000.
    */
-  val autoCancelDurationInMillis: Long
+  val autoCancelDurationInMillis: Long,
+  /**
+   * Native long-press AE/AF lock: focus once at the point, then hold focus and
+   * exposure there until the next `focusOnPoint` (no auto-cancel, no release
+   * on device movement). Null or false: focus once at the point, then keep
+   * focusing and metering continuously at it.
+   */
+  val lockFocusAndExposure: Boolean? = null
 
 ) {
   companion object {
     @Suppress("UNCHECKED_CAST")
     fun fromList(list: List<Any?>): AndroidFocusSettings {
       val autoCancelDurationInMillis = list[0].let { if (it is Int) it.toLong() else it as Long }
-      return AndroidFocusSettings(autoCancelDurationInMillis)
+      val lockFocusAndExposure = list.getOrNull(1) as Boolean?
+      return AndroidFocusSettings(autoCancelDurationInMillis, lockFocusAndExposure)
     }
   }
   fun toList(): List<Any?> {
     return listOf<Any?>(
       autoCancelDurationInMillis,
+      lockFocusAndExposure,
     )
   }
 }

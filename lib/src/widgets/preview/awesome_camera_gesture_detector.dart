@@ -26,11 +26,18 @@ class OnPreviewTapBuilder {
 class OnPreviewTap {
   final Function(Offset position, PreviewSize flutterPreviewSize,
       PreviewSize pixelPreviewSize) onTap;
+
+  /// Called when the preview is pressed and held, with the same arguments as
+  /// [onTap]. The system cameras use this for the AE/AF lock. Null: a long
+  /// press does nothing.
+  final Function(Offset position, PreviewSize flutterPreviewSize,
+      PreviewSize pixelPreviewSize)? onLongPress;
   final Widget Function(Offset tapPosition)? onTapPainter;
   final Duration? tapPainterDuration;
 
   const OnPreviewTap({
     required this.onTap,
+    this.onLongPress,
     this.onTapPainter = _awesomeFocusBuilder,
     this.tapPainterDuration = const Duration(milliseconds: 2000),
   });
@@ -125,26 +132,28 @@ class _AwesomeCameraGestureDetector
               GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
             () => TapGestureRecognizer()
               ..onTapUp = (details) {
-                if (widget
-                        .onPreviewTapBuilder!.onPreviewTap.tapPainterDuration !=
-                    null) {
-                  _timer?.cancel();
-                  _timer = Timer(
-                      widget.onPreviewTapBuilder!.onPreviewTap
-                          .tapPainterDuration!, () {
-                    setState(() {
-                      _tapPosition = null;
-                    });
-                  });
-                }
-                setState(() {
-                  _tapPosition = details.localPosition;
-                  _tapCount++;
-                });
+                _showTapPainter(details.localPosition);
                 widget.onPreviewTapBuilder!.onPreviewTap.onTap(
-                  _tapPosition!,
+                  details.localPosition,
                   widget.onPreviewTapBuilder!.flutterPreviewSizeGetter(),
                   widget.onPreviewTapBuilder!.pixelPreviewSizeGetter(),
+                );
+              },
+            (instance) {},
+          ),
+        if (widget.onPreviewTapBuilder?.onPreviewTap.onLongPress != null)
+          LongPressGestureRecognizer:
+              GestureRecognizerFactoryWithHandlers<LongPressGestureRecognizer>(
+            () => LongPressGestureRecognizer()
+              ..onLongPressStart = (details) {
+                final builder = widget.onPreviewTapBuilder;
+                final onLongPress = builder?.onPreviewTap.onLongPress;
+                if (builder == null || onLongPress == null) return;
+                _showTapPainter(details.localPosition);
+                onLongPress(
+                  details.localPosition,
+                  builder.flutterPreviewSizeGetter(),
+                  builder.pixelPreviewSizeGetter(),
                 );
               },
             (instance) {},
@@ -163,6 +172,22 @@ class _AwesomeCameraGestureDetector
           ),
       ]),
     );
+  }
+
+  void _showTapPainter(Offset position) {
+    final duration = widget.onPreviewTapBuilder!.onPreviewTap.tapPainterDuration;
+    if (duration != null) {
+      _timer?.cancel();
+      _timer = Timer(duration, () {
+        setState(() {
+          _tapPosition = null;
+        });
+      });
+    }
+    setState(() {
+      _tapPosition = position;
+      _tapCount++;
+    });
   }
 
   @override

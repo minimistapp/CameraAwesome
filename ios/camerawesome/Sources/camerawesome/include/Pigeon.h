@@ -199,7 +199,8 @@ typedef NS_ENUM(NSUInteger, AnalysisRotation) {
 @interface AndroidFocusSettings : NSObject
 /// `init` unavailable to enforce nonnull fields, see the `make` class method.
 - (instancetype)init NS_UNAVAILABLE;
-+ (instancetype)makeWithAutoCancelDurationInMillis:(NSNumber *)autoCancelDurationInMillis;
++ (instancetype)makeWithAutoCancelDurationInMillis:(NSNumber *)autoCancelDurationInMillis
+    lockFocusAndExposure:(nullable NSNumber *)lockFocusAndExposure;
 /// The auto focus will be canceled after the given [autoCancelDurationInMillis].
 /// If [autoCancelDurationInMillis] is equals to 0 (or less), the auto focus
 /// will **not** be canceled. A manual `focusOnPoint` call will be needed to
@@ -207,6 +208,10 @@ typedef NS_ENUM(NSUInteger, AnalysisRotation) {
 /// Minimal duration of [autoCancelDurationInMillis] is 1000 ms. If set
 /// between 0 (exclusive) and 1000 (exclusive), it will be raised to 1000.
 @property(nonatomic, strong) NSNumber * autoCancelDurationInMillis;
+/// Native long-press AE/AF lock: focus once at the point, then hold focus and
+/// exposure there until the next `focusOnPoint`. Null or false: focus once at
+/// the point, then keep focusing and metering continuously at it.
+@property(nonatomic, strong, nullable) NSNumber * lockFocusAndExposure;
 @end
 
 /// iOS-specific focus settings for focusOnPoint.

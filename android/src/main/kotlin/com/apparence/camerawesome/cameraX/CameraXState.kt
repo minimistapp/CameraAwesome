@@ -95,6 +95,13 @@ data class CameraXState(
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    /// Tap-to-focus at a point, held like the system camera (MIN-6738). One
+    /// per activity: it watches that activity's lifecycle.
+    private var tapMetering: TapMeteringController? = null
+
+    /// Set by [CameraAwesomeX]: forwards [TapMeteringController] releases to Dart.
+    var onTapMeteringReleased: ((String) -> Unit)? = null
+
     /// Native preview surface (Android port of iOS SingleCameraPreview's
     /// AVCaptureVideoPreviewLayer, MIN-2406). Owned here; set by
     /// [CameraAwesomeX.setupCamera] for the single-sensor preview path and read
@@ -263,6 +270,10 @@ data class CameraXState(
     }
 
     fun updateLifecycle(activity: Activity) {
+        // The tapped point's regions belong to the bound geometry (sensor,
+        // resolution, ViewPort). Release it while the camera can still take
+        // the request; the user taps again on the new preview. (MIN-6738)
+        tapMetering?.reset("rebind")
         lastViewPortRotation = viewPortRotation(activity)
         previews = mutableListOf()
         imageCaptures.clear()
@@ -675,7 +686,11 @@ data class CameraXState(
         // Remembered so the next rebind can put it back — see
         // [restoreCameraControlState]. (MIN-3655)
         lastLinearZoom = zoom
-        mainCameraControl.setLinearZoom(zoom)
+        val applied = mainCameraControl.setLinearZoom(zoom)
+        // Crop-region zoom moves what the tap regions refer to. (MIN-6738)
+        tapMetering?.let { metering ->
+            applied.addListener({ metering.onZoomChanged() }, { mainHandler.post(it) })
+        }
     }
 
     /// Exposure compensation, in device index steps (MIN-2312 maps the app's
@@ -688,6 +703,69 @@ data class CameraXState(
 
     fun startFocusAndMetering(autoFocusAction: FocusMeteringAction) {
         mainCameraControl.startFocusAndMetering(autoFocusAction)
+    }
+
+    /**
+     * Tap-to-focus at ([u], [v]), normalised over the *displayed* preview frame
+     * (0,0 top-left, upright). See [TapMeteringController] for what a tap and
+     * a long-press [lock] do. (MIN-6738)
+     */
+    @SuppressLint("RestrictedApi")
+    fun focusOnPreviewPoint(activity: Activity, u: Float, v: Float, lock: Boolean, holdMillis: Long) {
+        val camera = previewCamera ?: concurrentCamera?.cameras?.firstOrNull()
+        if (camera == null) {
+            Log.w(CamerawesomePlugin.TAG, "Tap-to-focus at ($u, $v) ignored: no camera bound")
+            return
+        }
+        val preview = previews?.firstOrNull()
+        val point = previewMeteringPoint(u, v, preview)
+        if (point == null) {
+            Log.w(CamerawesomePlugin.TAG, "Tap-to-focus at ($u, $v) ignored: the preview has no resolution yet")
+            return
+        }
+        val aspect = preview?.resolutionInfo?.resolution?.let { Rational(it.width, it.height) }
+        val metering = tapMetering?.takeIf { it.lifecycleOwner === activity }
+            ?: TapMeteringController(
+                activity,
+                activity as LifecycleOwner,
+                executor(activity),
+                onReleased = { reason -> onTapMeteringReleased?.invoke(reason) },
+            ).also {
+                tapMetering?.reset("activity changed")
+                tapMetering = it
+            }
+        metering.focusAt(camera, point, aspect, lock, holdMillis)
+    }
+
+    /**
+     * The tap as a CameraX point in the camera's surface coordinates.
+     *
+     * The PreviewView's own factory is the source of truth: it knows the
+     * display rotation, the ViewPort crop and the scale type the frame is
+     * drawn with. The old `SurfaceOrientedMeteringPointFactory` call took the
+     * upright screen point as if it were already sensor-oriented, so on a
+     * portrait phone a tap focused about a quarter-turn away from the finger,
+     * and only taps near the centre landed. (MIN-6738)
+     *
+     * Without a laid-out PreviewView (multi-camera, or the instant after a
+     * rebind) the preview's rotation is applied by hand instead.
+     */
+    @SuppressLint("RestrictedApi")
+    private fun previewMeteringPoint(u: Float, v: Float, preview: Preview?): MeteringPoint? {
+        val view = previewView
+        if (view != null && sensors.size <= 1 && view.width > 0 && view.height > 0) {
+            val point = view.meteringPointFactory.createPoint(
+                u * view.width, v * view.height, TapMeteringController.TAP_POINT_SIZE,
+            )
+            // An unready PreviewView hands back an out-of-range point.
+            if (point.x in 0f..1f && point.y in 0f..1f) return point
+            Log.d(CamerawesomePlugin.TAG, "PreviewView can't map taps yet; using the preview rotation instead")
+        }
+        if (preview == null) return null
+        val info = preview.resolutionInfo ?: return null
+        val (sx, sy) = TapMeteringMath.displayToSurface(u, v, info.rotationDegrees)
+        return SurfaceOrientedMeteringPointFactory(1f, 1f, preview)
+            .createPoint(sx, sy, TapMeteringController.TAP_POINT_SIZE)
     }
 
     fun setCaptureMode(captureMode: CaptureModes) {
@@ -764,7 +842,18 @@ data class CameraXState(
         }
     }
 
+    /// Before this state is replaced by a new setup: drop any tap (telling Dart,
+    /// it is gone) and stop forwarding, so only the current state reports
+    /// releases from here on. (MIN-6738)
+    fun retireTapMetering(reason: String) {
+        tapMetering?.reset(reason)
+        tapMetering = null
+        onTapMeteringReleased = null
+    }
+
     fun stop() {
+        // Stops the motion listener and clears the interop regions. (MIN-6738)
+        tapMetering?.reset("camera stopped")
         cameraProvider.unbindAll()
         // MIN-3655: after the unbind, so CameraX has already asked the effect's
         // surfaces to close.

@@ -354,6 +354,7 @@ class PigeonSensorTypeDevice {
 class AndroidFocusSettings {
   AndroidFocusSettings({
     required this.autoCancelDurationInMillis,
+    this.lockFocusAndExposure,
   });
 
   /// The auto focus will be canceled after the given [autoCancelDurationInMillis].
@@ -364,9 +365,16 @@ class AndroidFocusSettings {
   /// between 0 (exclusive) and 1000 (exclusive), it will be raised to 1000.
   int autoCancelDurationInMillis;
 
+  /// Native long-press AE/AF lock: focus once at the point, then hold focus and
+  /// exposure there until the next `focusOnPoint` (no auto-cancel, no release
+  /// on device movement). Null or false: focus once at the point, then keep
+  /// focusing and metering continuously at it.
+  bool? lockFocusAndExposure;
+
   Object encode() {
     return <Object?>[
       autoCancelDurationInMillis,
+      lockFocusAndExposure,
     ];
   }
 
@@ -374,6 +382,7 @@ class AndroidFocusSettings {
     result as List<Object?>;
     return AndroidFocusSettings(
       autoCancelDurationInMillis: result[0]! as int,
+      lockFocusAndExposure: result.length > 1 ? result[1] as bool? : null,
     );
   }
 }

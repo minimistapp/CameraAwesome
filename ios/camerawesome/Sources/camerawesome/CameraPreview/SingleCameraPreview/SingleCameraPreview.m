@@ -1444,24 +1444,38 @@ static const int32_t kStreamingMaxFps = 30;
 /// ivar persists across sensor switches (setSensor → setCameraPreset →
 /// applyAnalysisOutputDownscale re-applies it) and resets naturally with the
 /// camera instance on reopen (Dart re-runs setup then).
+///
+/// Runs on _dispatchQueue (MIN-7683). The pigeon handler calls this on the
+/// platform thread right after setupCamera, while -setCaptureMode:'s block is
+/// re-running -setCameraPreset: on _dispatchQueue. Both read and replace
+/// _captureVideoOutput.videoSettings, and doing that from two threads at once
+/// over-released the settings dictionary: EXC_BAD_ACCESS inside
+/// -[AVCaptureVideoDataOutput setVideoSettings:] / videoSettings, or in the KVO
+/// revalidation a preset change triggers. Every videoSettings change now goes
+/// through the one serial queue.
 - (void)updateRequestedAnalysisFormat:(InputAnalysisImageFormat)format {
-  if (_requestedAnalysisFormat == format) {
-    return;
-  }
-  _requestedAnalysisFormat = format;
-  [self applyAnalysisOutputDownscale];
+  dispatch_async(_dispatchQueue, ^{
+    if (self->_requestedAnalysisFormat == format) {
+      return;
+    }
+    self->_requestedAnalysisFormat = format;
+    [self applyAnalysisOutputDownscale];
+  });
 }
 
 /// Store the analysis long edge the Dart stream requested (MIN-3475) and
-/// re-apply the downscale. Same lifecycle as -updateRequestedAnalysisFormat:
-/// — persists across sensor switches, resets with the camera instance.
+/// re-apply the downscale. Same lifecycle and queue as
+/// -updateRequestedAnalysisFormat: — persists across sensor switches, resets
+/// with the camera instance, runs on _dispatchQueue (MIN-7683).
 - (void)updateRequestedAnalysisWidth:(int)width {
   int32_t requested = width > 0 ? (int32_t)width : 0;
-  if (_requestedAnalysisLongEdge == requested) {
-    return;
-  }
-  _requestedAnalysisLongEdge = requested;
-  [self applyAnalysisOutputDownscale];
+  dispatch_async(_dispatchQueue, ^{
+    if (self->_requestedAnalysisLongEdge == requested) {
+      return;
+    }
+    self->_requestedAnalysisLongEdge = requested;
+    [self applyAnalysisOutputDownscale];
+  });
 }
 
 - (void)setCloseRangeScanMode:(BOOL)enabled {
@@ -2189,29 +2203,37 @@ static const int32_t kStillLongEdgeTarget = 4032;
 
 /// Dispose camera inputs & outputs
 - (void)dispose {
-  [self stop];
+  _shouldBeRunning = NO;
   [self.physicalButtonController stopListening];
   // Deterministic counterpart to the dealloc stop (MIN-2747) — dealloc timing
   // depends on the last reference, dispose is the plugin's explicit teardown.
   [self.motionController stopMotionDetection];
   // Synchronously on _dispatchQueue so teardown can't race in-flight KVO/timeout
   // blocks. dispose runs on the platform thread, never on _dispatchQueue.
+  //
+  // The session itself is stopped and emptied in here too (MIN-7683). A camera
+  // is often disposed within a second of its setup, while -setCaptureMode:'s
+  // block is still reconfiguring the session on _dispatchQueue; stopping it and
+  // removing its outputs from the platform thread at that moment crashed in
+  // AVFoundation. Queued behind that block, the teardown sees a finished
+  // configuration.
   dispatch_sync(_dispatchQueue, ^{
     [self teardownFocusStableObservation];
     [self->_focusStableCompletions removeAllObjects];
     [self teardownCloseRangeFocusObservation];
+
+    [self->_captureSession stopRunning];
+    for (AVCaptureInput *input in [self->_captureSession inputs]) {
+      [self->_captureSession removeInput:input];
+    }
+    for (AVCaptureOutput *output in [self->_captureSession outputs]) {
+      [self->_captureSession removeOutput:output];
+    }
   });
   // Drops the subject-area observation and the MIN-3440 session-health
   // observers in one go — self observes nothing else via NSNotificationCenter
   // (focus-stable tracking is KVO, torn down above).
   [[NSNotificationCenter defaultCenter] removeObserver:self];
-
-  for (AVCaptureInput *input in [_captureSession inputs]) {
-    [_captureSession removeInput:input];
-  }
-  for (AVCaptureOutput *output in [_captureSession outputs]) {
-    [_captureSession removeOutput:output];
-  }
 }
 
 /// Set preview size resolution

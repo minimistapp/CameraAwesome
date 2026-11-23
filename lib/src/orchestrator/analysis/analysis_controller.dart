@@ -84,12 +84,17 @@ class AnalysisController {
     return _analysisEnabled;
   }
 
-  Future<void> stop() async {
+  /// Stops listening to analysis frames. [stopNative] false leaves the native
+  /// stream alone: used when another camera screen has already replaced this
+  /// one's camera and owns the stream now (MIN-7683).
+  Future<void> stop({bool stopNative = true}) async {
     if (onImageListener == null || imageSubscription == null) {
       return;
     }
     _analysisEnabled = false;
-    await CamerawesomePlugin.stopAnalysis();
+    if (stopNative) {
+      await CamerawesomePlugin.stopAnalysis();
+    }
     imageSubscription?.cancel();
     imageSubscription = null;
   }

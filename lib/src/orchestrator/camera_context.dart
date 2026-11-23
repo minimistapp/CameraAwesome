@@ -45,6 +45,16 @@ class CameraContext {
   /// Preferences concerning Exif (photos metadata)
   ExifPreferences exifPreferences;
 
+  /// [CamerawesomePlugin.setupGeneration] of this context's own native setup,
+  /// set once it calls [CamerawesomePlugin.init] (MIN-7683).
+  int? setupGeneration;
+
+  /// Another camera screen has set up its camera since this one did, so the
+  /// native camera is no longer this context's to stop.
+  bool get _superseded =>
+      setupGeneration != null &&
+      setupGeneration != CamerawesomePlugin.setupGeneration;
+
   Stream<AwesomeFilter> get filter$ => filterController.stream;
 
   Stream<bool> get filterSelectorOpened$ => filterSelectorOpened.stream;
@@ -162,9 +172,12 @@ class CameraContext {
     sensorConfigController.close();
     mediaCaptureController.close();
     stateController.close();
-    analysisController?.stop();
+    // A screen that opens while this one is closing sets up its camera first;
+    // stopping now would tear down that screen's camera (MIN-7683).
+    final superseded = _superseded;
+    analysisController?.stop(stopNative: !superseded);
     state.dispose();
-    CamerawesomePlugin.stop();
+    CamerawesomePlugin.stop(generation: setupGeneration);
   }
 
   /// Global focus

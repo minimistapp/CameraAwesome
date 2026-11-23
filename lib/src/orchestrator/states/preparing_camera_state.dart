@@ -190,7 +190,7 @@ class PreparingCameraState extends CameraState {
       enableImageStream: enableImageStream,
       enablePhysicalButton: enablePhysicalButton,
     );
-    await CamerawesomePlugin.init(
+    final setup = CamerawesomePlugin.init(
       sensorConfig,
       enableImageStream,
       enablePhysicalButton,
@@ -199,6 +199,10 @@ class PreparingCameraState extends CameraState {
       videoOptions: saveConfig?.videoOptions,
       mirrorFrontCamera: saveConfig?.mirrorFrontCamera ?? false,
     );
+    // init bumps the generation before its first await, so this is our own
+    // setup's number even if another screen sets up while we wait (MIN-7683).
+    cameraContext.setupGeneration = CamerawesomePlugin.setupGeneration;
+    await setup;
     _isReady = true;
     return _isReady;
   }

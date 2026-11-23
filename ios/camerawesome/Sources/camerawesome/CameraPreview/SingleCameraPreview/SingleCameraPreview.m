@@ -118,6 +118,17 @@ static const CGFloat kConstituentReevaluationZoomStep = 0.001;
 
 @implementation SingleCameraPreview {
   dispatch_queue_t _dispatchQueue;
+  // Held around every change to the session format and the video data
+  // output's videoSettings (MIN-7683): -setCameraPreset:,
+  // -applyAnalysisPixelFormatWithWidth:height: and -setCaptureMode:'s
+  // configuration block. They run on the platform thread and on
+  // _dispatchQueue, and AVFoundation re-validates videoSettings whenever the
+  // active format changes, so two of them at once over-released the settings
+  // dictionary (EXC_BAD_ACCESS in setVideoSettings: / videoSettings /
+  // _validateOutputSettingsDictionary:). A lock rather than the queue because
+  // -setSensor: and -initCameraPreview: dispatch_sync onto that queue
+  // themselves. Nothing that holds it waits on the queue, so it can't deadlock.
+  NSObject *_videoOutputLock;
   // Blocks waiting for focus/exposure to settle, plus whether we currently hold
   // KVO registrations on _captureDevice. Mutated only on _dispatchQueue.
   NSMutableArray<void (^)(void)> *_focusStableCompletions;
@@ -289,6 +300,7 @@ static const CGFloat kConstituentReevaluationZoomStep = 0.001;
                                                name:AVCaptureSessionInterruptionEndedNotification
                                              object:_captureSession];
 
+  _videoOutputLock = [NSObject new];
   _captureVideoOutput = [AVCaptureVideoDataOutput new];
   // Default analysis format. Must be set explicitly BEFORE the baseline
   // pixel-format call below: the enum's zero value is yuv_420_888, so a
@@ -420,9 +432,11 @@ static const CGFloat kConstituentReevaluationZoomStep = 0.001;
 
 /// Init camera preview with Front or Rear sensor
 - (void)initCameraPreview:(PigeonSensorPosition)sensor {
-  // Here we set a preset which wont crash the device before switching to front or back
-  [_captureSession setSessionPreset:AVCaptureSessionPresetPhoto];
-  
+  [self resetFocusStateForDeviceSwitch];
+  [self bindCameraDevice:sensor];
+}
+
+- (void)resetFocusStateForDeviceSwitch {
   // Drop any focus-stable KVO registration on the outgoing device before we
   // reassign _captureDevice, and abandon pending waiters (a capture/lock in
   // flight is no longer valid across a sensor switch). Run synchronously on
@@ -444,6 +458,13 @@ static const CGFloat kConstituentReevaluationZoomStep = 0.001;
     // identity and drops itself; this only lets the new device schedule its own.
     self->_constituentReevaluationPending = NO;
   });
+}
+
+/// The device half of -initCameraPreview:. Never waits on _dispatchQueue, so
+/// -setSensor: can run it under _videoOutputLock (MIN-7683).
+- (void)bindCameraDevice:(PigeonSensorPosition)sensor {
+  // Here we set a preset which wont crash the device before switching to front or back
+  [_captureSession setSessionPreset:AVCaptureSessionPresetPhoto];
 
   NSError *error;
   _captureDevice = [AVCaptureDevice deviceWithUniqueID:[self selectAvailableCamera:sensor]];
@@ -1328,6 +1349,13 @@ static const int32_t kStreamingMaxFps = 30;
 /// pixel-format-only, so a rejection degrades to "no downscale this pass"
 /// (bounded by the format ceiling) instead of crashing.
 - (void)applyAnalysisPixelFormatWithWidth:(int32_t)width height:(int32_t)height {
+  @synchronized (_videoOutputLock) {
+    [self applyAnalysisPixelFormatLockedWithWidth:width height:height];
+  }
+}
+
+/// Body of -applyAnalysisPixelFormatWithWidth:height:; caller holds _videoOutputLock.
+- (void)applyAnalysisPixelFormatLockedWithWidth:(int32_t)width height:(int32_t)height {
   if (_captureVideoOutput == nil) {
     return;
   }
@@ -1990,6 +2018,13 @@ static const int32_t kStillLongEdgeTarget = 4032;
 }
 
 - (void)setCameraPreset:(CGSize)currentPreviewSize {
+  @synchronized (_videoOutputLock) {
+    [self setCameraPresetLocked:currentPreviewSize];
+  }
+}
+
+/// Body of -setCameraPreset:; caller holds _videoOutputLock (MIN-7683).
+- (void)setCameraPresetLocked:(CGSize)currentPreviewSize {
   CGSize targetSize = currentPreviewSize;
   // Overrides for the streaming preview shape (see the streaming branch).
   // [forcedFormat] wins when set: it drives the session from a chosen 4:3
@@ -2189,29 +2224,37 @@ static const int32_t kStillLongEdgeTarget = 4032;
 
 /// Dispose camera inputs & outputs
 - (void)dispose {
-  [self stop];
+  _shouldBeRunning = NO;
   [self.physicalButtonController stopListening];
   // Deterministic counterpart to the dealloc stop (MIN-2747) — dealloc timing
   // depends on the last reference, dispose is the plugin's explicit teardown.
   [self.motionController stopMotionDetection];
   // Synchronously on _dispatchQueue so teardown can't race in-flight KVO/timeout
   // blocks. dispose runs on the platform thread, never on _dispatchQueue.
+  //
+  // The session itself is stopped and emptied in here too (MIN-7683). A camera
+  // is often disposed within a second of its setup, while -setCaptureMode:'s
+  // block is still reconfiguring the session on _dispatchQueue; stopping it and
+  // removing its outputs from the platform thread at that moment crashed in
+  // AVFoundation. Queued behind that block, the teardown sees a finished
+  // configuration.
   dispatch_sync(_dispatchQueue, ^{
     [self teardownFocusStableObservation];
     [self->_focusStableCompletions removeAllObjects];
     [self teardownCloseRangeFocusObservation];
+
+    [self stopSessionRunning];
+    for (AVCaptureInput *input in [self->_captureSession inputs]) {
+      [self->_captureSession removeInput:input];
+    }
+    for (AVCaptureOutput *output in [self->_captureSession outputs]) {
+      [self->_captureSession removeOutput:output];
+    }
   });
   // Drops the subject-area observation and the MIN-3440 session-health
   // observers in one go — self observes nothing else via NSNotificationCenter
   // (focus-stable tracking is KVO, torn down above).
   [[NSNotificationCenter defaultCenter] removeObserver:self];
-
-  for (AVCaptureInput *input in [_captureSession inputs]) {
-    [_captureSession removeInput:input];
-  }
-  for (AVCaptureOutput *output in [_captureSession outputs]) {
-    [_captureSession removeOutput:output];
-  }
 }
 
 /// Set preview size resolution
@@ -2222,13 +2265,30 @@ static const int32_t kStillLongEdgeTarget = 4032;
   }
   BOOL sessionIsRunning = _captureSession.isRunning;
   if (sessionIsRunning) {
-      [_captureSession stopRunning];
+      [self stopSessionRunning];
   }
   [self setCameraPreset:previewSize];
   if (sessionIsRunning) {
     dispatch_async(_dispatchQueue, ^{
-      [self->_captureSession startRunning];
+      [self startSessionRunning];
     });
+  }
+}
+
+/// Session start/stop, under _videoOutputLock (MIN-7683). AVFoundation throws
+/// NSGenericException when -startRunning / -stopRunning lands while another
+/// thread is between -beginConfiguration and -commitConfiguration, and both
+/// run on the platform thread and on _dispatchQueue. Every start and stop in
+/// this class goes through these two.
+- (void)startSessionRunning {
+  @synchronized (_videoOutputLock) {
+    [_captureSession startRunning];
+  }
+}
+
+- (void)stopSessionRunning {
+  @synchronized (_videoOutputLock) {
+    [_captureSession stopRunning];
   }
 }
 
@@ -2236,14 +2296,14 @@ static const int32_t kStillLongEdgeTarget = 4032;
 - (void)start {
   _shouldBeRunning = YES;
   dispatch_async(_dispatchQueue, ^{
-    [self->_captureSession startRunning];
+    [self startSessionRunning];
   });
 }
 
 /// Stop camera preview
 - (void)stop {
   _shouldBeRunning = NO;
-  [_captureSession stopRunning];
+  [self stopSessionRunning];
 }
 
 #pragma mark - Session-death recovery (MIN-3440)
@@ -2287,7 +2347,7 @@ static const int32_t kStillLongEdgeTarget = 4032;
       return;
     }
     NSLog(@"CamerAwesome: restarting capture session");
-    [self->_captureSession startRunning];
+    [self startSessionRunning];
   });
 }
 
@@ -2304,74 +2364,80 @@ static const int32_t kStillLongEdgeTarget = 4032;
   // Check if the session is running before changing the preset
   BOOL sessionIsRunning = _captureSession.isRunning;
   if (sessionIsRunning) {
-      [_captureSession stopRunning];
+      [self stopSessionRunning];
   }
-  // First remove all input & output
-  [_captureSession beginConfiguration];
-  
-  // Only remove camera channel but keep audio
-  for (AVCaptureInput *input in [_captureSession inputs]) {
-    for (AVCaptureInputPort *port in input.ports) {
-      if ([[port mediaType] isEqual:AVMediaTypeVideo]) {
-        [_captureSession removeInput:input];
-        break;
+  // The focus reset dispatch_syncs onto _dispatchQueue, so it runs before the
+  // lock is taken. The reconfiguration below runs under _videoOutputLock, so it
+  // can't overlap -setCaptureMode:'s on the queue (MIN-7683).
+  [self resetFocusStateForDeviceSwitch];
+  @synchronized (_videoOutputLock) {
+    // First remove all input & output
+    [_captureSession beginConfiguration];
+
+    // Only remove camera channel but keep audio
+    for (AVCaptureInput *input in [_captureSession inputs]) {
+      for (AVCaptureInputPort *port in input.ports) {
+        if ([[port mediaType] isEqual:AVMediaTypeVideo]) {
+          [_captureSession removeInput:input];
+          break;
+        }
       }
     }
+    // FIX: Changed from setAudioIsDisconnected to setVideoIsDisconnected.
+    // VIDEO is what's being switched (brief gap while new camera initializes),
+    // not audio. Setting the wrong flag caused audio timestamps to be offset
+    // while video timestamps weren't compensated for the gap, causing desync.
+    // The videoIsDisconnected flag triggers proper timestamp gap compensation
+    // in VideoController.m's captureOutput method.
+    [_videoController setVideoIsDisconnected:YES];
+
+    [_captureSession removeOutput:_capturePhotoOutput];
+    // Drop the QR metadata output too; initCameraPreview: recreates it for the
+    // new device (MIN-3077).
+    if (_metadataOutput != nil) {
+      [_captureSession removeOutput:_metadataOutput];
+      _metadataOutput = nil;
+    }
+    [_captureSession removeConnection:_captureConnection];
+    // Drop the preview-layer connection too (it's tied to the outgoing input);
+    // initCameraPreview: → attachPreviewLayerConnection rebuilds it for the new
+    // device. Removing the video input above may already have auto-removed it, so
+    // guard before removing.
+    if (_previewConnection != nil && [_captureSession.connections containsObject:_previewConnection]) {
+      [_captureSession removeConnection:_previewConnection];
+    }
+    _previewConnection = nil;
+
+    _cameraSensorPosition = sensor.position;
+    _captureDeviceId = sensor.deviceId;
+
+    // Init the camera preview with the selected sensor (its focus reset ran above)
+    [self bindCameraDevice:sensor.position];
+
+    // Update VideoController with new capture device to re-apply custom FPS if recording
+    // This fixes audio/video desync when switching cameras during recording with custom FPS
+    [_videoController updateCaptureDevice:_captureDevice];
+
+    [self setBestPreviewQuality];
+
+    [_captureSession commitConfiguration];
+    // Re-pin the fps cap after the commit: a preset set inside the
+    // begin/commit block only takes effect now, and the format switch it
+    // triggers resets the device's frame durations (MIN-2747).
+    [self applyFrameRateCap];
+    // Same for the HDR policy: the new device's activeFormat is only final after
+    // the commit, and the in-block run saw the outgoing format (MIN-3098).
+    [self applyVideoHDRPolicy];
+    // Re-apply QR types after the commit too — availableMetadataObjectTypes can
+    // be empty while the session is mid-configuration (MIN-3077).
+    [self applyQrMetadataTypes];
+    // The connection was rebuilt for the new device (defaults to enabled); gate
+    // it on actual consumption again (MIN-3077).
+    [self updateAnalysisConnectionState];
   }
-  // FIX: Changed from setAudioIsDisconnected to setVideoIsDisconnected.
-  // VIDEO is what's being switched (brief gap while new camera initializes),
-  // not audio. Setting the wrong flag caused audio timestamps to be offset
-  // while video timestamps weren't compensated for the gap, causing desync.
-  // The videoIsDisconnected flag triggers proper timestamp gap compensation
-  // in VideoController.m's captureOutput method.
-  [_videoController setVideoIsDisconnected:YES];
-
-  [_captureSession removeOutput:_capturePhotoOutput];
-  // Drop the QR metadata output too; initCameraPreview: recreates it for the
-  // new device (MIN-3077).
-  if (_metadataOutput != nil) {
-    [_captureSession removeOutput:_metadataOutput];
-    _metadataOutput = nil;
-  }
-  [_captureSession removeConnection:_captureConnection];
-  // Drop the preview-layer connection too (it's tied to the outgoing input);
-  // initCameraPreview: → attachPreviewLayerConnection rebuilds it for the new
-  // device. Removing the video input above may already have auto-removed it, so
-  // guard before removing.
-  if (_previewConnection != nil && [_captureSession.connections containsObject:_previewConnection]) {
-    [_captureSession removeConnection:_previewConnection];
-  }
-  _previewConnection = nil;
-
-  _cameraSensorPosition = sensor.position;
-  _captureDeviceId = sensor.deviceId;
-  
-  // Init the camera preview with the selected sensor
-  [self initCameraPreview:sensor.position];
-
-  // Update VideoController with new capture device to re-apply custom FPS if recording
-  // This fixes audio/video desync when switching cameras during recording with custom FPS
-  [_videoController updateCaptureDevice:_captureDevice];
-
-  [self setBestPreviewQuality];
-  
-  [_captureSession commitConfiguration];
-  // Re-pin the fps cap after the commit: a preset set inside the
-  // begin/commit block only takes effect now, and the format switch it
-  // triggers resets the device's frame durations (MIN-2747).
-  [self applyFrameRateCap];
-  // Same for the HDR policy: the new device's activeFormat is only final after
-  // the commit, and the in-block run saw the outgoing format (MIN-3098).
-  [self applyVideoHDRPolicy];
-  // Re-apply QR types after the commit too — availableMetadataObjectTypes can
-  // be empty while the session is mid-configuration (MIN-3077).
-  [self applyQrMetadataTypes];
-  // The connection was rebuilt for the new device (defaults to enabled); gate
-  // it on actual consumption again (MIN-3077).
-  [self updateAnalysisConnectionState];
   if (sessionIsRunning) {
     dispatch_async(_dispatchQueue, ^{
-      [self->_captureSession startRunning];
+      [self startSessionRunning];
     });
   }
 }
@@ -2901,42 +2967,46 @@ static const int32_t kStillLongEdgeTarget = 4032;
   // ties Flutter's frames to the main thread), so the app's whole switch
   // animation stalled. -runAfterSessionWork: queues behind it.
   dispatch_async(_dispatchQueue, ^{
-    [self->_captureSession beginConfiguration];
-    // Video mode arms what a recording needs from the data output up front —
-    // BGRA buffers (MIN-3084) and the connection on (MIN-3077) — inside this
-    // switch, under the app's still. Flipping them as a recording starts and
-    // stops reconfigured the running session, and the preview blinked black.
-    self->_forceBGRAAnalysisForRecording = captureMode == Video && self->_requestedAnalysisFormat == nv21;
-    [self updateAnalysisConnectionState];
-    // Re-run the session config for the new mode (MIN-3098): Photo/Preview
-    // picks the tuned low-power preview format (+ video-HDR off, fps cap);
-    // Video restores the full-quality video preset (+ auto HDR). Without this
-    // the low-power preview format would leak into a recording — or the video
-    // config into the idle preview.
-    [self setBestPreviewQuality];
+    // The whole switch under _videoOutputLock: committing the new format re-validates
+    // the data output's videoSettings (MIN-7683).
+    @synchronized (self->_videoOutputLock) {
+      [self->_captureSession beginConfiguration];
+      // Video mode arms what a recording needs from the data output up front —
+      // BGRA buffers (MIN-3084) and the connection on (MIN-3077) — inside this
+      // switch, under the app's still. Flipping them as a recording starts and
+      // stops reconfigured the running session, and the preview blinked black.
+      self->_forceBGRAAnalysisForRecording = captureMode == Video && self->_requestedAnalysisFormat == nv21;
+      [self updateAnalysisConnectionState];
+      // Re-run the session config for the new mode (MIN-3098): Photo/Preview
+      // picks the tuned low-power preview format (+ video-HDR off, fps cap);
+      // Video restores the full-quality video preset (+ auto HDR). Without this
+      // the low-power preview format would leak into a recording — or the video
+      // config into the idle preview.
+      [self setBestPreviewQuality];
 
-    // The microphone joins whenever it is allowed, even with the sound toggle
-    // off (MIN-6820): the toggle then only decides whether a recording writes
-    // its sound (-setRecordsAudio:), so flipping it never reconfigures the
-    // running session. Attaching it here happens under the switch's still.
-    BOOL microphoneAllowed = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio] == AVAuthorizationStatusAuthorized;
-    if (captureMode == Video && (self->_videoController.isAudioEnabled || microphoneAllowed)) {
-      [self setUpCaptureSessionForAudioError:^(NSError *audioError) {
-        // Audio is best-effort. If the microphone can't be set up (permission
-        // denied, or no usable audio device — e.g. "Cannot use iPad
-        // Microphone") we record silent video instead of failing the
-        // capture-mode switch. Disabling audio here keeps the recorder from
-        // waiting on samples that never arrive. The Flutter layer owns the
-        // microphone-permission UX.
-        [self->_videoController setIsAudioEnabled:NO];
-        NSLog(@"camerawesome: microphone unavailable, recording video without audio (%@)", audioError.localizedDescription);
-      }];
-    } else if (captureMode != Video && !self->_videoController.isAudioEnabled) {
-      // Held only for video with the sound off: photo mode lets it go, under
-      // the same still. With the sound on it stays, as it always has.
-      [self removeAudioFromSession];
+      // The microphone joins whenever it is allowed, even with the sound toggle
+      // off (MIN-6820): the toggle then only decides whether a recording writes
+      // its sound (-setRecordsAudio:), so flipping it never reconfigures the
+      // running session. Attaching it here happens under the switch's still.
+      BOOL microphoneAllowed = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio] == AVAuthorizationStatusAuthorized;
+      if (captureMode == Video && (self->_videoController.isAudioEnabled || microphoneAllowed)) {
+        [self setUpCaptureSessionForAudioError:^(NSError *audioError) {
+          // Audio is best-effort. If the microphone can't be set up (permission
+          // denied, or no usable audio device — e.g. "Cannot use iPad
+          // Microphone") we record silent video instead of failing the
+          // capture-mode switch. Disabling audio here keeps the recorder from
+          // waiting on samples that never arrive. The Flutter layer owns the
+          // microphone-permission UX.
+          [self->_videoController setIsAudioEnabled:NO];
+          NSLog(@"camerawesome: microphone unavailable, recording video without audio (%@)", audioError.localizedDescription);
+        }];
+      } else if (captureMode != Video && !self->_videoController.isAudioEnabled) {
+        // Held only for video with the sound off: photo mode lets it go, under
+        // the same still. With the sound on it stays, as it always has.
+        [self removeAudioFromSession];
+      }
+      [self->_captureSession commitConfiguration];
     }
-    [self->_captureSession commitConfiguration];
   });
 }
 
@@ -3119,18 +3189,24 @@ static const int32_t kStillLongEdgeTarget = 4032;
     // BGRA-stream case.
     // Video mode normally has it armed already (-setCaptureMode:), so this
     // reconfigures nothing.
-    NSNumber *current = _captureVideoOutput.videoSettings[(NSString *)kCVPixelBufferPixelFormatTypeKey];
-    if (_requestedAnalysisFormat == nv21 && (current == nil || current.unsignedIntValue != kCVPixelFormatType_32BGRA)) {
-      _forceBGRAAnalysisForRecording = YES;
-      [self applyAnalysisOutputDownscale];
-      NSNumber *applied = _captureVideoOutput.videoSettings[(NSString *)kCVPixelBufferPixelFormatTypeKey];
-      if (applied == nil || applied.unsignedIntValue != kCVPixelFormatType_32BGRA) {
-        [self clearForceBGRAAnalysisForRecording];
-        completion([FlutterError errorWithCode:@"VIDEO_ERROR"
-                                       message:@"analysis output could not switch back to BGRA for recording"
-                                       details:@""]);
-        return;
+    // Read and switched under _videoOutputLock, like every other videoSettings
+    // access (MIN-7683).
+    BOOL bgraFailed = NO;
+    @synchronized (_videoOutputLock) {
+      NSNumber *current = _captureVideoOutput.videoSettings[(NSString *)kCVPixelBufferPixelFormatTypeKey];
+      if (_requestedAnalysisFormat == nv21 && (current == nil || current.unsignedIntValue != kCVPixelFormatType_32BGRA)) {
+        _forceBGRAAnalysisForRecording = YES;
+        [self applyAnalysisOutputDownscale];
+        NSNumber *applied = _captureVideoOutput.videoSettings[(NSString *)kCVPixelBufferPixelFormatTypeKey];
+        bgraFailed = applied == nil || applied.unsignedIntValue != kCVPixelFormatType_32BGRA;
       }
+    }
+    if (bgraFailed) {
+      [self clearForceBGRAAnalysisForRecording];
+      completion([FlutterError errorWithCode:@"VIDEO_ERROR"
+                                     message:@"analysis output could not switch back to BGRA for recording"
+                                     details:@""]);
+      return;
     }
     // Any startup failure after the BGRA flip must restore the nv21 format —
     // stopRecordingVideo never runs for a recording that never started, so the
@@ -3143,9 +3219,11 @@ static const int32_t kStillLongEdgeTarget = 4032;
       completion(error);
     };
     [_videoController recordVideoAtPath:path captureDevice:_captureDevice orientation:_motionController.deviceOrientation audioSetupCallback:^{
-      [self setUpCaptureSessionForAudioError:^(NSError *error) {
-        recordingCompletion([FlutterError errorWithCode:@"VIDEO_ERROR" message:@"error when trying to setup audio" details:[error localizedDescription]]);
-      }];
+      @synchronized (self->_videoOutputLock) {
+        [self setUpCaptureSessionForAudioError:^(NSError *error) {
+          recordingCompletion([FlutterError errorWithCode:@"VIDEO_ERROR" message:@"error when trying to setup audio" details:[error localizedDescription]]);
+        }];
+      }
     } videoWriterCallback:^{
       if (self->_videoController.isAudioEnabled) {
         [self->_audioOutput setSampleBufferDelegate:self queue:self->_dispatchQueue];
@@ -3210,9 +3288,12 @@ static const int32_t kStillLongEdgeTarget = 4032;
   // with the -setRecordsAudio: and mode-switch work queued before it: a
   // microphone attach still waiting there can't land after this release.
   dispatch_async(_dispatchQueue, ^{
-    [self->_captureSession beginConfiguration];
-    [self removeAudioFromSession];
-    [self->_captureSession commitConfiguration];
+    // Same lock as every other configuration and start/stop (MIN-7683).
+    @synchronized (self->_videoOutputLock) {
+      [self->_captureSession beginConfiguration];
+      [self removeAudioFromSession];
+      [self->_captureSession commitConfiguration];
+    }
     dispatch_async(dispatch_get_main_queue(), ^{
       completion(@(YES), nil);
     });
@@ -3238,12 +3319,15 @@ static const int32_t kStillLongEdgeTarget = 4032;
   dispatch_async(_dispatchQueue, ^{
     if (captureMode == Video && (recordsAudio || microphoneAllowed) && ![self hasAudioInput]) {
       VideoController *videoController = self->_videoController;
-      [self->_captureSession beginConfiguration];
-      [self setUpCaptureSessionForAudioError:^(NSError *audioError) {
-        [videoController setIsAudioEnabled:NO];
-        NSLog(@"camerawesome: microphone unavailable, recording video without audio (%@)", audioError.localizedDescription);
-      }];
-      [self->_captureSession commitConfiguration];
+      // Same lock as every other configuration and start/stop (MIN-7683).
+      @synchronized (self->_videoOutputLock) {
+        [self->_captureSession beginConfiguration];
+        [self setUpCaptureSessionForAudioError:^(NSError *audioError) {
+          [videoController setIsAudioEnabled:NO];
+          NSLog(@"camerawesome: microphone unavailable, recording video without audio (%@)", audioError.localizedDescription);
+        }];
+        [self->_captureSession commitConfiguration];
+      }
     }
     dispatch_async(dispatch_get_main_queue(), ^{
       completion(nil);

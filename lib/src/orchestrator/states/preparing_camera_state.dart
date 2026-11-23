@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:camerawesome/camerawesome_plugin.dart';
 import 'package:camerawesome/pigeon.dart';
+import 'package:camerawesome/src/logger.dart';
 import 'package:camerawesome/src/orchestrator/exceptions/camera_states_exceptions.dart';
 import 'package:camerawesome/src/orchestrator/models/camera_physical_button.dart';
 
@@ -41,6 +42,10 @@ class PreparingCameraState extends CameraState {
       case CaptureMode.analysis_only:
         await _startAnalysisMode();
         break;
+    }
+    if (cameraContext.isDisposed) {
+      printLog('camerawesome: screen closed while its camera started, skipping analysis setup');
+      return;
     }
     await cameraContext.analysisController?.setup();
     if (nextCaptureMode == CaptureMode.analysis_only) {
@@ -133,10 +138,12 @@ class PreparingCameraState extends CameraState {
 
   Future _startVideoMode() async {
     await Future.delayed(const Duration(milliseconds: 500));
-    await _init(
+    if (!await _init(
       enableImageStream: cameraContext.imageAnalysisEnabled,
       enablePhysicalButton: cameraContext.enablePhysicalButton,
-    );
+    )) {
+      return;
+    }
     cameraContext.changeState(VideoCameraState.from(cameraContext));
 
     return CamerawesomePlugin.start();
@@ -144,10 +151,12 @@ class PreparingCameraState extends CameraState {
 
   Future _startPhotoMode() async {
     await Future.delayed(const Duration(milliseconds: 500));
-    await _init(
+    if (!await _init(
       enableImageStream: cameraContext.imageAnalysisEnabled,
       enablePhysicalButton: cameraContext.enablePhysicalButton,
-    );
+    )) {
+      return;
+    }
     cameraContext.changeState(PhotoCameraState.from(cameraContext));
 
     return CamerawesomePlugin.start();
@@ -155,10 +164,12 @@ class PreparingCameraState extends CameraState {
 
   Future _startPreviewMode() async {
     await Future.delayed(const Duration(milliseconds: 500));
-    await _init(
+    if (!await _init(
       enableImageStream: cameraContext.imageAnalysisEnabled,
       enablePhysicalButton: cameraContext.enablePhysicalButton,
-    );
+    )) {
+      return;
+    }
     cameraContext.changeState(PreviewCameraState.from(cameraContext));
 
     return CamerawesomePlugin.start();
@@ -166,10 +177,12 @@ class PreparingCameraState extends CameraState {
 
   Future _startAnalysisMode() async {
     await Future.delayed(const Duration(milliseconds: 500));
-    await _init(
+    if (!await _init(
       enableImageStream: cameraContext.imageAnalysisEnabled,
       enablePhysicalButton: cameraContext.enablePhysicalButton,
-    );
+    )) {
+      return;
+    }
 
     // On iOS, we need to start the camera to get the first frame because there
     // is no "AnalysisMode" at all.
@@ -185,12 +198,18 @@ class PreparingCameraState extends CameraState {
     required bool enableImageStream,
     required bool enablePhysicalButton,
   }) async {
+    // Disposed during the start delay: setting up now would replace the camera
+    // of the screen that took over (MIN-7683).
+    if (cameraContext.isDisposed) {
+      printLog('camerawesome: screen closed before its camera was set up, skipping setup');
+      return false;
+    }
     initPermissions(
       sensorConfig,
       enableImageStream: enableImageStream,
       enablePhysicalButton: enablePhysicalButton,
     );
-    await CamerawesomePlugin.init(
+    final setup = CamerawesomePlugin.init(
       sensorConfig,
       enableImageStream,
       enablePhysicalButton,
@@ -199,6 +218,16 @@ class PreparingCameraState extends CameraState {
       videoOptions: saveConfig?.videoOptions,
       mirrorFrontCamera: saveConfig?.mirrorFrontCamera ?? false,
     );
+    // init bumps the generation before its first await, so this is our own
+    // setup's number even if another screen sets up while we wait (MIN-7683).
+    cameraContext.setupGeneration = CamerawesomePlugin.setupGeneration;
+    await setup;
+    // Disposed while setting up: dispose already stopped this camera (it owned
+    // the generation), so don't start it again.
+    if (cameraContext.isDisposed) {
+      printLog('camerawesome: screen closed while its camera was set up, not starting it');
+      return false;
+    }
     _isReady = true;
     return _isReady;
   }

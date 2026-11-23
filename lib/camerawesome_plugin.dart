@@ -77,6 +77,21 @@ class CamerawesomePlugin {
 
   static CameraRunningState currentState = CameraRunningState.stopped;
 
+  static int _setupGeneration = 0;
+
+  /// Counts [init] calls (MIN-7683). The native side keeps a single camera and
+  /// [init] replaces it, so a camera screen that opens while the previous one
+  /// is still closing sets up first, and the previous screen's dispose would
+  /// then [stop] the new screen's camera. A [CameraContext] records the
+  /// generation its own [init] got and passes it to [stop], which does nothing
+  /// once a newer setup has taken over.
+  static int get setupGeneration => _setupGeneration;
+
+  /// A native camera exists (set up and not yet stopped). Separate from
+  /// [currentState], which [init] resets to stopped: a screen closing before
+  /// its start() ran must still release the camera it set up.
+  static bool _nativeCameraSetUp = false;
+
   /// Set it to true to print dart logs from camerawesome
   static bool printLogs = false;
 
@@ -92,17 +107,31 @@ class CamerawesomePlugin {
         currentState == CameraRunningState.starting) {
       return true;
     }
+    final generation = _setupGeneration;
     currentState = CameraRunningState.starting;
     bool res = await CameraInterface().start();
-    if (res) currentState = CameraRunningState.started;
+    // A newer setup reset the state while this was in flight: it is that
+    // camera's to report now.
+    if (res && generation == _setupGeneration) {
+      currentState = CameraRunningState.started;
+    }
     return res;
   }
 
-  static Future<bool> stop() async {
-    if (currentState == CameraRunningState.stopped ||
-        currentState == CameraRunningState.stopping) {
+  /// Stops and disposes the native camera. With [generation] (the
+  /// [setupGeneration] of the caller's own [init]), does nothing when a newer
+  /// setup has replaced that camera (MIN-7683).
+  static Future<bool> stop({int? generation}) async {
+    if (generation != null && generation != _setupGeneration) {
+      printLog(
+          'camerawesome: not stopping camera setup #$generation, setup #$_setupGeneration has replaced it');
       return true;
     }
+    if (currentState == CameraRunningState.stopping ||
+        (currentState == CameraRunningState.stopped && !_nativeCameraSetUp)) {
+      return true;
+    }
+    final stopping = _setupGeneration;
     _orientationStream = null;
     currentState = CameraRunningState.stopping;
     bool res;
@@ -111,7 +140,11 @@ class CamerawesomePlugin {
     } catch (e) {
       return false;
     }
-    currentState = CameraRunningState.stopped;
+    // Same as start(): a setup that happened meanwhile owns the state.
+    if (stopping == _setupGeneration) {
+      currentState = CameraRunningState.stopped;
+      _nativeCameraSetUp = false;
+    }
     return res;
   }
 
@@ -261,6 +294,13 @@ class CamerawesomePlugin {
     required VideoOptions? videoOptions,
     required bool mirrorFrontCamera,
   }) async {
+    // Synchronous, before the first await, so a caller can read its own
+    // generation right after calling init (MIN-7683). setupCamera disposes any
+    // native camera that is still running, so the new one starts out stopped
+    // and the next start() really starts it.
+    _setupGeneration++;
+    currentState = CameraRunningState.stopped;
+    _nativeCameraSetUp = true;
     return CameraInterface()
         .setupCamera(
           sensorConfig.sensors.map((e) {

@@ -3219,9 +3219,11 @@ static const int32_t kStillLongEdgeTarget = 4032;
       completion(error);
     };
     [_videoController recordVideoAtPath:path captureDevice:_captureDevice orientation:_motionController.deviceOrientation audioSetupCallback:^{
-      [self setUpCaptureSessionForAudioError:^(NSError *error) {
-        recordingCompletion([FlutterError errorWithCode:@"VIDEO_ERROR" message:@"error when trying to setup audio" details:[error localizedDescription]]);
-      }];
+      @synchronized (self->_videoOutputLock) {
+        [self setUpCaptureSessionForAudioError:^(NSError *error) {
+          recordingCompletion([FlutterError errorWithCode:@"VIDEO_ERROR" message:@"error when trying to setup audio" details:[error localizedDescription]]);
+        }];
+      }
     } videoWriterCallback:^{
       if (self->_videoController.isAudioEnabled) {
         [self->_audioOutput setSampleBufferDelegate:self queue:self->_dispatchQueue];
@@ -3286,9 +3288,12 @@ static const int32_t kStillLongEdgeTarget = 4032;
   // with the -setRecordsAudio: and mode-switch work queued before it: a
   // microphone attach still waiting there can't land after this release.
   dispatch_async(_dispatchQueue, ^{
-    [self->_captureSession beginConfiguration];
-    [self removeAudioFromSession];
-    [self->_captureSession commitConfiguration];
+    // Same lock as every other configuration and start/stop (MIN-7683).
+    @synchronized (self->_videoOutputLock) {
+      [self->_captureSession beginConfiguration];
+      [self removeAudioFromSession];
+      [self->_captureSession commitConfiguration];
+    }
     dispatch_async(dispatch_get_main_queue(), ^{
       completion(@(YES), nil);
     });
@@ -3314,12 +3319,15 @@ static const int32_t kStillLongEdgeTarget = 4032;
   dispatch_async(_dispatchQueue, ^{
     if (captureMode == Video && (recordsAudio || microphoneAllowed) && ![self hasAudioInput]) {
       VideoController *videoController = self->_videoController;
-      [self->_captureSession beginConfiguration];
-      [self setUpCaptureSessionForAudioError:^(NSError *audioError) {
-        [videoController setIsAudioEnabled:NO];
-        NSLog(@"camerawesome: microphone unavailable, recording video without audio (%@)", audioError.localizedDescription);
-      }];
-      [self->_captureSession commitConfiguration];
+      // Same lock as every other configuration and start/stop (MIN-7683).
+      @synchronized (self->_videoOutputLock) {
+        [self->_captureSession beginConfiguration];
+        [self setUpCaptureSessionForAudioError:^(NSError *audioError) {
+          [videoController setIsAudioEnabled:NO];
+          NSLog(@"camerawesome: microphone unavailable, recording video without audio (%@)", audioError.localizedDescription);
+        }];
+        [self->_captureSession commitConfiguration];
+      }
     }
     dispatch_async(dispatch_get_main_queue(), ^{
       completion(nil);

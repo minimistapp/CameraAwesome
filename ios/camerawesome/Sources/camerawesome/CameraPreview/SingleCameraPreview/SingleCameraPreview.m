@@ -432,9 +432,11 @@ static const CGFloat kConstituentReevaluationZoomStep = 0.001;
 
 /// Init camera preview with Front or Rear sensor
 - (void)initCameraPreview:(PigeonSensorPosition)sensor {
-  // Here we set a preset which wont crash the device before switching to front or back
-  [_captureSession setSessionPreset:AVCaptureSessionPresetPhoto];
-  
+  [self resetFocusStateForDeviceSwitch];
+  [self bindCameraDevice:sensor];
+}
+
+- (void)resetFocusStateForDeviceSwitch {
   // Drop any focus-stable KVO registration on the outgoing device before we
   // reassign _captureDevice, and abandon pending waiters (a capture/lock in
   // flight is no longer valid across a sensor switch). Run synchronously on
@@ -456,6 +458,13 @@ static const CGFloat kConstituentReevaluationZoomStep = 0.001;
     // identity and drops itself; this only lets the new device schedule its own.
     self->_constituentReevaluationPending = NO;
   });
+}
+
+/// The device half of -initCameraPreview:. Never waits on _dispatchQueue, so
+/// -setSensor: can run it under _videoOutputLock (MIN-7683).
+- (void)bindCameraDevice:(PigeonSensorPosition)sensor {
+  // Here we set a preset which wont crash the device before switching to front or back
+  [_captureSession setSessionPreset:AVCaptureSessionPresetPhoto];
 
   NSError *error;
   _captureDevice = [AVCaptureDevice deviceWithUniqueID:[self selectAvailableCamera:sensor]];
@@ -2340,69 +2349,75 @@ static const int32_t kStillLongEdgeTarget = 4032;
   if (sessionIsRunning) {
       [_captureSession stopRunning];
   }
-  // First remove all input & output
-  [_captureSession beginConfiguration];
-  
-  // Only remove camera channel but keep audio
-  for (AVCaptureInput *input in [_captureSession inputs]) {
-    for (AVCaptureInputPort *port in input.ports) {
-      if ([[port mediaType] isEqual:AVMediaTypeVideo]) {
-        [_captureSession removeInput:input];
-        break;
+  // The focus reset dispatch_syncs onto _dispatchQueue, so it runs before the
+  // lock is taken. The reconfiguration below runs under _videoOutputLock, so it
+  // can't overlap -setCaptureMode:'s on the queue (MIN-7683).
+  [self resetFocusStateForDeviceSwitch];
+  @synchronized (_videoOutputLock) {
+    // First remove all input & output
+    [_captureSession beginConfiguration];
+
+    // Only remove camera channel but keep audio
+    for (AVCaptureInput *input in [_captureSession inputs]) {
+      for (AVCaptureInputPort *port in input.ports) {
+        if ([[port mediaType] isEqual:AVMediaTypeVideo]) {
+          [_captureSession removeInput:input];
+          break;
+        }
       }
     }
+    // FIX: Changed from setAudioIsDisconnected to setVideoIsDisconnected.
+    // VIDEO is what's being switched (brief gap while new camera initializes),
+    // not audio. Setting the wrong flag caused audio timestamps to be offset
+    // while video timestamps weren't compensated for the gap, causing desync.
+    // The videoIsDisconnected flag triggers proper timestamp gap compensation
+    // in VideoController.m's captureOutput method.
+    [_videoController setVideoIsDisconnected:YES];
+
+    [_captureSession removeOutput:_capturePhotoOutput];
+    // Drop the QR metadata output too; initCameraPreview: recreates it for the
+    // new device (MIN-3077).
+    if (_metadataOutput != nil) {
+      [_captureSession removeOutput:_metadataOutput];
+      _metadataOutput = nil;
+    }
+    [_captureSession removeConnection:_captureConnection];
+    // Drop the preview-layer connection too (it's tied to the outgoing input);
+    // initCameraPreview: → attachPreviewLayerConnection rebuilds it for the new
+    // device. Removing the video input above may already have auto-removed it, so
+    // guard before removing.
+    if (_previewConnection != nil && [_captureSession.connections containsObject:_previewConnection]) {
+      [_captureSession removeConnection:_previewConnection];
+    }
+    _previewConnection = nil;
+
+    _cameraSensorPosition = sensor.position;
+    _captureDeviceId = sensor.deviceId;
+
+    // Init the camera preview with the selected sensor (its focus reset ran above)
+    [self bindCameraDevice:sensor.position];
+
+    // Update VideoController with new capture device to re-apply custom FPS if recording
+    // This fixes audio/video desync when switching cameras during recording with custom FPS
+    [_videoController updateCaptureDevice:_captureDevice];
+
+    [self setBestPreviewQuality];
+
+    [_captureSession commitConfiguration];
+    // Re-pin the fps cap after the commit: a preset set inside the
+    // begin/commit block only takes effect now, and the format switch it
+    // triggers resets the device's frame durations (MIN-2747).
+    [self applyFrameRateCap];
+    // Same for the HDR policy: the new device's activeFormat is only final after
+    // the commit, and the in-block run saw the outgoing format (MIN-3098).
+    [self applyVideoHDRPolicy];
+    // Re-apply QR types after the commit too — availableMetadataObjectTypes can
+    // be empty while the session is mid-configuration (MIN-3077).
+    [self applyQrMetadataTypes];
+    // The connection was rebuilt for the new device (defaults to enabled); gate
+    // it on actual consumption again (MIN-3077).
+    [self updateAnalysisConnectionState];
   }
-  // FIX: Changed from setAudioIsDisconnected to setVideoIsDisconnected.
-  // VIDEO is what's being switched (brief gap while new camera initializes),
-  // not audio. Setting the wrong flag caused audio timestamps to be offset
-  // while video timestamps weren't compensated for the gap, causing desync.
-  // The videoIsDisconnected flag triggers proper timestamp gap compensation
-  // in VideoController.m's captureOutput method.
-  [_videoController setVideoIsDisconnected:YES];
-
-  [_captureSession removeOutput:_capturePhotoOutput];
-  // Drop the QR metadata output too; initCameraPreview: recreates it for the
-  // new device (MIN-3077).
-  if (_metadataOutput != nil) {
-    [_captureSession removeOutput:_metadataOutput];
-    _metadataOutput = nil;
-  }
-  [_captureSession removeConnection:_captureConnection];
-  // Drop the preview-layer connection too (it's tied to the outgoing input);
-  // initCameraPreview: → attachPreviewLayerConnection rebuilds it for the new
-  // device. Removing the video input above may already have auto-removed it, so
-  // guard before removing.
-  if (_previewConnection != nil && [_captureSession.connections containsObject:_previewConnection]) {
-    [_captureSession removeConnection:_previewConnection];
-  }
-  _previewConnection = nil;
-
-  _cameraSensorPosition = sensor.position;
-  _captureDeviceId = sensor.deviceId;
-  
-  // Init the camera preview with the selected sensor
-  [self initCameraPreview:sensor.position];
-
-  // Update VideoController with new capture device to re-apply custom FPS if recording
-  // This fixes audio/video desync when switching cameras during recording with custom FPS
-  [_videoController updateCaptureDevice:_captureDevice];
-
-  [self setBestPreviewQuality];
-  
-  [_captureSession commitConfiguration];
-  // Re-pin the fps cap after the commit: a preset set inside the
-  // begin/commit block only takes effect now, and the format switch it
-  // triggers resets the device's frame durations (MIN-2747).
-  [self applyFrameRateCap];
-  // Same for the HDR policy: the new device's activeFormat is only final after
-  // the commit, and the in-block run saw the outgoing format (MIN-3098).
-  [self applyVideoHDRPolicy];
-  // Re-apply QR types after the commit too — availableMetadataObjectTypes can
-  // be empty while the session is mid-configuration (MIN-3077).
-  [self applyQrMetadataTypes];
-  // The connection was rebuilt for the new device (defaults to enabled); gate
-  // it on actual consumption again (MIN-3077).
-  [self updateAnalysisConnectionState];
   if (sessionIsRunning) {
     dispatch_async(_dispatchQueue, ^{
       [self->_captureSession startRunning];

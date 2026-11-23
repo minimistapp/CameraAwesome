@@ -55,6 +55,10 @@ class CameraContext {
       setupGeneration != null &&
       setupGeneration != CamerawesomePlugin.setupGeneration;
 
+  /// [dispose] has run. A preparation still in flight checks this so it never
+  /// sets up or starts a camera for a screen that is gone (MIN-7683).
+  bool get isDisposed => stateController.isClosed;
+
   Stream<AwesomeFilter> get filter$ => filterController.stream;
 
   Stream<bool> get filterSelectorOpened$ => filterSelectorOpened.stream;
@@ -172,12 +176,15 @@ class CameraContext {
     sensorConfigController.close();
     mediaCaptureController.close();
     stateController.close();
-    // A screen that opens while this one is closing sets up its camera first;
-    // stopping now would tear down that screen's camera (MIN-7683).
-    final superseded = _superseded;
-    analysisController?.stop(stopNative: !superseded);
+    // Only the context that set up the current native camera may stop it. A
+    // screen that opens while this one is closing sets up its camera first, and
+    // a context that never got to set up owns no camera at all (MIN-7683).
+    final ownsNativeCamera = setupGeneration != null && !_superseded;
+    analysisController?.stop(stopNative: ownsNativeCamera);
     state.dispose();
-    CamerawesomePlugin.stop(generation: setupGeneration);
+    if (ownsNativeCamera) {
+      CamerawesomePlugin.stop(generation: setupGeneration);
+    }
   }
 
   /// Global focus

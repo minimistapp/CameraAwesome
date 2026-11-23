@@ -87,6 +87,11 @@ class CamerawesomePlugin {
   /// once a newer setup has taken over.
   static int get setupGeneration => _setupGeneration;
 
+  /// A native camera exists (set up and not yet stopped). Separate from
+  /// [currentState], which [init] resets to stopped: a screen closing before
+  /// its start() ran must still release the camera it set up.
+  static bool _nativeCameraSetUp = false;
+
   /// Set it to true to print dart logs from camerawesome
   static bool printLogs = false;
 
@@ -122,8 +127,8 @@ class CamerawesomePlugin {
           'camerawesome: not stopping camera setup #$generation, setup #$_setupGeneration has replaced it');
       return true;
     }
-    if (currentState == CameraRunningState.stopped ||
-        currentState == CameraRunningState.stopping) {
+    if (currentState == CameraRunningState.stopping ||
+        (currentState == CameraRunningState.stopped && !_nativeCameraSetUp)) {
       return true;
     }
     final stopping = _setupGeneration;
@@ -138,6 +143,7 @@ class CamerawesomePlugin {
     // Same as start(): a setup that happened meanwhile owns the state.
     if (stopping == _setupGeneration) {
       currentState = CameraRunningState.stopped;
+      _nativeCameraSetUp = false;
     }
     return res;
   }
@@ -294,6 +300,7 @@ class CamerawesomePlugin {
     // and the next start() really starts it.
     _setupGeneration++;
     currentState = CameraRunningState.stopped;
+    _nativeCameraSetUp = true;
     return CameraInterface()
         .setupCamera(
           sensorConfig.sensors.map((e) {

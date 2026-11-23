@@ -58,6 +58,15 @@ void main() {
     expect(calls.where((c) => c == 'start'), hasLength(2));
   });
 
+  test('a screen closed before start() still releases the camera it set up', () async {
+    final generation = await setUpCamera();
+    await CamerawesomePlugin.stop(generation: generation);
+    expect(calls, ['setupCamera', 'stop']);
+    // Released: a second stop has nothing left to do.
+    await CamerawesomePlugin.stop(generation: generation);
+    expect(calls, ['setupCamera', 'stop']);
+  });
+
   test('the current screen still stops its own camera', () async {
     final generation = await setUpCamera();
     await CamerawesomePlugin.start();

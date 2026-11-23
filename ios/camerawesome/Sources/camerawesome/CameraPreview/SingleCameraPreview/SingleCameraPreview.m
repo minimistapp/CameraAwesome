@@ -118,6 +118,17 @@ static const CGFloat kConstituentReevaluationZoomStep = 0.001;
 
 @implementation SingleCameraPreview {
   dispatch_queue_t _dispatchQueue;
+  // Held around every change to the session format and the video data
+  // output's videoSettings (MIN-7683): -setCameraPreset:,
+  // -applyAnalysisPixelFormatWithWidth:height: and -setCaptureMode:'s
+  // configuration block. They run on the platform thread and on
+  // _dispatchQueue, and AVFoundation re-validates videoSettings whenever the
+  // active format changes, so two of them at once over-released the settings
+  // dictionary (EXC_BAD_ACCESS in setVideoSettings: / videoSettings /
+  // _validateOutputSettingsDictionary:). A lock rather than the queue because
+  // -setSensor: and -initCameraPreview: dispatch_sync onto that queue
+  // themselves. Nothing that holds it waits on the queue, so it can't deadlock.
+  NSObject *_videoOutputLock;
   // Blocks waiting for focus/exposure to settle, plus whether we currently hold
   // KVO registrations on _captureDevice. Mutated only on _dispatchQueue.
   NSMutableArray<void (^)(void)> *_focusStableCompletions;
@@ -289,6 +300,7 @@ static const CGFloat kConstituentReevaluationZoomStep = 0.001;
                                                name:AVCaptureSessionInterruptionEndedNotification
                                              object:_captureSession];
 
+  _videoOutputLock = [NSObject new];
   _captureVideoOutput = [AVCaptureVideoDataOutput new];
   // Default analysis format. Must be set explicitly BEFORE the baseline
   // pixel-format call below: the enum's zero value is yuv_420_888, so a
@@ -1328,6 +1340,13 @@ static const int32_t kStreamingMaxFps = 30;
 /// pixel-format-only, so a rejection degrades to "no downscale this pass"
 /// (bounded by the format ceiling) instead of crashing.
 - (void)applyAnalysisPixelFormatWithWidth:(int32_t)width height:(int32_t)height {
+  @synchronized (_videoOutputLock) {
+    [self applyAnalysisPixelFormatLockedWithWidth:width height:height];
+  }
+}
+
+/// Body of -applyAnalysisPixelFormatWithWidth:height:; caller holds _videoOutputLock.
+- (void)applyAnalysisPixelFormatLockedWithWidth:(int32_t)width height:(int32_t)height {
   if (_captureVideoOutput == nil) {
     return;
   }
@@ -1444,38 +1463,24 @@ static const int32_t kStreamingMaxFps = 30;
 /// ivar persists across sensor switches (setSensor → setCameraPreset →
 /// applyAnalysisOutputDownscale re-applies it) and resets naturally with the
 /// camera instance on reopen (Dart re-runs setup then).
-///
-/// Runs on _dispatchQueue (MIN-7683). The pigeon handler calls this on the
-/// platform thread right after setupCamera, while -setCaptureMode:'s block is
-/// re-running -setCameraPreset: on _dispatchQueue. Both read and replace
-/// _captureVideoOutput.videoSettings, and doing that from two threads at once
-/// over-released the settings dictionary: EXC_BAD_ACCESS inside
-/// -[AVCaptureVideoDataOutput setVideoSettings:] / videoSettings, or in the KVO
-/// revalidation a preset change triggers. Every videoSettings change now goes
-/// through the one serial queue.
 - (void)updateRequestedAnalysisFormat:(InputAnalysisImageFormat)format {
-  dispatch_async(_dispatchQueue, ^{
-    if (self->_requestedAnalysisFormat == format) {
-      return;
-    }
-    self->_requestedAnalysisFormat = format;
-    [self applyAnalysisOutputDownscale];
-  });
+  if (_requestedAnalysisFormat == format) {
+    return;
+  }
+  _requestedAnalysisFormat = format;
+  [self applyAnalysisOutputDownscale];
 }
 
 /// Store the analysis long edge the Dart stream requested (MIN-3475) and
-/// re-apply the downscale. Same lifecycle and queue as
-/// -updateRequestedAnalysisFormat: — persists across sensor switches, resets
-/// with the camera instance, runs on _dispatchQueue (MIN-7683).
+/// re-apply the downscale. Same lifecycle as -updateRequestedAnalysisFormat:
+/// — persists across sensor switches, resets with the camera instance.
 - (void)updateRequestedAnalysisWidth:(int)width {
   int32_t requested = width > 0 ? (int32_t)width : 0;
-  dispatch_async(_dispatchQueue, ^{
-    if (self->_requestedAnalysisLongEdge == requested) {
-      return;
-    }
-    self->_requestedAnalysisLongEdge = requested;
-    [self applyAnalysisOutputDownscale];
-  });
+  if (_requestedAnalysisLongEdge == requested) {
+    return;
+  }
+  _requestedAnalysisLongEdge = requested;
+  [self applyAnalysisOutputDownscale];
 }
 
 - (void)setCloseRangeScanMode:(BOOL)enabled {
@@ -2004,6 +2009,13 @@ static const int32_t kStillLongEdgeTarget = 4032;
 }
 
 - (void)setCameraPreset:(CGSize)currentPreviewSize {
+  @synchronized (_videoOutputLock) {
+    [self setCameraPresetLocked:currentPreviewSize];
+  }
+}
+
+/// Body of -setCameraPreset:; caller holds _videoOutputLock (MIN-7683).
+- (void)setCameraPresetLocked:(CGSize)currentPreviewSize {
   CGSize targetSize = currentPreviewSize;
   // Overrides for the streaming preview shape (see the streaming branch).
   // [forcedFormat] wins when set: it drives the session from a chosen 4:3
@@ -2923,42 +2935,46 @@ static const int32_t kStillLongEdgeTarget = 4032;
   // ties Flutter's frames to the main thread), so the app's whole switch
   // animation stalled. -runAfterSessionWork: queues behind it.
   dispatch_async(_dispatchQueue, ^{
-    [self->_captureSession beginConfiguration];
-    // Video mode arms what a recording needs from the data output up front —
-    // BGRA buffers (MIN-3084) and the connection on (MIN-3077) — inside this
-    // switch, under the app's still. Flipping them as a recording starts and
-    // stops reconfigured the running session, and the preview blinked black.
-    self->_forceBGRAAnalysisForRecording = captureMode == Video && self->_requestedAnalysisFormat == nv21;
-    [self updateAnalysisConnectionState];
-    // Re-run the session config for the new mode (MIN-3098): Photo/Preview
-    // picks the tuned low-power preview format (+ video-HDR off, fps cap);
-    // Video restores the full-quality video preset (+ auto HDR). Without this
-    // the low-power preview format would leak into a recording — or the video
-    // config into the idle preview.
-    [self setBestPreviewQuality];
+    // The whole switch under _videoOutputLock: committing the new format re-validates
+    // the data output's videoSettings (MIN-7683).
+    @synchronized (self->_videoOutputLock) {
+      [self->_captureSession beginConfiguration];
+      // Video mode arms what a recording needs from the data output up front —
+      // BGRA buffers (MIN-3084) and the connection on (MIN-3077) — inside this
+      // switch, under the app's still. Flipping them as a recording starts and
+      // stops reconfigured the running session, and the preview blinked black.
+      self->_forceBGRAAnalysisForRecording = captureMode == Video && self->_requestedAnalysisFormat == nv21;
+      [self updateAnalysisConnectionState];
+      // Re-run the session config for the new mode (MIN-3098): Photo/Preview
+      // picks the tuned low-power preview format (+ video-HDR off, fps cap);
+      // Video restores the full-quality video preset (+ auto HDR). Without this
+      // the low-power preview format would leak into a recording — or the video
+      // config into the idle preview.
+      [self setBestPreviewQuality];
 
-    // The microphone joins whenever it is allowed, even with the sound toggle
-    // off (MIN-6820): the toggle then only decides whether a recording writes
-    // its sound (-setRecordsAudio:), so flipping it never reconfigures the
-    // running session. Attaching it here happens under the switch's still.
-    BOOL microphoneAllowed = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio] == AVAuthorizationStatusAuthorized;
-    if (captureMode == Video && (self->_videoController.isAudioEnabled || microphoneAllowed)) {
-      [self setUpCaptureSessionForAudioError:^(NSError *audioError) {
-        // Audio is best-effort. If the microphone can't be set up (permission
-        // denied, or no usable audio device — e.g. "Cannot use iPad
-        // Microphone") we record silent video instead of failing the
-        // capture-mode switch. Disabling audio here keeps the recorder from
-        // waiting on samples that never arrive. The Flutter layer owns the
-        // microphone-permission UX.
-        [self->_videoController setIsAudioEnabled:NO];
-        NSLog(@"camerawesome: microphone unavailable, recording video without audio (%@)", audioError.localizedDescription);
-      }];
-    } else if (captureMode != Video && !self->_videoController.isAudioEnabled) {
-      // Held only for video with the sound off: photo mode lets it go, under
-      // the same still. With the sound on it stays, as it always has.
-      [self removeAudioFromSession];
+      // The microphone joins whenever it is allowed, even with the sound toggle
+      // off (MIN-6820): the toggle then only decides whether a recording writes
+      // its sound (-setRecordsAudio:), so flipping it never reconfigures the
+      // running session. Attaching it here happens under the switch's still.
+      BOOL microphoneAllowed = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio] == AVAuthorizationStatusAuthorized;
+      if (captureMode == Video && (self->_videoController.isAudioEnabled || microphoneAllowed)) {
+        [self setUpCaptureSessionForAudioError:^(NSError *audioError) {
+          // Audio is best-effort. If the microphone can't be set up (permission
+          // denied, or no usable audio device — e.g. "Cannot use iPad
+          // Microphone") we record silent video instead of failing the
+          // capture-mode switch. Disabling audio here keeps the recorder from
+          // waiting on samples that never arrive. The Flutter layer owns the
+          // microphone-permission UX.
+          [self->_videoController setIsAudioEnabled:NO];
+          NSLog(@"camerawesome: microphone unavailable, recording video without audio (%@)", audioError.localizedDescription);
+        }];
+      } else if (captureMode != Video && !self->_videoController.isAudioEnabled) {
+        // Held only for video with the sound off: photo mode lets it go, under
+        // the same still. With the sound on it stays, as it always has.
+        [self removeAudioFromSession];
+      }
+      [self->_captureSession commitConfiguration];
     }
-    [self->_captureSession commitConfiguration];
   });
 }
 
@@ -3141,18 +3157,24 @@ static const int32_t kStillLongEdgeTarget = 4032;
     // BGRA-stream case.
     // Video mode normally has it armed already (-setCaptureMode:), so this
     // reconfigures nothing.
-    NSNumber *current = _captureVideoOutput.videoSettings[(NSString *)kCVPixelBufferPixelFormatTypeKey];
-    if (_requestedAnalysisFormat == nv21 && (current == nil || current.unsignedIntValue != kCVPixelFormatType_32BGRA)) {
-      _forceBGRAAnalysisForRecording = YES;
-      [self applyAnalysisOutputDownscale];
-      NSNumber *applied = _captureVideoOutput.videoSettings[(NSString *)kCVPixelBufferPixelFormatTypeKey];
-      if (applied == nil || applied.unsignedIntValue != kCVPixelFormatType_32BGRA) {
-        [self clearForceBGRAAnalysisForRecording];
-        completion([FlutterError errorWithCode:@"VIDEO_ERROR"
-                                       message:@"analysis output could not switch back to BGRA for recording"
-                                       details:@""]);
-        return;
+    // Read and switched under _videoOutputLock, like every other videoSettings
+    // access (MIN-7683).
+    BOOL bgraFailed = NO;
+    @synchronized (_videoOutputLock) {
+      NSNumber *current = _captureVideoOutput.videoSettings[(NSString *)kCVPixelBufferPixelFormatTypeKey];
+      if (_requestedAnalysisFormat == nv21 && (current == nil || current.unsignedIntValue != kCVPixelFormatType_32BGRA)) {
+        _forceBGRAAnalysisForRecording = YES;
+        [self applyAnalysisOutputDownscale];
+        NSNumber *applied = _captureVideoOutput.videoSettings[(NSString *)kCVPixelBufferPixelFormatTypeKey];
+        bgraFailed = applied == nil || applied.unsignedIntValue != kCVPixelFormatType_32BGRA;
       }
+    }
+    if (bgraFailed) {
+      [self clearForceBGRAAnalysisForRecording];
+      completion([FlutterError errorWithCode:@"VIDEO_ERROR"
+                                     message:@"analysis output could not switch back to BGRA for recording"
+                                     details:@""]);
+      return;
     }
     // Any startup failure after the BGRA flip must restore the nv21 format —
     // stopRecordingVideo never runs for a recording that never started, so the

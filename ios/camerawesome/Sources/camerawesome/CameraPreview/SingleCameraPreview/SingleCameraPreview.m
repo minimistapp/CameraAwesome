@@ -2243,7 +2243,7 @@ static const int32_t kStillLongEdgeTarget = 4032;
     [self->_focusStableCompletions removeAllObjects];
     [self teardownCloseRangeFocusObservation];
 
-    [self->_captureSession stopRunning];
+    [self stopSessionRunning];
     for (AVCaptureInput *input in [self->_captureSession inputs]) {
       [self->_captureSession removeInput:input];
     }
@@ -2265,13 +2265,30 @@ static const int32_t kStillLongEdgeTarget = 4032;
   }
   BOOL sessionIsRunning = _captureSession.isRunning;
   if (sessionIsRunning) {
-      [_captureSession stopRunning];
+      [self stopSessionRunning];
   }
   [self setCameraPreset:previewSize];
   if (sessionIsRunning) {
     dispatch_async(_dispatchQueue, ^{
-      [self->_captureSession startRunning];
+      [self startSessionRunning];
     });
+  }
+}
+
+/// Session start/stop, under _videoOutputLock (MIN-7683). AVFoundation throws
+/// NSGenericException when -startRunning / -stopRunning lands while another
+/// thread is between -beginConfiguration and -commitConfiguration, and both
+/// run on the platform thread and on _dispatchQueue. Every start and stop in
+/// this class goes through these two.
+- (void)startSessionRunning {
+  @synchronized (_videoOutputLock) {
+    [_captureSession startRunning];
+  }
+}
+
+- (void)stopSessionRunning {
+  @synchronized (_videoOutputLock) {
+    [_captureSession stopRunning];
   }
 }
 
@@ -2279,14 +2296,14 @@ static const int32_t kStillLongEdgeTarget = 4032;
 - (void)start {
   _shouldBeRunning = YES;
   dispatch_async(_dispatchQueue, ^{
-    [self->_captureSession startRunning];
+    [self startSessionRunning];
   });
 }
 
 /// Stop camera preview
 - (void)stop {
   _shouldBeRunning = NO;
-  [_captureSession stopRunning];
+  [self stopSessionRunning];
 }
 
 #pragma mark - Session-death recovery (MIN-3440)
@@ -2330,7 +2347,7 @@ static const int32_t kStillLongEdgeTarget = 4032;
       return;
     }
     NSLog(@"CamerAwesome: restarting capture session");
-    [self->_captureSession startRunning];
+    [self startSessionRunning];
   });
 }
 
@@ -2347,7 +2364,7 @@ static const int32_t kStillLongEdgeTarget = 4032;
   // Check if the session is running before changing the preset
   BOOL sessionIsRunning = _captureSession.isRunning;
   if (sessionIsRunning) {
-      [_captureSession stopRunning];
+      [self stopSessionRunning];
   }
   // The focus reset dispatch_syncs onto _dispatchQueue, so it runs before the
   // lock is taken. The reconfiguration below runs under _videoOutputLock, so it
@@ -2420,7 +2437,7 @@ static const int32_t kStillLongEdgeTarget = 4032;
   }
   if (sessionIsRunning) {
     dispatch_async(_dispatchQueue, ^{
-      [self->_captureSession startRunning];
+      [self startSessionRunning];
     });
   }
 }

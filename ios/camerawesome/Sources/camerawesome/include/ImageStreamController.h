@@ -18,6 +18,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property(readonly, nonatomic) float maxFramesPerSecond;
 @property(readonly, nonatomic) NSDate *latestEmittedFrame;
 @property(nonatomic) FlutterEventSink imageStreamEventSink;
+/// When set, 32BGRA frames are encoded to JPEG natively and emitted in the
+/// Android jpeg shape (MIN-7796). Set from the platform thread, read on the
+/// capture queue, hence atomic.
+@property(atomic) BOOL encodeJpeg;
 
 @property(readonly, nonatomic) NSInteger processingImage;
 

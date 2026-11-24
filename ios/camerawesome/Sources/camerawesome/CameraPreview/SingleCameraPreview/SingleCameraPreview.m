@@ -7,6 +7,8 @@
 
 #import "SingleCameraPreview.h"
 
+#include <stdatomic.h>
+
 // KVO context for observing the capture device's adjustingFocus/adjustingExposure
 // flags (used to know when AF/AE have settled).
 static void * const FocusStableContext = (void *)&FocusStableContext;
@@ -129,6 +131,10 @@ static const CGFloat kConstituentReevaluationZoomStep = 0.001;
   // -setSensor: and -initCameraPreview: dispatch_sync onto that queue
   // themselves. Nothing that holds it waits on the queue, so it can't deadlock.
   NSObject *_videoOutputLock;
+  // Whether Dart listens to the "camerawesome/qrcodes" channel (MIN-7792). The hardware code reader only decodes
+  // while someone does: with no listener its metadata types are cleared, so a camera mode that wants no QR or barcode
+  // scanning (Continuous capture) costs no decoding at all. Set on the main queue, read on _dispatchQueue.
+  atomic_bool _codeReaderWanted;
   // Blocks waiting for focus/exposure to settle, plus whether we currently hold
   // KVO registrations on _captureDevice. Mutated only on _dispatchQueue.
   NSMutableArray<void (^)(void)> *_focusStableCompletions;
@@ -594,6 +600,11 @@ static NSString *CAMBarcodeFormatName(AVMetadataObjectType type) {
   if (_metadataOutput == nil) {
     return;
   }
+  // Nobody listens: decode nothing (MIN-7792). An empty list is always accepted, whatever the connection offers.
+  if (!atomic_load(&_codeReaderWanted)) {
+    _metadataOutput.metadataObjectTypes = @[];
+    return;
+  }
   NSArray<AVMetadataObjectType> *available = _metadataOutput.availableMetadataObjectTypes;
   NSMutableArray<AVMetadataObjectType> *types = [NSMutableArray array];
   for (AVMetadataObjectType type in [@[ AVMetadataObjectTypeQRCode ] arrayByAddingObjectsFromArray:CAMBarcodeMetadataTypes()]) {
@@ -604,6 +615,22 @@ static NSString *CAMBarcodeFormatName(AVMetadataObjectType type) {
   if (types.count > 0) {
     _metadataOutput.metadataObjectTypes = types;
   }
+}
+
+/// The "camerawesome/qrcodes" sink, set on the main queue when Dart starts or stops listening (MIN-7792). Turns the
+/// hardware code reader on and off to match, on _dispatchQueue under _videoOutputLock like every other change to the
+/// session's outputs (MIN-7683).
+- (void)setQrCodeEventSink:(FlutterEventSink)qrCodeEventSink {
+  _qrCodeEventSink = [qrCodeEventSink copy];
+  BOOL wanted = qrCodeEventSink != nil;
+  if (atomic_exchange(&_codeReaderWanted, wanted) == wanted) {
+    return;
+  }
+  dispatch_async(_dispatchQueue, ^{
+    @synchronized (self->_videoOutputLock) {
+      [self applyQrMetadataTypes];
+    }
+  });
 }
 
 /// Delivered by the hardware machine-readable-code reader on _dispatchQueue.

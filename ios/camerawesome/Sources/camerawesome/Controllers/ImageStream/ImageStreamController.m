@@ -8,6 +8,8 @@
 #import "ImageStreamController.h"
 
 #import <os/lock.h>
+#import <CoreImage/CoreImage.h>
+#import <ImageIO/ImageIO.h>
 
 @implementation ImageStreamController {
   // _processingImage is a read-modify-write counter touched from the capture
@@ -15,7 +17,17 @@
   // drops); an unsynchronized RMW can lose a decrement and ratchet
   // overflowCrashingGuard into skipping every frame.
   os_unfair_lock _processingImageLock;
+  // JPEG encoder for encodeJpeg streams (MIN-7796). Created lazily and only
+  // ever used on the capture queue (the sample-buffer delegate queue is
+  // serial), so it needs no lock; reused across frames because building a
+  // context is expensive.
+  CIContext *_jpegContext;
+  CGColorSpaceRef _jpegColorSpace;
 }
+
+/// JPEG quality for encodeJpeg streams, the value the app's Dart-side
+/// conversion used before (MIN-7796).
+static const CGFloat kAnalysisJpegQuality = 0.85;
 
 NSInteger const MaxPendingProcessedImage = 4;
 
@@ -25,6 +37,12 @@ NSInteger const MaxPendingProcessedImage = 4;
   _processingImage = 0;
   _processingImageLock = OS_UNFAIR_LOCK_INIT;
   return self;
+}
+
+- (void)dealloc {
+  if (_jpegColorSpace != NULL) {
+    CGColorSpaceRelease(_jpegColorSpace);
+  }
 }
 
 # pragma mark - Camera Delegates
@@ -45,6 +63,22 @@ NSInteger const MaxPendingProcessedImage = 4;
   os_unfair_lock_unlock(&_processingImageLock);
 
   CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+  const OSType deliveredFormat = pixelBuffer != NULL ? CVPixelBufferGetPixelFormatType(pixelBuffer) : 0;
+
+  // MIN-7796: encode straight from the pixel buffer on this (capture) queue.
+  // Core Image reads the IOSurface-backed buffer itself, so there is no CPU
+  // base-address lock, no plane copy and no channel swap; only the encoded
+  // JPEG is handed to Flutter.
+  if (self.encodeJpeg && deliveredFormat == kCVPixelFormatType_32BGRA) {
+    NSDictionary *jpegBuffer = [self jpegImageBufferFrom:pixelBuffer orientation:orientation];
+    if (jpegBuffer == nil) {
+      [self droppedFrameFromStream];
+      return;
+    }
+    [self emitImageBuffer:jpegBuffer];
+    return;
+  }
+
   CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
 
   // Emit the dict shape matching the buffer actually delivered: the analysis
@@ -79,6 +113,11 @@ NSInteger const MaxPendingProcessedImage = 4;
     return;
   }
 
+  [self emitImageBuffer:imageBuffer];
+}
+
+/// Hands one frame's dict to the Dart sink on the main thread.
+- (void)emitImageBuffer:(NSDictionary *)imageBuffer {
   dispatch_async(dispatch_get_main_queue(), ^{
     // The sink is nilled on the main thread when Dart cancels the stream
     // (screen close / scanner dismiss) — a frame dispatched before the cancel
@@ -98,7 +137,59 @@ NSInteger const MaxPendingProcessedImage = 4;
       [self droppedFrameFromStream];
     }
   });
+}
 
+/// The JPEG emit (MIN-7796): the frame encoded by Core Image from the 32BGRA
+/// pixel buffer, in the dict shape Android's jpeg emit uses (JpegImage.from:
+/// jpegImage + width/height + rotation + an uncropped cropRect). Runs on the
+/// capture queue. Returns nil when encoding failed so the caller drops the
+/// frame, like the plane copies (MIN-3075).
+- (nullable NSDictionary *)jpegImageBufferFrom:(CVPixelBufferRef)pixelBuffer orientation:(UIDeviceOrientation)orientation {
+  const size_t width = CVPixelBufferGetWidth(pixelBuffer);
+  const size_t height = CVPixelBufferGetHeight(pixelBuffer);
+  if (width == 0 || height == 0) {
+    return nil;
+  }
+  NSData *jpeg = nil;
+  @autoreleasepool {
+    @try {
+      if (_jpegContext == nil) {
+        // Intermediates are never reused between frames; caching them only
+        // holds memory on a queue that already runs near the ceiling (MIN-3075).
+        _jpegContext = [CIContext contextWithOptions:@{kCIContextCacheIntermediates: @NO}];
+        _jpegColorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+      }
+      CIImage *image = [CIImage imageWithCVPixelBuffer:pixelBuffer];
+      if (image != nil && _jpegContext != nil && _jpegColorSpace != NULL) {
+        jpeg = [_jpegContext JPEGRepresentationOfImage:image
+                                            colorSpace:_jpegColorSpace
+                                               options:@{(id)kCGImageDestinationLossyCompressionQuality: @(kAnalysisJpegQuality)}];
+      }
+    } @catch (NSException *exception) {
+      jpeg = nil;
+    }
+  }
+  if (jpeg == nil) {
+    static BOOL loggedFailure = NO;
+    if (!loggedFailure) {
+      loggedFailure = YES;
+      NSLog(@"ImageStreamController: JPEG encode failed for a %zux%zu frame; dropping it (MIN-7796)", width, height);
+    }
+    return nil;
+  }
+  return @{
+    @"width": [NSNumber numberWithUnsignedLong:width],
+    @"height": [NSNumber numberWithUnsignedLong:height],
+    @"format": @"jpeg",
+    @"jpegImage": [FlutterStandardTypedData typedDataWithBytes:jpeg],
+    @"rotation": [self getInputImageOrientation:orientation],
+    @"cropRect": @{
+      @"left": @0,
+      @"top": @0,
+      @"right": [NSNumber numberWithUnsignedLong:width],
+      @"bottom": [NSNumber numberWithUnsignedLong:height],
+    },
+  };
 }
 
 /// The historical whole-buffer emit: every plane copied verbatim (stride

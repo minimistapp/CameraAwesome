@@ -983,6 +983,10 @@ static UIInterfaceOrientation CAMCurrentInterfaceOrientation(void) {
   // the 32BGRA behavior.
   InputAnalysisImageFormat requestedFormat = [format isEqualToString:@"nv21"] ? nv21 : bgra8888;
   [self.camera updateRequestedAnalysisFormat:requestedFormat];
+  // "jpeg" (MIN-7796) keeps the 32BGRA output above — the encoder reads it
+  // directly — and has the stream encode each emitted frame natively, so only
+  // the JPEG crosses the bridge.
+  self.camera.imageStreamController.encodeJpeg = [format isEqualToString:@"jpeg"];
 
   // Honor the stream's requested resolution too (MIN-3475): [width] always
   // arrived over the pigeon bridge but was ignored on iOS, pinning analysis

@@ -91,6 +91,17 @@ class CupertinoAnalysisOptions {
   const CupertinoAnalysisOptions.bgra8888({int width = 0})
       : this._(outputFormat: InputAnalysisImageFormat.bgra8888, width: width);
 
+  /// JPEG analysis frames, encoded on the native side (MIN-7796), the iOS twin
+  /// of [AndroidAnalysisOptions.jpeg]: the output stays 32BGRA and each frame
+  /// that passes the stream's FPS/overflow guards is encoded with Core Image
+  /// on the capture queue, so only the JPEG (a few hundred KB) crosses the
+  /// bridge, never the raw buffer (~5 MB at 1280 px). Frames arrive as
+  /// [JpegImage], in the same shape Android emits; quality is fixed (0.85),
+  /// as Android's JPEG option has no quality setting either. The aspect ratio
+  /// is the sensor's: nothing is cropped.
+  const CupertinoAnalysisOptions.jpeg({int width = 0})
+      : this._(outputFormat: InputAnalysisImageFormat.jpeg, width: width);
+
   /// Luma-only analysis frames (MIN-3084): the native side switches the data
   /// output to biplanar YUV (420f full-range, falling back to 420v video-range
   /// whose luma is 16–235 rather than 0–255) and ships just the Y plane, in

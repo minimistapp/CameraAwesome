@@ -184,10 +184,12 @@ class ColorMatrixSurfaceProcessor(matrix: List<Double>) : SurfaceProcessor {
 
     override fun onInputSurface(request: SurfaceRequest) {
         if (released) {
+            Log.d(CamerawesomePlugin.TAG, "Colour effect: released, declining the camera input")
             request.willNotProvideSurface()
             return
         }
         if (!ensureGl() || !makeCurrent(tempSurface)) {
+            Log.w(CamerawesomePlugin.TAG, "Colour effect: GL not ready, declining the camera input")
             request.willNotProvideSurface()
             return
         }
@@ -215,6 +217,7 @@ class ColorMatrixSurfaceProcessor(matrix: List<Double>) : SurfaceProcessor {
 
     override fun onOutputSurface(surfaceOutput: SurfaceOutput) {
         if (released || !ensureGl()) {
+            Log.d(CamerawesomePlugin.TAG, "Colour effect: ${if (released) "released" else "GL not ready"}, dropping the preview output")
             surfaceOutput.close()
             return
         }
@@ -241,8 +244,13 @@ class ColorMatrixSurfaceProcessor(matrix: List<Double>) : SurfaceProcessor {
         val eglSurface = shared ?: try {
             EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, surface, intArrayOf(EGL14.EGL_NONE), 0)
         } catch (e: IllegalArgumentException) {
-            // Released between the isValid check above and this call.
-            Log.w(CamerawesomePlugin.TAG, "Colour effect: preview surface released before EGL could attach (${e.message})")
+            // Normally the window was released between the isValid check above and
+            // this call; anything else is a real bug, so keep it loud.
+            if (surface.isValid) {
+                Log.e(CamerawesomePlugin.TAG, "Colour effect: EGL rejected a valid preview surface", e)
+            } else {
+                Log.w(CamerawesomePlugin.TAG, "Colour effect: preview surface released before EGL could attach")
+            }
             surfaceOutput.close()
             return
         }

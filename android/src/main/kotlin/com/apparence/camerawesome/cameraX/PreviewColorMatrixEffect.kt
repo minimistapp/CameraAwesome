@@ -219,6 +219,15 @@ class ColorMatrixSurfaceProcessor(matrix: List<Double>) : SurfaceProcessor {
             return
         }
         val surface = surfaceOutput.getSurface(glExecutor) { event -> removeOutput(event.surfaceOutput) }
+        // MIN-7840: the window can already be released by the time CameraX hands
+        // it over (the camera screen closing or rebinding mid-delivery). EGL then
+        // *throws* IllegalArgumentException instead of returning EGL_NO_SURFACE,
+        // and nothing above this GL thread catches it, so the app dies.
+        if (!surface.isValid) {
+            Log.w(CamerawesomePlugin.TAG, "Colour effect: preview surface already released, dropping the output")
+            surfaceOutput.close()
+            return
+        }
         // One EGL surface per *window*, not per SurfaceOutput. A rebind at an
         // unchanged preview resolution hands us the SAME Surface again under a new
         // SurfaceOutput — `PreviewView` reuses its SurfaceView when the resolution
@@ -229,9 +238,14 @@ class ColorMatrixSurfaceProcessor(matrix: List<Double>) : SurfaceProcessor {
         // SurfaceOutput holding it is closed. CameraX's own renderer keys its
         // surfaces by Surface for the same reason (OpenGlRenderer.mOutputSurfaceMap).
         val shared = outputs.values.firstOrNull { it.surface === surface }?.eglSurface
-        val eglSurface = shared ?: EGL14.eglCreateWindowSurface(
-            eglDisplay, eglConfig, surface, intArrayOf(EGL14.EGL_NONE), 0,
-        )
+        val eglSurface = shared ?: try {
+            EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, surface, intArrayOf(EGL14.EGL_NONE), 0)
+        } catch (e: IllegalArgumentException) {
+            // Released between the isValid check above and this call.
+            Log.w(CamerawesomePlugin.TAG, "Colour effect: preview surface released before EGL could attach (${e.message})")
+            surfaceOutput.close()
+            return
+        }
         if (eglSurface == null || eglSurface == EGL14.EGL_NO_SURFACE) {
             Log.e(CamerawesomePlugin.TAG, "Colour effect: could not create an EGL surface for the preview")
             surfaceOutput.close()
